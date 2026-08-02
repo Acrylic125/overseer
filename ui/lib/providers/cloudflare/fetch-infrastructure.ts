@@ -20,19 +20,20 @@ type RawService = Omit<InfrastructureService, "x" | "y" | "connections"> & {
 function speciesForType(type: string): {
   species: InfrastructureSpecies;
   zone: InfrastructureZone;
+  group: string;
 } {
   switch (type) {
     case "D1":
     case "KV":
     case "R2":
     case "Vectorize":
-      return { species: "database", zone: "data" };
+      return { species: "database", zone: "data", group: "data" };
     case "Queue":
-      return { species: "queue", zone: "compute" };
+      return { species: "queue", zone: "compute", group: "messaging" };
     case "Worker":
-      return { species: "microservice", zone: "compute" };
+      return { species: "microservice", zone: "compute", group: "compute" };
     default:
-      return { species: "microservice", zone: "compute" };
+      return { species: "microservice", zone: "compute", group: "compute" };
   }
 }
 
@@ -45,9 +46,12 @@ function withCategory(
     | "health"
     | "zone"
     | "metrics"
+    | "group"
+    | "width"
+    | "depth"
   >,
 ): RawService {
-  const { species, zone } = speciesForType(service.type);
+  const { species, zone, group } = speciesForType(service.type);
   const style = SPECIES_STYLE[species];
   return {
     ...service,
@@ -56,6 +60,9 @@ function withCategory(
     color: style.accent,
     health: "healthy",
     zone,
+    group,
+    width: 1,
+    depth: 1,
     metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
   };
 }

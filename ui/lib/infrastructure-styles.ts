@@ -1,98 +1,57 @@
 import type {
+  InfrastructureCategory,
   InfrastructureSpecies,
-  InfrastructureZone,
-  NodeHealth,
 } from "@/server/routers/infrastructure";
 
-/** World units per grid cell */
-export const CELL_SIZE = 1.4;
+/** World units per grid cell — matches default 1×1 block footprint. */
+export const CELL_SIZE = 1;
 
 export const SCENE = {
-  background: "#0a0c14",
-  ambient: "#0b1220",
-  moonlight: "#c5d4e8",
-  table: "#07090f",
-  tableReflect: 0.15,
-  zoneLine: "#1e2a44",
-  radar: "#3d7ea6",
-  label: "#d7e2f0",
-  panel: "#0e1524",
-  panelBorder: "#3a6f8f",
+  background: "oklch(14.5% 0 0)",
+  block: "#ffffff",
+  edge: "oklch(37.2% 0.044 257.287)",
+  platform: "oklch(92.9% 0.013 255.508)",
+  computePad: "oklch(94.5% 0.129 101.54)",
+  computeIcon: "oklch(55.4% 0.135 66.442)",
+  storagePad: "oklch(92.5% 0.084 155.995)",
+  storageIcon: "oklch(52.7% 0.154 150.069)",
+  databasePad: "oklch(88.2% 0.059 254.128)",
+  databaseIcon: "oklch(54.6% 0.245 262.881)",
+  gridMinor: "oklch(37.2% 0.044 257.287)",
+  gridMajor: "oklch(55% 0.04 257)",
+  ambient: "oklch(70% 0.02 257)",
+  keyLight: "oklch(95% 0.01 95)",
+  hemiSky: "oklch(80% 0.02 250)",
+  hemiGround: "oklch(25% 0.02 257)",
+  connector: "oklch(51.8% 0.253 323.949)",
 } as const;
 
-/** Restrained accent system */
-export const ACCENT = {
-  data: "#2ec4b6", // cyan/teal — databases, storage, persistence
-  compute: "#f0d5a8", // warm white/amber — APIs, services, workers
-  edge: "#a78bfa", // lavender/violet — CDN, DNS, external
-  alertWarning: "#f59e0b",
-  alertCritical: "#ef4444",
-  healthyGlow: "#e8f7f5",
-} as const;
+export const PLATFORM_THICKNESS = 0.15;
+/** Margin (cells) of platform beyond the group's block footprints. */
+export const PLATFORM_PAD = 0.75;
+/** Minimum edge-to-edge gap between group platforms (cells). */
+export const PLATFORM_SEPARATION = 4;
+export const BLOCK_GAP = 1;
+export const MATERIAL_ROUGHNESS = 0.05;
+export const GRID_MAJOR_EVERY = 4;
+/** World-space extent of the infinite-feeling floor grid. */
+export const GRID_EXTENT = 120;
 
 export const SPECIES_STYLE: Record<
   InfrastructureSpecies,
-  {
-    accent: string;
-    emissive: string;
-    label: string;
-  }
+  { accent: string; label: string }
 > = {
-  database: {
-    accent: ACCENT.data,
-    emissive: ACCENT.data,
-    label: "Database",
-  },
-  api_gateway: {
-    accent: ACCENT.compute,
-    emissive: ACCENT.compute,
-    label: "API Gateway",
-  },
-  microservice: {
-    accent: ACCENT.compute,
-    emissive: ACCENT.compute,
-    label: "Microservice",
-  },
-  queue: {
-    accent: ACCENT.data,
-    emissive: ACCENT.data,
-    label: "Queue",
-  },
-  cdn_edge: {
-    accent: ACCENT.edge,
-    emissive: ACCENT.edge,
-    label: "CDN / Edge",
-  },
-  load_balancer: {
-    accent: ACCENT.edge,
-    emissive: ACCENT.healthyGlow,
-    label: "Load Balancer",
-  },
-};
-
-export const HEALTH_GLOW: Record<
-  NodeHealth,
-  { color: string; intensity: number; pulse: number }
-> = {
-  healthy: { color: ACCENT.healthyGlow, intensity: 0.35, pulse: 0.15 },
-  warning: { color: ACCENT.alertWarning, intensity: 0.55, pulse: 0.85 },
-  critical: { color: ACCENT.alertCritical, intensity: 0.95, pulse: 2.4 },
-};
-
-export const ZONE_META: Record<
-  InfrastructureZone,
-  { label: string; color: string }
-> = {
-  payment: { label: "Payment Zone", color: "#1a2740" },
-  auth: { label: "Auth Zone", color: "#1c2038" },
-  edge: { label: "Edge Zone", color: "#1a1830" },
-  data: { label: "Data Zone", color: "#102428" },
-  compute: { label: "Compute Zone", color: "#241c14" },
+  database: { accent: SCENE.edge, label: "Database" },
+  api_gateway: { accent: SCENE.edge, label: "API Gateway" },
+  microservice: { accent: SCENE.edge, label: "Microservice" },
+  queue: { accent: SCENE.edge, label: "Queue" },
+  cdn_edge: { accent: SCENE.edge, label: "CDN / Edge" },
+  load_balancer: { accent: SCENE.edge, label: "Load Balancer" },
 };
 
 export function speciesToCategory(
   species: InfrastructureSpecies,
-): "compute" | "storage" | "database" {
+): InfrastructureCategory {
   switch (species) {
     case "database":
       return "database";

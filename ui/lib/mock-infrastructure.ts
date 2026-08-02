@@ -1,4 +1,4 @@
-import { layoutServices } from "@/lib/providers/cloudflare/layout";
+import { packServicesByGroup } from "@/lib/graph/pack-layout";
 import {
   SPECIES_STYLE,
   speciesToCategory,
@@ -10,26 +10,26 @@ import type {
   NodeHealth,
 } from "@/server/routers/infrastructure";
 
-const MOCK_SERVICE_COUNT = 56;
-const MOCK_LAYOUT_CONNECTIONS_CAP = 10;
+const MOCK_SERVICE_COUNT = 36;
 
 type MockMeta = {
   type: string;
   species: InfrastructureSpecies;
   zone: InfrastructureZone;
+  group: string;
 };
 
 const MOCK_TYPES: MockMeta[] = [
-  { type: "Worker", species: "microservice", zone: "compute" },
-  { type: "API", species: "api_gateway", zone: "edge" },
-  { type: "D1", species: "database", zone: "data" },
-  { type: "KV", species: "database", zone: "data" },
-  { type: "Queue", species: "queue", zone: "compute" },
-  { type: "CDN", species: "cdn_edge", zone: "edge" },
-  { type: "LB", species: "load_balancer", zone: "edge" },
-  { type: "Auth", species: "microservice", zone: "auth" },
-  { type: "Pay", species: "microservice", zone: "payment" },
-  { type: "R2", species: "database", zone: "data" },
+  { type: "Worker", species: "microservice", zone: "compute", group: "app" },
+  { type: "API", species: "api_gateway", zone: "edge", group: "edge" },
+  { type: "D1", species: "database", zone: "data", group: "data" },
+  { type: "KV", species: "database", zone: "data", group: "data" },
+  { type: "Queue", species: "queue", zone: "compute", group: "messaging" },
+  { type: "CDN", species: "cdn_edge", zone: "edge", group: "edge" },
+  { type: "LB", species: "load_balancer", zone: "edge", group: "edge" },
+  { type: "Auth", species: "microservice", zone: "auth", group: "auth" },
+  { type: "Pay", species: "microservice", zone: "payment", group: "payments" },
+  { type: "R2", species: "queue", zone: "data", group: "storage" },
 ];
 
 function mulberry32(seed: number) {
@@ -41,24 +41,6 @@ function mulberry32(seed: number) {
   };
 }
 
-function pickRandomIds(
-  pool: string[],
-  count: number,
-  excludeId: string,
-  random: () => number,
-) {
-  const candidates = pool.filter((id) => id !== excludeId);
-  const take = Math.min(count, candidates.length);
-  for (let index = 0; index < take; index += 1) {
-    const swapIndex =
-      index + Math.floor(random() * (candidates.length - index));
-    const current = candidates[index]!;
-    candidates[index] = candidates[swapIndex]!;
-    candidates[swapIndex] = current;
-  }
-  return candidates.slice(0, take);
-}
-
 function rollHealth(random: () => number): NodeHealth {
   const r = random();
   if (r < 0.08) return "critical";
@@ -68,67 +50,46 @@ function rollHealth(random: () => number): NodeHealth {
 
 export type MockInfrastructure = {
   services: InfrastructureService[];
-  edges: { source: string; target: string; path: { x: number; y: number }[] }[];
+  platforms: {
+    group: string;
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  }[];
+  bounds: {
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  };
   warnings: string[];
-  centerGuide: { x: number; y: number; radius: number };
 };
 
 /**
- * TEMPORARY client-side mock — living topology for the 3D war-room scene.
+ * TEMPORARY client-side mock — grouped blocks for the 3D platform scene.
  */
 export function createMockInfrastructure(): MockInfrastructure {
   const random = mulberry32(42);
-  const ids = Array.from(
-    { length: MOCK_SERVICE_COUNT },
-    (_, index) => `mock-service-${index}`,
-  );
 
-  const databases = ids.filter((_, i) => MOCK_TYPES[i % MOCK_TYPES.length]!.species === "database");
-  const gateways = ids.filter((_, i) => MOCK_TYPES[i % MOCK_TYPES.length]!.species === "api_gateway");
-  const balancers = ids.filter((_, i) => MOCK_TYPES[i % MOCK_TYPES.length]!.species === "load_balancer");
-
-  const servicesPre = ids.map((id, index) => {
+  const servicesPre = Array.from({ length: MOCK_SERVICE_COUNT }, (_, index) => {
     const meta = MOCK_TYPES[index % MOCK_TYPES.length]!;
     const style = SPECIES_STYLE[meta.species];
     const health = rollHealth(random);
-
-    let connections: string[] = [];
-    if (meta.species === "microservice" || meta.species === "api_gateway") {
-      connections = [
-        ...pickRandomIds(databases, 1 + Math.floor(random() * 2), id, random),
-        ...pickRandomIds(ids, Math.floor(random() * 3), id, random),
-      ];
-    } else if (meta.species === "queue") {
-      connections = pickRandomIds(
-        ids.filter((_, i) => MOCK_TYPES[i % MOCK_TYPES.length]!.species === "microservice"),
-        2 + Math.floor(random() * 3),
-        id,
-        random,
-      );
-    } else if (meta.species === "cdn_edge" || meta.species === "load_balancer") {
-      connections = pickRandomIds(
-        [...gateways, ...balancers, ...ids.slice(0, 12)],
-        2 + Math.floor(random() * 4),
-        id,
-        random,
-      );
-    } else if (meta.species === "database") {
-      // mostly sink
-      connections = random() < 0.2 ? pickRandomIds(databases, 1, id, random) : [];
-    }
-
-    connections = [...new Set(connections)].filter((c) => c !== id);
-
+    const category = speciesToCategory(meta.species);
     const latencyBase =
       health === "critical" ? 280 : health === "warning" ? 140 : 45;
 
     return {
-      id,
+      id: `mock-service-${index}`,
       type: meta.type,
       name: `${meta.type.toLowerCase()}-${index}`,
-      connections,
+      width: 1,
+      depth: 1,
+      group: meta.group,
+      connections: [] as string[],
       species: meta.species,
-      category: speciesToCategory(meta.species),
+      category,
       health,
       zone: meta.zone,
       metrics: {
@@ -149,20 +110,28 @@ export function createMockInfrastructure(): MockInfrastructure {
     };
   });
 
-  const laidOut = layoutServices(servicesPre, {
-    routeEdges: false,
-    maxLayoutConnectionsPerNode: MOCK_LAYOUT_CONNECTIONS_CAP,
-    forceIterations: 350,
-    annealIterations: 2000,
-    minDist: 3,
-  });
+  // Wire a handful of cross-group links so connectors are visible.
+  for (let index = 0; index < servicesPre.length; index += 1) {
+    const service = servicesPre[index]!;
+    const targets = [
+      servicesPre[(index + 3) % servicesPre.length]!.id,
+      servicesPre[(index + 7) % servicesPre.length]!.id,
+    ];
+    if (random() > 0.45) {
+      service.connections = [...new Set(targets)].filter(
+        (id) => id !== service.id,
+      );
+    }
+  }
+
+  const laidOut = packServicesByGroup(servicesPre);
 
   return {
     services: laidOut.services,
-    edges: [],
+    platforms: laidOut.platforms,
+    bounds: laidOut.bounds,
     warnings: [
-      "Living topology mock — species shapes, data veins, and health-driven glow.",
+      "Grouped platform mock — compute / storage / database blocks.",
     ],
-    centerGuide: laidOut.centerGuide,
   };
 }

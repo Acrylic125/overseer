@@ -1,7 +1,4 @@
-import {
-  edgesFromConnections,
-  layoutGraphOnGrid,
-} from "@/lib/graph/grid-force-layout";
+import { packServicesByGroup } from "@/lib/graph/pack-layout";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type InfrastructureEdgePath = {
@@ -16,6 +13,19 @@ export type LayoutResult = {
   services: InfrastructureService[];
   edges: InfrastructureEdgePath[];
   centerGuide: { x: number; y: number; radius: number };
+  platforms: {
+    group: string;
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  }[];
+  bounds: {
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  };
 };
 
 export type LayoutServicesOptions = {
@@ -30,21 +40,13 @@ export type LayoutServicesOptions = {
 };
 
 /**
- * Place services on an integer grid via force-directed layout + annealing.
- * `x` / `y` are grid cell coordinates (world units = cell × block width).
+ * Place services by group into an orderly rectangular footprint.
+ * `x` / `y` are grid-cell origins (world units = cell × CELL_SIZE).
  */
 export function layoutServices(
   services: PlacedService[],
   options: LayoutServicesOptions = {},
 ): LayoutResult {
-  if (services.length === 0) {
-    return {
-      services: [],
-      edges: [],
-      centerGuide: { x: 0, y: 0, radius: 4 },
-    };
-  }
-
   const capped = services.map((service) => {
     if (options.maxLayoutConnectionsPerNode == null) return service;
     return {
@@ -56,32 +58,20 @@ export function layoutServices(
     };
   });
 
-  const nodes = capped.map((service) => service.id);
-  const edges = edgesFromConnections(capped);
-  const gridPos = layoutGraphOnGrid(nodes, edges, {
-    minDist: options.minDist ?? 4,
-    seed: options.seed ?? 42,
-    forceIterations: options.forceIterations,
-    annealIterations: options.annealIterations,
-  });
-
-  const placed = services.map((service) => {
-    const cell = gridPos.get(service.id) ?? { x: 0, y: 0 };
-    return {
-      ...service,
-      x: cell.x,
-      y: cell.y,
-    };
-  });
+  const packed = packServicesByGroup(capped);
 
   let maxR = 0;
-  for (const service of placed) {
-    maxR = Math.max(maxR, Math.hypot(service.x, service.y));
+  for (const service of packed.services) {
+    const cx = service.x + service.width / 2;
+    const cy = service.y + service.depth / 2;
+    maxR = Math.max(maxR, Math.hypot(cx, cy));
   }
 
   return {
-    services: placed,
+    services: packed.services,
     edges: [],
     centerGuide: { x: 0, y: 0, radius: maxR + 4 },
+    platforms: packed.platforms,
+    bounds: packed.bounds,
   };
 }

@@ -2,7 +2,10 @@ import { z } from "zod";
 
 import { publicProcedure, router } from "@/server/trpc";
 
-/** Visual/behavioral species — silhouette must telegraph function. */
+/** Visual block kind rendered in the 3D scene. */
+export type InfrastructureCategory = "compute" | "storage" | "database";
+
+/** @deprecated Prefer `category` for silhouette. Kept for Cloudflare transformer compatibility. */
 export type InfrastructureSpecies =
   | "database"
   | "api_gateway"
@@ -20,9 +23,6 @@ export type InfrastructureZone =
   | "data"
   | "compute";
 
-/** @deprecated Prefer `species`. Kept for Cloudflare transformer compatibility. */
-export type InfrastructureCategory = "compute" | "storage" | "database";
-
 export type NodeMetrics = {
   rps: number;
   errorRate: number;
@@ -33,12 +33,19 @@ export type InfrastructureService = {
   id: string;
   type: string;
   name: string;
+  /** Grid-cell origin (bottom-left of footprint) after packing. */
   x: number;
   y: number;
+  /** Footprint width in grid cells (default 1). */
+  width: number;
+  /** Footprint depth in grid cells (default 1). */
+  depth: number;
+  /** Blocks with the same group are packed together. */
+  group: string;
   /** Service IDs this service can access */
   connections: string[];
+  /** @deprecated Prefer `category`. */
   species: InfrastructureSpecies;
-  /** Legacy category derived from species */
   category: InfrastructureCategory;
   health: NodeHealth;
   zone: InfrastructureZone;
