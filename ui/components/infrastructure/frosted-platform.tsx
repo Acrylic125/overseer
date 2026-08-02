@@ -1,5 +1,6 @@
 "use client";
 
+import { Text } from "@react-three/drei";
 import { useMemo } from "react";
 import * as THREE from "three";
 
@@ -13,6 +14,7 @@ import {
 } from "@/lib/infrastructure-styles";
 
 type PlatformProps = {
+  group: string;
   centerX: number;
   centerZ: number;
   width: number;
@@ -76,8 +78,14 @@ export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
     return geo;
   }, [major]);
 
-  const minorColor = useMemo(() => cssToThreeColor(SCENE.gridMinor), []);
-  const majorColor = useMemo(() => cssToThreeColor(SCENE.gridMajor), []);
+  const minorColor = useMemo(
+    () => cssToThreeColor(SCENE.gridMinor),
+    [SCENE.gridMinor],
+  );
+  const majorColor = useMemo(
+    () => cssToThreeColor(SCENE.gridMajor),
+    [SCENE.gridMajor],
+  );
 
   return (
     <group position={[0, 0.001, 0]}>
@@ -103,28 +111,50 @@ export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
 
 /** Frosted glass slab under one group's blocks. */
 export function FrostedPlatform({
+  group,
   centerX,
   centerZ,
   width,
   depth,
 }: PlatformProps) {
-  const platformColor = useMemo(() => cssToThreeColor(SCENE.platform), []);
+  const platformColor = useMemo(
+    () => cssToThreeColor(SCENE.platform),
+    // Re-resolve when the scene token changes (incl. HMR).
+    [SCENE.platform],
+  );
+  // Flat on the platform top, just past the +Z edge — same placement as service labels.
+  const labelY = PLATFORM_THICKNESS / 2 + 0.09;
+  const labelZ = depth / 2 + 0.35;
 
   return (
-    <mesh position={[centerX, -PLATFORM_THICKNESS / 2, centerZ]}>
-      <boxGeometry args={[width, PLATFORM_THICKNESS, depth]} />
-      <meshPhysicalMaterial
-        color={platformColor}
-        roughness={0.35}
-        metalness={0}
-        transmission={0.55}
-        thickness={PLATFORM_THICKNESS}
-        ior={1.45}
-        transparent
-        opacity={0.3}
-        attenuationColor={platformColor}
-        attenuationDistance={1.2}
-      />
-    </mesh>
+    <group position={[centerX, -PLATFORM_THICKNESS / 2, centerZ]}>
+      <mesh>
+        <boxGeometry args={[width, PLATFORM_THICKNESS, depth]} />
+        <meshPhysicalMaterial
+          color={platformColor}
+          roughness={0.8}
+          metalness={0}
+          transmission={0.12}
+          thickness={PLATFORM_THICKNESS * 2}
+          ior={1.45}
+          transparent
+          opacity={0.55}
+          depthWrite={false}
+          attenuationColor={platformColor}
+          attenuationDistance={0.5}
+        />
+      </mesh>
+      <Text
+        position={[0, labelY, labelZ]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        fontSize={0.7}
+        color="#d7dde5"
+        anchorX="center"
+        anchorY="top"
+        renderOrder={2}
+      >
+        {group}
+      </Text>
+    </group>
   );
 }

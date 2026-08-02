@@ -1,0 +1,26 @@
+{
+  "name": "scan",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare infrastructure scraper — writes the JSON database consumed by the UI",
+  "scripts": {
+    "scan": "tsx src/index.ts",
+    "mock": "tsx src/mock.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.26.0",
+  "dependencies": {
+    "cloudflare": "^7.0.0",
+    "dotenv": "^17.4.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

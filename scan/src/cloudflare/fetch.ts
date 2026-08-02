@@ -1,39 +1,51 @@
 import Cloudflare from "cloudflare";
 
-import { layoutServices } from "@/lib/providers/cloudflare/layout";
-import {
-  SPECIES_STYLE,
-  speciesToCategory,
-} from "@/lib/infrastructure-styles";
-import type { CloudflareProvider } from "@/lib/providers/transformer";
-import type {
-  InfrastructureService,
-  InfrastructureSpecies,
-  InfrastructureZone,
-} from "@/server/routers/infrastructure";
+import type { CloudflareProvider } from "../providers.js";
+import type { ScannedService } from "../schema.js";
 
-type RawService = Omit<InfrastructureService, "x" | "y" | "connections"> & {
-  connections: string[];
-  lookupKeys: string[];
-};
+type RawService = ScannedService & { lookupKeys: string[] };
 
-function speciesForType(type: string): {
-  species: InfrastructureSpecies;
-  zone: InfrastructureZone;
-  group: string;
-} {
+type SpeciesMeta = Pick<ScannedService, "species" | "zone" | "group" | "category">;
+
+function speciesForType(type: string): SpeciesMeta {
   switch (type) {
     case "D1":
     case "KV":
-    case "R2":
     case "Vectorize":
-      return { species: "database", zone: "data", group: "data" };
+      return {
+        species: "database",
+        zone: "data",
+        group: "data",
+        category: "database",
+      };
+    case "R2":
+      return {
+        species: "object_storage",
+        zone: "data",
+        group: "storage",
+        category: "storage",
+      };
     case "Queue":
-      return { species: "queue", zone: "compute", group: "messaging" };
+      return {
+        species: "queue",
+        zone: "compute",
+        group: "messaging",
+        category: "integration",
+      };
     case "Worker":
-      return { species: "microservice", zone: "compute", group: "compute" };
+      return {
+        species: "microservice",
+        zone: "compute",
+        group: "compute",
+        category: "compute",
+      };
     default:
-      return { species: "microservice", zone: "compute", group: "compute" };
+      return {
+        species: "microservice",
+        zone: "compute",
+        group: "compute",
+        category: "compute",
+      };
   }
 }
 
@@ -51,16 +63,12 @@ function withCategory(
     | "depth"
   >,
 ): RawService {
-  const { species, zone, group } = speciesForType(service.type);
-  const style = SPECIES_STYLE[species];
+  const meta = speciesForType(service.type);
   return {
     ...service,
-    species,
-    category: speciesToCategory(species),
-    color: style.accent,
+    ...meta,
+    color: "#111827",
     health: "healthy",
-    zone,
-    group,
     width: 1,
     depth: 1,
     metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
@@ -69,15 +77,12 @@ function withCategory(
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const BINDING_TIMEOUT_MS = 5_000;
-const BINDING_CONCURRENCY = 6;
-const LOG_PREFIX = "[cf-infra]";
+const BINDING_CONCURRENCY = 3;
+const LOG_PREFIX = "[scan:cf]";
 
 function log(message: string, extra?: Record<string, unknown>) {
-  if (extra) {
-    console.log(LOG_PREFIX, message, extra);
-  } else {
-    console.log(LOG_PREFIX, message);
-  }
+  if (extra) console.log(LOG_PREFIX, message, extra);
+  else console.log(LOG_PREFIX, message);
 }
 
 function logError(message: string, error: unknown) {
@@ -127,18 +132,138 @@ async function settled<T>(
     return { value, error: null };
   } catch (error) {
     logError(`${label} failed — using fallback`, error);
-    log(`${label} fallback`, { duration: elapsed(start) });
-    const message =
-      error instanceof Error ? error.message : "Unknown error";
+    const message = error instanceof Error ? error.message : "Unknown error";
     return { value: fallback, error: `${label}: ${message}` };
   }
 }
 
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function isAuthFailure(error: unknown): boolean {
+  const text = errorText(error);
+  return (
+    text.includes("10502") ||
+    text.includes("Too many authentication failures") ||
+    text.includes('"code":10000') ||
+    text.includes("Authentication error") ||
+    text.includes("Invalid API Token") ||
+    text.includes("Invalid request headers") ||
+    /\b401\b/.test(text) ||
+    (/\b429\b/.test(text) && text.toLowerCase().includes("auth"))
+  );
+}
+
+function isRateLimited(error: unknown): boolean {
+  const text = errorText(error);
+  return /\b429\b/.test(text) || text.includes("10502");
+}
+
+function formatAuthFailure(namespace: string, error: unknown): string {
+  const text = errorText(error);
+  if (
+    text.includes("10502") ||
+    text.includes("Too many authentication failures")
+  ) {
+    return `provider:${namespace}: Cloudflare temporarily locked this API token after too many auth failures. Wait a few minutes, confirm PROVIDER_CF_${namespace}_API_KEY, then scan once.`;
+  }
+  if (text.includes("9109") || text.includes("Cannot use the access token from location")) {
+    const ipMatch = text.match(/location:\s*([0-9a-fA-F:.]+)/);
+    const ip = ipMatch?.[1] ?? "this machine";
+    return `provider:${namespace}: Cloudflare rejected this token from IP ${ip} (code 9109). In the Cloudflare dashboard, edit the token’s Client IP Address Filtering to allow ${ip}, or clear the IP filter.`;
+  }
+  if (/\b429\b/.test(text)) {
+    return `provider:${namespace}: Cloudflare rate-limited the API token. Wait a few minutes, then scan once.`;
+  }
+  if (
+    text.includes("10000") ||
+    text.includes("Authentication error") ||
+    text.includes("Invalid API Token")
+  ) {
+    return `provider:${namespace}: API token rejected — check PROVIDER_CF_${namespace}_API_KEY.`;
+  }
+  return `provider:${namespace}: ${text}`;
+}
+
 function formatPermissionHint(error: string): string {
-  if (error.includes("10000") || error.includes("Authentication error") || error.includes("403")) {
+  if (
+    error.includes("10000") ||
+    error.includes("Authentication error") ||
+    error.includes("403")
+  ) {
     return `${error.split(":")[0]} — API token is missing permission (got 403)`;
   }
   return error;
+}
+
+async function assertTokenUsable(
+  client: Cloudflare,
+  namespace: string,
+  apiToken: string,
+): Promise<{ accountId: string; accountName?: string } | { error: string }> {
+  // Account tokens (cfat_) are not valid on /user/tokens/verify.
+  // User tokens (cfut_ / legacy) use the user verify endpoint.
+  const isAccountToken = apiToken.startsWith("cfat_");
+
+  if (!isAccountToken) {
+    try {
+      const result = await withTimeout(
+        client.user.tokens.verify(),
+        REQUEST_TIMEOUT_MS,
+        "user.tokens.verify",
+      );
+      if (result.status !== "active") {
+        return {
+          error: `provider:${namespace}: API token status is "${result.status ?? "unknown"}" (expected active).`,
+        };
+      }
+    } catch (error) {
+      // Fall through to accounts.list for tokens that can't use user verify.
+      if (!isAuthFailure(error) && !isRateLimited(error)) {
+        return { error: formatAuthFailure(namespace, error) };
+      }
+      log("user.tokens.verify failed — probing accounts.list", { namespace });
+    }
+  }
+
+  try {
+    const account = await getFirstAccount(client);
+    if (!account) {
+      return {
+        error: `provider:${namespace}: token authenticated but has no accessible accounts`,
+      };
+    }
+
+    if (isAccountToken) {
+      try {
+        const result = await withTimeout(
+          client.accounts.tokens.verify({ account_id: account.id }),
+          REQUEST_TIMEOUT_MS,
+          "accounts.tokens.verify",
+        );
+        if (result.status !== "active") {
+          return {
+            error: `provider:${namespace}: API token status is "${result.status ?? "unknown"}" (expected active).`,
+          };
+        }
+      } catch (error) {
+        // Account list already proved the token works; missing verify perm is OK.
+        if (isAuthFailure(error) || isRateLimited(error)) {
+          return { error: formatAuthFailure(namespace, error) };
+        }
+        log("accounts.tokens.verify skipped", {
+          namespace,
+          error: errorText(error),
+        });
+      }
+    }
+
+    return { accountId: account.id, accountName: account.name };
+  } catch (error) {
+    return { error: formatAuthFailure(namespace, error) };
+  }
 }
 
 async function collectPages<T>(
@@ -164,12 +289,9 @@ async function collectPages<T>(
   return items;
 }
 
-/** Fetch only the first account — listing every accessible account can take tens of seconds. */
 async function getFirstAccount(client: Cloudflare) {
   const start = Date.now();
-  const iterator = client
-    .accounts.list({ per_page: 1 })
-    [Symbol.asyncIterator]();
+  const iterator = client.accounts.list({ per_page: 1 })[Symbol.asyncIterator]();
 
   const next = await withTimeout(
     iterator.next(),
@@ -438,6 +560,36 @@ async function fetchAccountInfrastructure(
     if (result.error) warnings.push(formatPermissionHint(result.error));
   }
 
+  const listErrors = [
+    ...workerList.warnings,
+    kvResult.error,
+    d1Result.error,
+    r2Result.error,
+    vectorizeResult.error,
+    queuesResult.error,
+    domainsResult.error,
+    workersDevResult.error,
+  ].filter((error): error is string => Boolean(error));
+
+  if (
+    listErrors.some((error) => isAuthFailure(error) || isRateLimited(error))
+  ) {
+    log("aborting account fetch after auth/rate-limit failure", {
+      namespace: ns,
+    });
+    return {
+      services: [],
+      warnings: [
+        formatAuthFailure(
+          ns,
+          listErrors.find(
+            (error) => isAuthFailure(error) || isRateLimited(error),
+          )!,
+        ),
+      ],
+    };
+  }
+
   const workerDomains = new Map<string, string>();
   for (const domain of domainsResult.value) {
     if (!domain.service || !domain.hostname) continue;
@@ -466,13 +618,25 @@ async function fetchAccountInfrastructure(
 
   const services: RawService[] = [];
 
+  function trackService(service: RawService) {
+    services.push(service);
+    log("scanning service", {
+      type: service.type,
+      name: service.name,
+      id: service.id,
+      ...(service.additionalInfo
+        ? { additionalInfo: service.additionalInfo }
+        : {}),
+    });
+  }
+
   for (const name of workerList.names) {
     const domain =
       workerDomains.get(name) ??
       (workersDevSubdomain
         ? `${name}.${workersDevSubdomain}.workers.dev`
         : undefined);
-    services.push(
+    trackService(
       withCategory({
         id: serviceId(ns, accountId, "worker", name),
         type: "Worker",
@@ -485,7 +649,7 @@ async function fetchAccountInfrastructure(
   }
 
   for (const kv of kvNamespaces) {
-    services.push(
+    trackService(
       withCategory({
         id: serviceId(ns, accountId, "kv", kv.id),
         type: "KV",
@@ -498,7 +662,7 @@ async function fetchAccountInfrastructure(
 
   for (const db of d1Databases) {
     if (!db.uuid || !db.name) continue;
-    services.push(
+    trackService(
       withCategory({
         id: serviceId(ns, accountId, "d1", db.uuid),
         type: "D1",
@@ -511,7 +675,7 @@ async function fetchAccountInfrastructure(
 
   for (const bucket of r2Response.buckets ?? []) {
     if (!bucket.name) continue;
-    services.push(
+    trackService(
       withCategory({
         id: serviceId(ns, accountId, "r2", bucket.name),
         type: "R2",
@@ -524,7 +688,7 @@ async function fetchAccountInfrastructure(
 
   for (const index of vectorizeIndexes) {
     if (!index.name) continue;
-    services.push(
+    trackService(
       withCategory({
         id: serviceId(ns, accountId, "vectorize", index.name),
         type: "Vectorize",
@@ -539,7 +703,7 @@ async function fetchAccountInfrastructure(
     const name = queue.queue_name;
     const id = queue.queue_id ?? name;
     if (!name || !id) continue;
-    services.push(
+    trackService(
       withCategory({
         id: serviceId(ns, accountId, "queue", id),
         type: "Queue",
@@ -643,13 +807,6 @@ async function fetchAccountInfrastructure(
     duration: elapsed(bindingsStart),
   });
 
-  log("account fetch complete", {
-    namespace: ns,
-    accountId,
-    services: services.length,
-    duration: elapsed(accountStart),
-  });
-
   return { services, warnings };
 }
 
@@ -665,111 +822,100 @@ async function fetchProviderInfrastructure(
     timeout: REQUEST_TIMEOUT_MS,
   });
 
-  const account = await getFirstAccount(client);
-  if (!account) {
-    log("provider has no accounts", { namespace: provider.namespace });
-    return {
-      services: [],
-      warnings: [`Provider "${provider.namespace}" has no accessible accounts`],
-    };
+  const tokenCheck = await assertTokenUsable(
+    client,
+    provider.namespace,
+    provider.apiKey,
+  );
+  if ("error" in tokenCheck) {
+    log("provider token unusable", {
+      namespace: provider.namespace,
+      warning: tokenCheck.error,
+    });
+    return { services: [], warnings: [tokenCheck.error] };
   }
 
   log("using account", {
     namespace: provider.namespace,
-    accountId: account.id,
-    accountName: account.name,
+    accountId: tokenCheck.accountId,
+    accountName: tokenCheck.accountName,
   });
 
-  const result = await fetchAccountInfrastructure(
-    client,
-    provider,
-    account.id,
-  );
-
-  log("provider done", {
-    namespace: provider.namespace,
-    services: result.services.length,
-    duration: elapsed(start),
-  });
-
-  return result;
+  try {
+    const result = await fetchAccountInfrastructure(
+      client,
+      provider,
+      tokenCheck.accountId,
+    );
+    log("provider done", {
+      namespace: provider.namespace,
+      services: result.services.length,
+      duration: elapsed(start),
+    });
+    return result;
+  } catch (error) {
+    if (isAuthFailure(error) || isRateLimited(error)) {
+      return {
+        services: [],
+        warnings: [formatAuthFailure(provider.namespace, error)],
+      };
+    }
+    throw error;
+  }
 }
 
-export type InfrastructureFetchResult = {
-  services: InfrastructureService[];
-  edges: { source: string; target: string; path: { x: number; y: number }[] }[];
+export type ScrapeResult = {
+  services: ScannedService[];
   warnings: string[];
-  /** Temporary empty-center guide */
-  centerGuide?: { x: number; y: number; radius: number };
 };
 
-export async function fetchCloudflareInfrastructure(
+export async function scrapeCloudflare(
   providers: CloudflareProvider[],
-): Promise<InfrastructureFetchResult> {
+): Promise<ScrapeResult> {
   const start = Date.now();
-  log("fetch start", {
-    providers: providers.map((p) => p.namespace),
-  });
+  log("scrape start", { providers: providers.map((p) => p.namespace) });
 
   if (providers.length === 0) {
-    log("no providers configured");
     return {
       services: [],
-      edges: [],
-      warnings: ["No Cloudflare providers configured in .env"],
-      centerGuide: { x: 0, y: 0, radius: 200 },
+      warnings: ["No Cloudflare providers configured (PROVIDER_CF_*_API_KEY)"],
     };
   }
 
-  const settledResults = await Promise.allSettled(
-    providers.map((provider) => fetchProviderInfrastructure(provider)),
-  );
-
   const services: RawService[] = [];
   const warnings: string[] = [];
-  const errors: Error[] = [];
 
-  for (const [index, result] of settledResults.entries()) {
-    const namespace = providers[index]!.namespace;
-    if (result.status === "fulfilled") {
-      services.push(...result.value.services);
-      warnings.push(...result.value.warnings);
-      continue;
+  for (const provider of providers) {
+    try {
+      const result = await fetchProviderInfrastructure(provider);
+      services.push(...result.services);
+      warnings.push(...result.warnings);
+    } catch (reason) {
+      const error =
+        reason instanceof Error ? reason : new Error(String(reason));
+      logError(`provider:${provider.namespace} failed`, error);
+      warnings.push(
+        isAuthFailure(error) || isRateLimited(error)
+          ? formatAuthFailure(provider.namespace, error)
+          : `provider:${provider.namespace}: ${error.message}`,
+      );
     }
-
-    const error =
-      result.reason instanceof Error
-        ? result.reason
-        : new Error(String(result.reason));
-    logError(`provider:${namespace} failed`, error);
-    errors.push(error);
-    warnings.push(`provider:${namespace}: ${error.message}`);
   }
 
-  if (services.length === 0 && errors.length > 0) {
-    throw new Error(
-      `Cloudflare fetch failed: ${errors.map((e) => e.message).join("; ")}`,
-    );
+  const cleaned: ScannedService[] = services.map(
+    ({ lookupKeys: _lookupKeys, ...rest }) => rest,
+  );
+
+  console.log(`[scan:cf] services scanned (${cleaned.length}):`);
+  for (const service of cleaned) {
+    console.log(`  - ${service.type}: ${service.name}`);
   }
 
-  const raw = services.map(({ lookupKeys: _lookupKeys, ...rest }) => rest);
-  const laidOut = layoutServices(raw);
-
-  log("fetch complete", {
-    services: laidOut.services.length,
-    connections: laidOut.services.reduce(
-      (sum, s) => sum + s.connections.length,
-      0,
-    ),
-    routedEdges: laidOut.edges.length,
+  log("scrape complete", {
+    services: cleaned.length,
     warnings: warnings.length,
     duration: elapsed(start),
   });
 
-  return {
-    services: laidOut.services,
-    edges: laidOut.edges,
-    warnings,
-    centerGuide: laidOut.centerGuide,
-  };
+  return { services: cleaned, warnings };
 }

@@ -7,6 +7,10 @@ import { cssToThreeColor } from "@/lib/css-color";
 
 type IconNode = [string, Record<string, string | number>];
 
+/** Shared across all blocks — category glyphs must not duplicate 256² uploads. */
+const textureCache = new Map<string, Promise<THREE.CanvasTexture>>();
+const textureSync = new Map<string, THREE.CanvasTexture>();
+
 function cssToHex(cssColor: string): string {
   return `#${cssToThreeColor(cssColor).getHexString()}`;
 }
@@ -36,21 +40,26 @@ function iconNodesToSvg(
 </svg>`;
 }
 
-/**
- * Rasterize Lucide icon nodes into a transparent CanvasTexture for mesh decals.
- */
-export function useLucideIconTexture(
-  nodes: IconNode[],
-  strokeCss: string,
-  size = 256,
-  strokeWidth = 2,
+function cacheKey(
+  nodesKey: string,
+  stroke: string,
+  size: number,
+  strokeWidth: number,
 ) {
-  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  const stroke = cssToHex(strokeCss);
-  const nodesKey = JSON.stringify(nodes);
+  return `${nodesKey}|${stroke}|${size}|${strokeWidth}`;
+}
 
-  useEffect(() => {
-    let cancelled = false;
+function loadLucideTexture(
+  nodesKey: string,
+  stroke: string,
+  size: number,
+  strokeWidth: number,
+): Promise<THREE.CanvasTexture> {
+  const key = cacheKey(nodesKey, stroke, size, strokeWidth);
+  const existing = textureCache.get(key);
+  if (existing) return existing;
+
+  const promise = (async () => {
     const svg = iconNodesToSvg(
       JSON.parse(nodesKey) as IconNode[],
       stroke,
@@ -59,46 +68,102 @@ export function useLucideIconTexture(
     );
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const image = new Image();
 
-    image.onload = () => {
-      if (cancelled) {
-        URL.revokeObjectURL(url);
-        return;
-      }
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Lucide icon decode failed"));
+        img.src = url;
+      });
+
       const canvas = document.createElement("canvas");
       canvas.width = size;
       canvas.height = size;
       const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        URL.revokeObjectURL(url);
-        return;
-      }
+      if (!ctx) throw new Error("2d context unavailable");
+
       ctx.clearRect(0, 0, size, size);
       ctx.drawImage(image, 0, 0, size, size);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = 4;
+      texture.premultiplyAlpha = true;
+      texture.needsUpdate = true;
+      textureSync.set(key, texture);
+      return texture;
+    } finally {
       URL.revokeObjectURL(url);
+    }
+  })().catch((error) => {
+    textureCache.delete(key);
+    throw error;
+  });
 
-      const next = new THREE.CanvasTexture(canvas);
-      next.colorSpace = THREE.SRGBColorSpace;
-      next.anisotropy = 8;
-      next.premultiplyAlpha = true;
-      next.needsUpdate = true;
-      setTexture((prev) => {
-        prev?.dispose();
-        return next;
+  textureCache.set(key, promise);
+  return promise;
+}
+
+/**
+ * Rasterize Lucide icon nodes into a transparent CanvasTexture for mesh decals.
+ * Textures are cached and shared — do not dispose on unmount.
+ */
+export function loadLucideIconTexture(
+  nodes: IconNode[],
+  strokeCss: string,
+  size = 128,
+  strokeWidth = 2,
+) {
+  const stroke = cssToHex(strokeCss);
+  const nodesKey = JSON.stringify(nodes);
+  return loadLucideTexture(nodesKey, stroke, size, strokeWidth);
+}
+
+export function getLucideIconTextureSync(
+  nodes: IconNode[],
+  strokeCss: string,
+  size = 128,
+  strokeWidth = 2,
+) {
+  const key = cacheKey(JSON.stringify(nodes), cssToHex(strokeCss), size, strokeWidth);
+  return textureSync.get(key) ?? null;
+}
+
+export function useLucideIconTexture(
+  nodes: IconNode[],
+  strokeCss: string,
+  size = 128,
+  strokeWidth = 2,
+) {
+  const stroke = cssToHex(strokeCss);
+  const nodesKey = JSON.stringify(nodes);
+  const key = cacheKey(nodesKey, stroke, size, strokeWidth);
+
+  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(
+    () => textureSync.get(key) ?? null,
+  );
+
+  useEffect(() => {
+    const synced = textureSync.get(key);
+    if (synced) {
+      setTexture(synced);
+      return;
+    }
+
+    let cancelled = false;
+    void loadLucideTexture(nodesKey, stroke, size, strokeWidth)
+      .then((next) => {
+        if (!cancelled) setTexture(next);
+      })
+      .catch(() => {
+        if (!cancelled) setTexture(null);
       });
-    };
-
-    image.onerror = () => URL.revokeObjectURL(url);
-    image.src = url;
 
     return () => {
       cancelled = true;
-      URL.revokeObjectURL(url);
     };
-  }, [nodesKey, stroke, size, strokeWidth]);
-
-  useEffect(() => () => texture?.dispose(), [texture]);
+  }, [key, nodesKey, stroke, size, strokeWidth]);
 
   return texture;
 }
@@ -130,4 +195,11 @@ export const DATABASE_ICON_NODES: IconNode[] = [
   ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3" }],
   ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5" }],
   ["path", { d: "M3 12A9 3 0 0 0 21 12" }],
+];
+
+/** Lucide `layers` — stacked messages / event bus. */
+export const LAYERS_ICON_NODES: IconNode[] = [
+  ["path", { d: "M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" }],
+  ["path", { d: "M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" }],
+  ["path", { d: "M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" }],
 ];

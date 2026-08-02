@@ -9,24 +9,65 @@ import {
 /** Visible mesh border thickness along block edges. */
 export const EDGE_BORDER = 0.01;
 
+/** Shared geometries — identical 1×1 footprints reuse one BufferGeometry. */
+const geometryPool = new Map<string, THREE.BufferGeometry>();
+
+export function getPooledGeometry(
+  key: string,
+  factory: () => THREE.BufferGeometry,
+): THREE.BufferGeometry {
+  let geometry = geometryPool.get(key);
+  if (!geometry) {
+    geometry = factory();
+    geometryPool.set(key, geometry);
+  }
+  return geometry;
+}
+
 /** Shared materials — one set for the whole scene. */
 let materials: {
   block: THREE.MeshStandardMaterial;
   border: THREE.MeshStandardMaterial;
   accent: THREE.MeshStandardMaterial;
+  /** Unlit so icon pads stay true white (not warmed by scene lights). */
+  iconFace: THREE.MeshBasicMaterial;
   computePad: THREE.MeshStandardMaterial;
   computeIcon: THREE.MeshStandardMaterial;
+  computeRim: THREE.MeshStandardMaterial;
   storagePad: THREE.MeshStandardMaterial;
   storageIcon: THREE.MeshStandardMaterial;
+  storageRim: THREE.MeshStandardMaterial;
   databasePad: THREE.MeshStandardMaterial;
   databaseIcon: THREE.MeshStandardMaterial;
+  databaseRim: THREE.MeshStandardMaterial;
+  integrationPad: THREE.MeshStandardMaterial;
+  integrationIcon: THREE.MeshStandardMaterial;
+  integrationRim: THREE.MeshStandardMaterial;
+  /** Cheap far-LOD silhouettes. */
+  blockBasic: THREE.MeshBasicMaterial;
 } | null = null;
 
-function flatMaterial(cssColor: string) {
+function rimMaterial(cssColor: string) {
+  const color = cssToThreeColor(cssColor);
   return new THREE.MeshStandardMaterial({
-    color: cssToThreeColor(cssColor),
-    roughness: 0,
-    metalness: 0,
+    color,
+    emissive: color,
+    emissiveIntensity: 0.22,
+    roughness: 0.35,
+    metalness: 0.15,
+    flatShading: true,
+  });
+}
+
+function flatMaterial(cssColor: string, emissive = false) {
+  const color = cssToThreeColor(cssColor);
+  return new THREE.MeshStandardMaterial({
+    color,
+    emissive: emissive ? color : undefined,
+    emissiveIntensity: emissive ? 0.65 : 0,
+    roughness: emissive ? 0.32 : 0.5,
+    metalness: 0.04,
+    toneMapped: !emissive,
   });
 }
 
@@ -35,38 +76,98 @@ export function getBlockMaterials() {
     materials = {
       block: new THREE.MeshStandardMaterial({
         color: cssToThreeColor(SCENE.block),
-        roughness: 0,
-        metalness: 0,
+        roughness: 0.4,
+        metalness: 0.04,
         flatShading: true,
+      }),
+      blockBasic: new THREE.MeshBasicMaterial({
+        color: cssToThreeColor(SCENE.block),
       }),
       border: new THREE.MeshStandardMaterial({
         color: cssToThreeColor(SCENE.edge),
         roughness: MATERIAL_ROUGHNESS,
-        metalness: 0.15,
+        metalness: 0.85,
       }),
       accent: new THREE.MeshStandardMaterial({
         color: cssToThreeColor(SCENE.edge),
         roughness: MATERIAL_ROUGHNESS,
         metalness: 0.1,
       }),
+      iconFace: new THREE.MeshBasicMaterial({
+        color: cssToThreeColor(SCENE.iconFace),
+        toneMapped: false,
+      }),
       computePad: flatMaterial(SCENE.computePad),
-      computeIcon: flatMaterial(SCENE.computeIcon),
+      computeIcon: flatMaterial(SCENE.computeIcon, true),
+      computeRim: rimMaterial(SCENE.computeIcon),
       storagePad: flatMaterial(SCENE.storagePad),
-      storageIcon: flatMaterial(SCENE.storageIcon),
+      storageIcon: flatMaterial(SCENE.storageIcon, true),
+      storageRim: rimMaterial(SCENE.storageIcon),
       databasePad: flatMaterial(SCENE.databasePad),
-      databaseIcon: flatMaterial(SCENE.databaseIcon),
+      databaseIcon: flatMaterial(SCENE.databaseIcon, true),
+      databaseRim: rimMaterial(SCENE.databaseIcon),
+      integrationPad: flatMaterial(SCENE.integrationPad),
+      integrationIcon: flatMaterial(SCENE.integrationIcon, true),
+      integrationRim: rimMaterial(SCENE.integrationIcon),
     };
   } else {
     materials.block.color.copy(cssToThreeColor(SCENE.block));
-    materials.block.roughness = 0;
-    materials.block.metalness = 0;
+    materials.block.roughness = 0.4;
+    materials.block.metalness = 0.04;
     materials.block.flatShading = true;
     materials.block.needsUpdate = true;
-    materials.computePad.color.copy(cssToThreeColor(SCENE.computePad));
-    materials.storagePad.color.copy(cssToThreeColor(SCENE.storagePad));
-    materials.databasePad.color.copy(cssToThreeColor(SCENE.databasePad));
+    materials.blockBasic.color.copy(cssToThreeColor(SCENE.block));
+    materials.iconFace.color.copy(cssToThreeColor(SCENE.iconFace));
+    const syncPad = (
+      mat: THREE.MeshStandardMaterial,
+      css: string,
+      emissive = false,
+    ) => {
+      const color = cssToThreeColor(css);
+      mat.color.copy(color);
+      if (emissive) {
+        mat.emissive.copy(color);
+        mat.emissiveIntensity = 0.65;
+      }
+      mat.needsUpdate = true;
+    };
+    const syncRim = (mat: THREE.MeshStandardMaterial, css: string) => {
+      const color = cssToThreeColor(css);
+      mat.color.copy(color);
+      mat.emissive.copy(color);
+      mat.emissiveIntensity = 0.22;
+      mat.needsUpdate = true;
+    };
+    syncPad(materials.computePad, SCENE.computePad);
+    syncPad(materials.storagePad, SCENE.storagePad);
+    syncPad(materials.databasePad, SCENE.databasePad);
+    syncPad(materials.integrationPad, SCENE.integrationPad);
+    syncPad(materials.computeIcon, SCENE.computeIcon, true);
+    syncPad(materials.storageIcon, SCENE.storageIcon, true);
+    syncPad(materials.databaseIcon, SCENE.databaseIcon, true);
+    syncPad(materials.integrationIcon, SCENE.integrationIcon, true);
+    syncRim(materials.computeRim, SCENE.computeIcon);
+    syncRim(materials.storageRim, SCENE.storageIcon);
+    syncRim(materials.databaseRim, SCENE.databaseIcon);
+    syncRim(materials.integrationRim, SCENE.integrationIcon);
   }
   return materials;
+}
+
+export function rimMaterialForCategory(
+  category: "compute" | "storage" | "database" | "integration",
+) {
+  const mats = getBlockMaterials();
+  switch (category) {
+    case "storage":
+      return mats.storageRim;
+    case "database":
+      return mats.databaseRim;
+    case "integration":
+      return mats.integrationRim;
+    default:
+      return mats.computeRim;
+  }
 }
 
 /** Chamfered rectangle outline — edges stay out, only corners cut inward. */
@@ -150,6 +251,258 @@ export function createPolygonPrismGeometry(
   // Match CylinderGeometry vertex convention (sin/cos vs cos/-sin after rotateX).
   geometry.rotateY(POLYGON_Y_ALIGN);
   return geometry;
+}
+
+/**
+ * Polygon pedestal with a vertical lower half and a linear upper taper.
+ * CylinderGeometry provides stable caps and side topology; its middle side
+ * ring is expanded to the bottom radius to delay the taper until half-height.
+ */
+export function createDelayedTaperCylinderGeometry(
+  sides: number,
+  bottomRadius: number,
+  topRadius: number,
+  height: number,
+) {
+  const geometry = new THREE.CylinderGeometry(
+    topRadius,
+    bottomRadius,
+    height,
+    sides,
+    2,
+    false,
+  );
+  const positions = geometry.getAttribute("position");
+  const middleRadius = (bottomRadius + topRadius) / 2;
+
+  for (let i = 0; i < positions.count; i += 1) {
+    const y = positions.getY(i);
+    if (Math.abs(y) > 1e-5) continue;
+    const x = positions.getX(i);
+    const z = positions.getZ(i);
+    const radius = Math.hypot(x, z);
+    if (radius < 1e-5) continue;
+    const scale = bottomRadius / middleRadius;
+    positions.setXYZ(i, x * scale, y, z * scale);
+  }
+
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.translate(0, height / 2, 0);
+  return geometry;
+}
+
+type FootprintRing = { x: number; z: number };
+
+/** Regular n-gon in XZ, CCW from above, vertex on +Z (matches polygon prisms). */
+function polygonRing(sides: number, apothem: number): FootprintRing[] {
+  const vertexRadius = apothem / Math.cos(Math.PI / sides);
+  const ring: FootprintRing[] = [];
+  for (let i = 0; i < sides; i += 1) {
+    const angle = Math.PI / 2 + (i * 2 * Math.PI) / sides;
+    ring.push({
+      x: Math.cos(angle) * vertexRadius,
+      z: Math.sin(angle) * vertexRadius,
+    });
+  }
+  return ring;
+}
+
+/** Chamfered rectangle in XZ, CCW from above. */
+function chamferRectRing(
+  width: number,
+  depth: number,
+  cornerInset: number,
+): FootprintRing[] {
+  const hw = width / 2;
+  const hd = depth / 2;
+  const c = Math.min(cornerInset, hw * 0.45, hd * 0.45);
+  // CCW from above starting at (+X, +Z) edge.
+  return [
+    { x: hw - c, z: hd },
+    { x: -hw + c, z: hd },
+    { x: -hw, z: hd - c },
+    { x: -hw, z: -hd + c },
+    { x: -hw + c, z: -hd },
+    { x: hw - c, z: -hd },
+    { x: hw, z: -hd + c },
+    { x: hw, z: hd - c },
+  ];
+}
+
+function pushTri(
+  positions: number[],
+  normals: number[],
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  cx: number,
+  cy: number,
+  cz: number,
+) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abz = bz - az;
+  const acx = cx - ax;
+  const acy = cy - ay;
+  const acz = cz - az;
+  let nx = aby * acz - abz * acy;
+  let ny = abz * acx - abx * acz;
+  let nz = abx * acy - aby * acx;
+  const len = Math.hypot(nx, ny, nz) || 1;
+  nx /= len;
+  ny /= len;
+  nz /= len;
+  positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+  normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+}
+
+/**
+ * Solid loft through footprint rings. Each face gets unique verts so edges
+ * stay hard and tapers read as flat (linear) planes — not smooth-curved.
+ */
+function createLoftedPrismGeometry(
+  rings: { y: number; points: FootprintRing[] }[],
+) {
+  const n = rings[0]!.points.length;
+  const positions: number[] = [];
+  const normals: number[] = [];
+
+  // Side walls between consecutive rings — two tris per edge, unique verts.
+  for (let r = 0; r < rings.length - 1; r += 1) {
+    const lower = rings[r]!;
+    const upper = rings[r + 1]!;
+    for (let i = 0; i < n; i += 1) {
+      const i1 = (i + 1) % n;
+      const a = lower.points[i]!;
+      const b = lower.points[i1]!;
+      const c = upper.points[i1]!;
+      const d = upper.points[i]!;
+      // Outward for CCW rings when viewed from above (reverse of a→b→c).
+      pushTri(
+        positions,
+        normals,
+        a.x,
+        lower.y,
+        a.z,
+        c.x,
+        upper.y,
+        c.z,
+        b.x,
+        lower.y,
+        b.z,
+      );
+      pushTri(
+        positions,
+        normals,
+        a.x,
+        lower.y,
+        a.z,
+        d.x,
+        upper.y,
+        d.z,
+        c.x,
+        upper.y,
+        c.z,
+      );
+    }
+  }
+
+  // Bottom cap (normal -Y).
+  const bottom = rings[0]!;
+  const b0 = bottom.points[0]!;
+  for (let i = 1; i < n - 1; i += 1) {
+    const p1 = bottom.points[i]!;
+    const p2 = bottom.points[i + 1]!;
+    pushTri(
+      positions,
+      normals,
+      b0.x,
+      bottom.y,
+      b0.z,
+      p2.x,
+      bottom.y,
+      p2.z,
+      p1.x,
+      bottom.y,
+      p1.z,
+    );
+  }
+
+  // Top cap (normal +Y).
+  const top = rings[rings.length - 1]!;
+  const t0 = top.points[0]!;
+  for (let i = 1; i < n - 1; i += 1) {
+    const p1 = top.points[i]!;
+    const p2 = top.points[i + 1]!;
+    pushTri(
+      positions,
+      normals,
+      t0.x,
+      top.y,
+      t0.z,
+      p1.x,
+      top.y,
+      p1.z,
+      p2.x,
+      top.y,
+      p2.z,
+    );
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  return geometry;
+}
+
+/**
+ * Pedestal that stays full-width until `taperStart` of height, then tapers
+ * linearly to `topScale` of the bottom footprint.
+ */
+export function createDelayedTaperPolygonGeometry(
+  sides: number,
+  apothem: number,
+  height: number,
+  topScale: number,
+  taperStart = 0.5,
+) {
+  const midY = height * taperStart;
+  return createLoftedPrismGeometry([
+    { y: 0, points: polygonRing(sides, apothem) },
+    { y: midY, points: polygonRing(sides, apothem) },
+    { y: height, points: polygonRing(sides, apothem * topScale) },
+  ]);
+}
+
+/** Chamfered-rect pedestal with delayed inward taper (same profile as above). */
+export function createDelayedTaperChamferBoxGeometry(
+  width: number,
+  depth: number,
+  height: number,
+  cornerInset: number,
+  topScale: number,
+  taperStart = 0.5,
+) {
+  const midY = height * taperStart;
+  return createLoftedPrismGeometry([
+    { y: 0, points: chamferRectRing(width, depth, cornerInset) },
+    { y: midY, points: chamferRectRing(width, depth, cornerInset) },
+    {
+      y: height,
+      points: chamferRectRing(
+        width * topScale,
+        depth * topScale,
+        cornerInset * topScale,
+      ),
+    },
+  ]);
 }
 
 /** Hollow polygonal bucket with rim + interior intrusion. */

@@ -5,6 +5,15 @@ export const CONNECTOR_CLEARANCE = 0.5;
 export const CONNECTOR_STANDOFF = 0.4;
 export const CONNECTOR_SIZE = 0.05;
 export const CONNECTOR_STEP = 0.1;
+/**
+ * Minimum center-to-center gap between parallel connectors.
+ * Large enough that tubes read as separate, not joined.
+ */
+export const CONNECTOR_SEP = 0.55;
+/** Lane pitch for detours — one clean jog, never stair-steps. */
+export const CONNECTOR_LANE = 0.55;
+/** How many lane offsets to try before giving up (down first, then up). */
+const MAX_LANE_TRIES = 8;
 
 export type WorldAabb = {
   id: string;
@@ -23,8 +32,21 @@ export type ConnectorPath = {
   points: { x: number; z: number }[];
 };
 
+export type SegmentObstacle = {
+  a: { x: number; z: number };
+  b: { x: number; z: number };
+};
+
 type Dir = { x: 1 | -1 | 0; z: 1 | -1 | 0 };
 type Pt = { x: number; z: number };
+
+type WalkSpace = {
+  boxes: WorldAabb[];
+  segments: SegmentObstacle[];
+  clearance: number;
+  sep: number;
+  step: number;
+};
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -80,13 +102,51 @@ function distPointToAabb(px: number, pz: number, box: WorldAabb) {
   return Math.hypot(px - cx, pz - cz);
 }
 
+function distPointToSegment(px: number, pz: number, a: Pt, b: Pt) {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz;
+  if (len2 < 1e-12) return Math.hypot(px - a.x, pz - a.z);
+  const t = clamp(((px - a.x) * abx + (pz - a.z) * abz) / len2, 0, 1);
+  return Math.hypot(px - (a.x + abx * t), pz - (a.z + abz * t));
+}
+
+/**
+ * Parallel runs must stay `sep` apart so tubes don't look joined.
+ * Perpendicular crossings are allowed.
+ */
+function blockedBySegments(
+  px: number,
+  pz: number,
+  moveDir: Dir | null,
+  space: WalkSpace,
+) {
+  for (const seg of space.segments) {
+    const dist = distPointToSegment(px, pz, seg.a, seg.b);
+    if (dist >= space.sep) continue;
+
+    const sdx = seg.b.x - seg.a.x;
+    const sdz = seg.b.z - seg.a.z;
+    const segAlongX = Math.abs(sdx) >= Math.abs(sdz);
+
+    if (!moveDir) return true;
+
+    const movingAlongX = moveDir.x !== 0;
+    if (movingAlongX === segAlongX) return true;
+  }
+  return false;
+}
+
 function isWalkable(
   px: number,
   pz: number,
-  obstacles: WorldAabb[],
-  clearance: number,
+  space: WalkSpace,
+  moveDir: Dir | null = null,
 ) {
-  return !obstacles.some((box) => distPointToAabb(px, pz, box) < clearance);
+  if (space.boxes.some((box) => distPointToAabb(px, pz, box) < space.clearance)) {
+    return false;
+  }
+  return !blockedBySegments(px, pz, moveDir, space);
 }
 
 function outwardNormal(box: WorldAabb, point: Pt, toward: Pt): Dir {
@@ -118,7 +178,6 @@ function outwardNormal(box: WorldAabb, point: Pt, toward: Pt): Dir {
 function finalizeOrthogonal(points: Pt[]): Pt[] {
   if (points.length === 0) return points;
 
-  // Break any diagonal into an elbow (X then Z).
   const orth: Pt[] = [points[0]!];
   for (let i = 1; i < points.length; i += 1) {
     const prev = orth[orth.length - 1]!;
@@ -126,7 +185,10 @@ function finalizeOrthogonal(points: Pt[]): Pt[] {
     if (!isCardinalSegment(prev, cur)) {
       orth.push({ x: cur.x, z: prev.z });
     }
-    if (!same(orth[orth.length - 1]!.x, cur.x) || !same(orth[orth.length - 1]!.z, cur.z)) {
+    if (
+      !same(orth[orth.length - 1]!.x, cur.x) ||
+      !same(orth[orth.length - 1]!.z, cur.z)
+    ) {
       orth.push(cur);
     }
   }
@@ -146,196 +208,449 @@ function finalizeOrthogonal(points: Pt[]): Pt[] {
   return out;
 }
 
-function pathClear(
-  points: Pt[],
-  obstacles: WorldAabb[],
-  clearance: number,
-  step = CONNECTOR_STEP,
-) {
+function segmentDir(a: Pt, b: Pt): Dir | null {
+  if (same(a.x, b.x) && same(a.z, b.z)) return null;
+  if (same(a.x, b.x)) return { x: 0, z: Math.sign(b.z - a.z) || 1 };
+  if (same(a.z, b.z)) return { x: Math.sign(b.x - a.x) || 1, z: 0 };
+  return null;
+}
+
+function pathClear(points: Pt[], space: WalkSpace) {
   const orth = finalizeOrthogonal(points);
   for (let i = 0; i < orth.length - 1; i += 1) {
     const a = orth[i]!;
     const b = orth[i + 1]!;
+    const dir = segmentDir(a, b);
     const len = Math.hypot(b.x - a.x, b.z - a.z);
-    const n = Math.max(1, Math.ceil(len / step));
+    const n = Math.max(1, Math.ceil(len / space.step));
     for (let s = 1; s <= n; s += 1) {
       const t = s / n;
       const px = a.x + (b.x - a.x) * t;
       const pz = a.z + (b.z - a.z) * t;
-      if (!isWalkable(px, pz, obstacles, clearance)) return false;
+      if (!isWalkable(px, pz, space, dir)) return false;
     }
   }
   return true;
 }
 
-/** Run cardinal-only until blocked or the goal axis is reached. */
-function runStraight(
-  start: Pt,
-  dir: Dir,
-  goal: Pt,
-  obstacles: WorldAabb[],
-  clearance: number,
-  step: number,
-): Pt {
-  let cur = { ...start };
+/** Hard check: does the path clip any service box? */
+function pathClearOfBoxes(points: Pt[], space: WalkSpace) {
+  return pathClear(points, { ...space, segments: [] });
+}
 
-  while (true) {
-    if (dir.x !== 0) {
-      const nextX = cur.x + dir.x * step;
-      if ((dir.x > 0 && nextX >= goal.x) || (dir.x < 0 && nextX <= goal.x)) {
-        const snapped = { x: goal.x, z: cur.z };
-        return pathClear([cur, snapped], obstacles, clearance, step)
-          ? snapped
-          : cur;
-      }
-    } else {
-      const nextZ = cur.z + dir.z * step;
-      if ((dir.z > 0 && nextZ >= goal.z) || (dir.z < 0 && nextZ <= goal.z)) {
-        const snapped = { x: cur.x, z: goal.z };
-        return pathClear([cur, snapped], obstacles, clearance, step)
-          ? snapped
-          : cur;
-      }
-    }
-
-    const next = { x: cur.x + dir.x * step, z: cur.z + dir.z * step };
-    if (!isWalkable(next.x, next.z, obstacles, clearance)) return cur;
-    cur = next;
+function pathLength(points: Pt[]) {
+  let len = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    len += Math.hypot(b.x - a.x, b.z - a.z);
   }
+  return len;
+}
+
+function scorePath(path: Pt[]) {
+  return Math.max(0, path.length - 2) * 1000 + pathLength(path);
+}
+
+/** Lane multipliers: +1,+2,… (down) then −1,−2,… (up). */
+function laneOffsets(max = MAX_LANE_TRIES): number[] {
+  const out: number[] = [];
+  for (let k = 1; k <= max; k += 1) out.push(k);
+  for (let k = 1; k <= max; k += 1) out.push(-k);
+  return out;
 }
 
 /**
- * Straight runs only. Turns are always exactly 90°.
- * Prefers a single L-bend when clear.
+ * Build clean orthogonal candidates — L, Z, and U bends on lane grids,
+ * plus channels that skirt each service AABB.
+ */
+function candidateRoutes(
+  exit: Pt,
+  entry: Pt,
+  boxes: WorldAabb[],
+  clearance: number,
+): Pt[][] {
+  const candidates: Pt[][] = [];
+  const lanes = laneOffsets();
+
+  // Direct L-bends.
+  candidates.push([exit, { x: entry.x, z: exit.z }, entry]);
+  candidates.push([exit, { x: exit.x, z: entry.z }, entry]);
+
+  for (const k of lanes) {
+    const dz = k * CONNECTOR_LANE;
+    const dx = k * CONNECTOR_LANE;
+
+    const zFromExit = exit.z + dz;
+    candidates.push([
+      exit,
+      { x: exit.x, z: zFromExit },
+      { x: entry.x, z: zFromExit },
+      entry,
+    ]);
+
+    const zFromEntry = entry.z + dz;
+    candidates.push([
+      exit,
+      { x: exit.x, z: zFromEntry },
+      { x: entry.x, z: zFromEntry },
+      entry,
+    ]);
+
+    // Prefer going downwards (+Z) past both ends, then turn back up.
+    const zBelow = Math.max(exit.z, entry.z) + Math.abs(dz);
+    const zAbove = Math.min(exit.z, entry.z) - Math.abs(dz);
+    if (k > 0) {
+      candidates.push([
+        exit,
+        { x: exit.x, z: zBelow },
+        { x: entry.x, z: zBelow },
+        entry,
+      ]);
+    } else {
+      candidates.push([
+        exit,
+        { x: exit.x, z: zAbove },
+        { x: entry.x, z: zAbove },
+        entry,
+      ]);
+    }
+
+    const xFromExit = exit.x + dx;
+    candidates.push([
+      exit,
+      { x: xFromExit, z: exit.z },
+      { x: xFromExit, z: entry.z },
+      entry,
+    ]);
+
+    const xFromEntry = entry.x + dx;
+    candidates.push([
+      exit,
+      { x: xFromEntry, z: exit.z },
+      { x: xFromEntry, z: entry.z },
+      entry,
+    ]);
+
+    const xRight = Math.max(exit.x, entry.x) + Math.abs(dx);
+    const xLeft = Math.min(exit.x, entry.x) - Math.abs(dx);
+    if (k > 0) {
+      candidates.push([
+        exit,
+        { x: xRight, z: exit.z },
+        { x: xRight, z: entry.z },
+        entry,
+      ]);
+    } else {
+      candidates.push([
+        exit,
+        { x: xLeft, z: exit.z },
+        { x: xLeft, z: entry.z },
+        entry,
+      ]);
+    }
+  }
+
+  // Skirt each service on all four sides (hard clearance + one lane).
+  const pad = clearance + CONNECTOR_LANE;
+  for (const box of boxes) {
+    const zHi = box.maxZ + pad;
+    const zLo = box.minZ - pad;
+    const xHi = box.maxX + pad;
+    const xLo = box.minX - pad;
+
+    candidates.push(
+      [exit, { x: exit.x, z: zHi }, { x: entry.x, z: zHi }, entry],
+      [exit, { x: exit.x, z: zLo }, { x: entry.x, z: zLo }, entry],
+      [exit, { x: xHi, z: exit.z }, { x: xHi, z: entry.z }, entry],
+      [exit, { x: xLo, z: exit.z }, { x: xLo, z: entry.z }, entry],
+      // Corner wraps (still only a few clean bends).
+      [
+        exit,
+        { x: exit.x, z: zHi },
+        { x: xHi, z: zHi },
+        { x: xHi, z: entry.z },
+        entry,
+      ],
+      [
+        exit,
+        { x: exit.x, z: zHi },
+        { x: xLo, z: zHi },
+        { x: xLo, z: entry.z },
+        entry,
+      ],
+      [
+        exit,
+        { x: exit.x, z: zLo },
+        { x: xHi, z: zLo },
+        { x: xHi, z: entry.z },
+        entry,
+      ],
+      [
+        exit,
+        { x: exit.x, z: zLo },
+        { x: xLo, z: zLo },
+        { x: xLo, z: entry.z },
+        entry,
+      ],
+    );
+  }
+
+  return candidates;
+}
+
+/**
+ * Orthogonal BFS that never enters service clearance.
+ * Prefers long straight runs so the result doesn't stair-step.
+ */
+function bfsAroundBoxes(
+  exit: Pt,
+  entry: Pt,
+  space: WalkSpace,
+  avoidSegments: boolean,
+): Pt[] | null {
+  const step = CONNECTOR_LANE;
+  const margin = Math.max(
+    8,
+    Math.hypot(entry.x - exit.x, entry.z - exit.z) + 4,
+  );
+  const minX = Math.min(exit.x, entry.x) - margin;
+  const maxX = Math.max(exit.x, entry.x) + margin;
+  const minZ = Math.min(exit.z, entry.z) - margin;
+  const maxZ = Math.max(exit.z, entry.z) + margin;
+
+  const snap = (v: number) => Math.round(v / step) * step;
+  const start: Pt = { x: snap(exit.x), z: snap(exit.z) };
+  const goal: Pt = { x: snap(entry.x), z: snap(entry.z) };
+
+  const walkSpace: WalkSpace = avoidSegments
+    ? space
+    : { ...space, segments: [] };
+
+  const key = (p: Pt) => `${p.x.toFixed(2)},${p.z.toFixed(2)}`;
+  const inBounds = (p: Pt) =>
+    p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ;
+  const okBox = (p: Pt) =>
+    !walkSpace.boxes.some(
+      (box) => distPointToAabb(p.x, p.z, box) < walkSpace.clearance,
+    );
+  const ok = (p: Pt, dir: Dir | null) => {
+    if (!inBounds(p)) return false;
+    return isWalkable(p.x, p.z, walkSpace, dir);
+  };
+
+  // Endpoints only need to clear services (they may sit near peer stubs).
+  if (!okBox(start) || !okBox(goal)) return null;
+
+  type Node = { pt: Pt; dir: Dir | null };
+  const dirs: Dir[] = [
+    { x: 1, z: 0 },
+    { x: -1, z: 0 },
+    { x: 0, z: 1 },
+    { x: 0, z: -1 },
+  ];
+  const came = new Map<string, string | null>();
+  const camePt = new Map<string, Pt>();
+  // 0-1 BFS: prefer continuing straight (cost 0) over turning (cost 1).
+  const q: Node[] = [{ pt: start, dir: null }];
+  came.set(key(start), null);
+  camePt.set(key(start), start);
+
+  let found: Pt | null = null;
+  const goalR = step * 0.51;
+
+  while (q.length > 0) {
+    const cur = q.shift()!;
+    if (
+      Math.abs(cur.pt.x - goal.x) <= goalR &&
+      Math.abs(cur.pt.z - goal.z) <= goalR
+    ) {
+      found = cur.pt;
+      break;
+    }
+    for (const dir of dirs) {
+      const next = {
+        x: cur.pt.x + dir.x * step,
+        z: cur.pt.z + dir.z * step,
+      };
+      const k = key(next);
+      if (came.has(k)) continue;
+      if (!ok(next, dir)) continue;
+      came.set(k, key(cur.pt));
+      camePt.set(k, next);
+      const node = { pt: next, dir };
+      const straight =
+        cur.dir && cur.dir.x === dir.x && cur.dir.z === dir.z;
+      if (straight) q.unshift(node);
+      else q.push(node);
+    }
+  }
+
+  if (!found) return null;
+
+  const gridPath: Pt[] = [];
+  let ck: string | null = key(found);
+  while (ck) {
+    gridPath.push(camePt.get(ck)!);
+    ck = came.get(ck) ?? null;
+  }
+  gridPath.reverse();
+
+  return collapseToCleanBends(
+    finalizeOrthogonal([exit, ...gridPath, entry]),
+    walkSpace,
+  );
+}
+
+/** Replace stair-steps with a single L/Z whenever that shortcut stays clear. */
+function collapseToCleanBends(path: Pt[], space: WalkSpace): Pt[] {
+  let pts = finalizeOrthogonal(path);
+  let changed = true;
+  while (changed && pts.length > 3) {
+    changed = false;
+    for (let i = 0; i < pts.length - 2; i += 1) {
+      const a = pts[i]!;
+      for (let j = i + 2; j < pts.length; j += 1) {
+        const c = pts[j]!;
+        const elbows = [
+          finalizeOrthogonal([a, { x: c.x, z: a.z }, c]),
+          finalizeOrthogonal([a, { x: a.x, z: c.z }, c]),
+        ];
+        for (const elbow of elbows) {
+          if (!pathClear(elbow, space)) continue;
+          const trial = finalizeOrthogonal([
+            ...pts.slice(0, i),
+            ...elbow,
+            ...pts.slice(j + 1),
+          ]);
+          if (trial.length < pts.length && pathClear(trial, space)) {
+            pts = trial;
+            changed = true;
+            break;
+          }
+        }
+        if (changed) break;
+      }
+      if (changed) break;
+    }
+  }
+  return pts;
+}
+
+function pickBestClear(
+  candidates: Pt[][],
+  space: WalkSpace,
+  boxesOnly: boolean,
+): Pt[] | null {
+  let best: Pt[] | null = null;
+  let bestScore = Infinity;
+  for (const raw of candidates) {
+    const path = finalizeOrthogonal(raw);
+    const clear = boxesOnly
+      ? pathClearOfBoxes(path, space)
+      : pathClear(path, space);
+    if (!clear) continue;
+    const score = scorePath(path);
+    if (score < bestScore) {
+      bestScore = score;
+      best = path;
+    }
+  }
+  return best;
+}
+
+/**
+ * Pick a clear orthogonal route with few bends.
+ * Service boxes are hard obstacles; connector spacing is preferred but secondary.
  */
 export function walkConnectorPath(
   exit: Pt,
   entry: Pt,
   obstacles: WorldAabb[],
+  segments: SegmentObstacle[] = [],
   clearance = CONNECTOR_CLEARANCE,
   step = CONNECTOR_STEP,
 ): Pt[] {
-  const elbowA = finalizeOrthogonal([
-    exit,
-    { x: entry.x, z: exit.z },
-    entry,
-  ]);
-  const elbowB = finalizeOrthogonal([
-    exit,
-    { x: exit.x, z: entry.z },
-    entry,
-  ]);
-  if (pathClear(elbowA, obstacles, clearance, step)) return elbowA;
-  if (pathClear(elbowB, obstacles, clearance, step)) return elbowB;
+  const space: WalkSpace = {
+    boxes: obstacles,
+    segments,
+    clearance,
+    sep: CONNECTOR_SEP,
+    step,
+  };
 
-  const path: Pt[] = [{ ...exit }];
-  let pos = { ...exit };
-  let guard = 0;
+  const candidates = candidateRoutes(exit, entry, obstacles, clearance);
 
-  while (
-    (Math.abs(pos.x - entry.x) > 1e-4 || Math.abs(pos.z - entry.z) > 1e-4) &&
-    guard < 500
-  ) {
-    guard += 1;
-    const dx = entry.x - pos.x;
-    const dz = entry.z - pos.z;
+  // 1) Prefer routes clear of services AND other connectors.
+  const full = pickBestClear(candidates, space, false);
+  if (full) return full;
 
-    const progress: Dir[] = [];
-    if (Math.abs(dx) > 1e-4) {
-      progress.push({ x: Math.sign(dx) as 1 | -1, z: 0 });
-    }
-    if (Math.abs(dz) > 1e-4) {
-      progress.push({ x: 0, z: Math.sign(dz) as 1 | -1 });
-    }
-    progress.sort((a, b) => {
-      const ra = a.x !== 0 ? Math.abs(dx) : Math.abs(dz);
-      const rb = b.x !== 0 ? Math.abs(dx) : Math.abs(dz);
-      return rb - ra;
-    });
+  // 2) BFS that respects both (still clean corners after collapse).
+  const bfsFull = bfsAroundBoxes(exit, entry, space, true);
+  if (bfsFull && pathClear(bfsFull, space)) return finalizeOrthogonal(bfsFull);
 
-    let advanced = false;
-    for (const dir of progress) {
-      const next = runStraight(pos, dir, entry, obstacles, clearance, step);
-      if (!same(next.x, pos.x) || !same(next.z, pos.z)) {
-        pos = next;
-        path.push({ ...pos });
-        advanced = true;
-        break;
-      }
-    }
-    if (advanced) continue;
+  // 3) Must not hit services — allow connector overlap if unavoidable.
+  const boxesOnly = pickBestClear(candidates, space, true);
+  if (boxesOnly) return boxesOnly;
 
-    // 90° side-step only — run sideways until a progress axis opens.
-    const sides: Dir[] = (
-      [
-        { x: 0, z: 1 },
-        { x: 0, z: -1 },
-        { x: 1, z: 0 },
-        { x: -1, z: 0 },
-      ] as Dir[]
-    ).filter(
-      (d) =>
-        !progress.some((p) => p.x === d.x && p.z === d.z) &&
-        !progress.some((p) => p.x === -d.x && p.z === -d.z),
-    );
-
-    let escaped = false;
-    for (const side of sides) {
-      let probe = { ...pos };
-      let moved = false;
-      for (let i = 0; i < 200; i += 1) {
-        const next = {
-          x: probe.x + side.x * step,
-          z: probe.z + side.z * step,
-        };
-        if (!isWalkable(next.x, next.z, obstacles, clearance)) break;
-        probe = next;
-        moved = true;
-
-        const canProgress = progress.some((dir) => {
-          const n = runStraight(probe, dir, entry, obstacles, clearance, step);
-          return !same(n.x, probe.x) || !same(n.z, probe.z);
-        });
-        if (canProgress) break;
-      }
-
-      if (moved && (!same(probe.x, pos.x) || !same(probe.z, pos.z))) {
-        pos = probe;
-        path.push({ ...pos });
-        escaped = true;
-        break;
-      }
-    }
-
-    if (!escaped) {
-      // Cardinal fallback L from current position — never diagonal.
-      const via =
-        Math.abs(entry.x - pos.x) >= Math.abs(entry.z - pos.z)
-          ? { x: entry.x, z: pos.z }
-          : { x: pos.x, z: entry.z };
-      path.push(via, { ...entry });
-      break;
-    }
+  const bfsBoxes = bfsAroundBoxes(exit, entry, space, false);
+  if (bfsBoxes && pathClearOfBoxes(bfsBoxes, space)) {
+    return finalizeOrthogonal(bfsBoxes);
   }
 
-  if (!same(pos.x, entry.x) || !same(pos.z, entry.z)) {
-    if (!same(path[path.length - 1]!.x, entry.x) || !same(path[path.length - 1]!.z, entry.z)) {
-      // Join with at most one 90° elbow.
-      const last = path[path.length - 1]!;
-      if (!isCardinalSegment(last, entry)) {
-        path.push({ x: entry.x, z: last.z });
-      }
-      path.push({ ...entry });
-    }
-  }
+  // Last resort L — only if even BFS failed (should be rare).
+  return finalizeOrthogonal([exit, { x: entry.x, z: exit.z }, entry]);
+}
 
-  return finalizeOrthogonal(path);
+function segmentsFromPoints(points: Pt[]): SegmentObstacle[] {
+  const segs: SegmentObstacle[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    if (same(a.x, b.x) && same(a.z, b.z)) continue;
+    segs.push({ a: { ...a }, b: { ...b } });
+  }
+  return segs;
+}
+
+/** Spread ports along a face so multiple edges don't share one stub. */
+function faceTangent(out: Dir): Dir {
+  if (out.x !== 0) return { x: 0, z: 1 };
+  return { x: 1, z: 0 };
+}
+
+function offsetAlongFace(
+  face: Pt,
+  out: Dir,
+  box: WorldAabb,
+  slot: number,
+  slotCount: number,
+): Pt {
+  if (slotCount <= 1) return face;
+  const tangent = faceTangent(out);
+  const mid = (slotCount - 1) / 2;
+  const delta = (slot - mid) * CONNECTOR_SEP;
+  const ox = face.x + tangent.x * delta;
+  const oz = face.z + tangent.z * delta;
+  if (out.x !== 0) {
+    return { x: face.x, z: clamp(oz, box.minZ + 0.15, box.maxZ - 0.15) };
+  }
+  return { x: clamp(ox, box.minX + 0.15, box.maxX - 0.15), z: face.z };
 }
 
 export function buildConnectorPath(
   source: InfrastructureService,
   target: InfrastructureService,
-  all: InfrastructureService[],
+  /** Precomputed AABBs for obstacle avoidance; empty skips routing checks. */
+  obstacles: WorldAabb[] = [],
+  /** Previously routed connector mid-paths to avoid overlapping. */
+  priorSegments: SegmentObstacle[] = [],
+  portSlots?: {
+    fromSlot: number;
+    fromCount: number;
+    toSlot: number;
+    toCount: number;
+  },
 ): ConnectorPath {
   const fromBox = serviceAabb(source);
   const toBox = serviceAabb(target);
@@ -350,7 +665,7 @@ export function buildConnectorPath(
   const insideFrom: Pt = { x: fromBox.cx, z: fromBox.cz };
   const insideTo: Pt = { x: toBox.cx, z: toBox.cz };
 
-  const faceFrom: Pt = {
+  let faceFrom: Pt = {
     x:
       outFrom.x !== 0
         ? outFrom.x > 0
@@ -364,7 +679,7 @@ export function buildConnectorPath(
           : fromBox.minZ
         : insideFrom.z,
   };
-  const faceTo: Pt = {
+  let faceTo: Pt = {
     x:
       outTo.x !== 0
         ? outTo.x > 0
@@ -379,6 +694,23 @@ export function buildConnectorPath(
         : insideTo.z,
   };
 
+  if (portSlots) {
+    faceFrom = offsetAlongFace(
+      faceFrom,
+      outFrom,
+      fromBox,
+      portSlots.fromSlot,
+      portSlots.fromCount,
+    );
+    faceTo = offsetAlongFace(
+      faceTo,
+      outTo,
+      toBox,
+      portSlots.toSlot,
+      portSlots.toCount,
+    );
+  }
+
   const exit: Pt = {
     x: faceFrom.x + outFrom.x * CONNECTOR_STANDOFF,
     z: faceFrom.z + outFrom.z * CONNECTOR_STANDOFF,
@@ -388,13 +720,8 @@ export function buildConnectorPath(
     z: faceTo.z + outTo.z * CONNECTOR_STANDOFF,
   };
 
-  const obstacles = all
-    .filter((s) => s.id !== source.id && s.id !== target.id)
-    .map(serviceAabb);
+  const mid = walkConnectorPath(exit, entry, obstacles, priorSegments);
 
-  const mid = walkConnectorPath(exit, entry, obstacles);
-
-  // mid already includes exit…entry; keep AA stubs into block centers.
   const points = finalizeOrthogonal([
     insideFrom,
     faceFrom,
@@ -411,12 +738,18 @@ export function buildConnectorPath(
   };
 }
 
+/** Above this, skip per-segment obstacle walks — they are O(paths × services). */
+const OBSTACLE_ROUTING_MAX_SERVICES = 350;
+
 export function buildAllConnectorPaths(
   services: InfrastructureService[],
 ): ConnectorPath[] {
   const byId = new Map(services.map((s) => [s.id, s]));
   const seen = new Set<string>();
-  const paths: ConnectorPath[] = [];
+  const pairs: {
+    source: InfrastructureService;
+    target: InfrastructureService;
+  }[] = [];
 
   for (const source of services) {
     for (const targetId of source.connections) {
@@ -425,7 +758,56 @@ export function buildAllConnectorPaths(
       const key = [source.id, target.id].sort().join("|");
       if (seen.has(key)) continue;
       seen.add(key);
-      paths.push(buildConnectorPath(source, target, services));
+      pairs.push({ source, target });
+    }
+  }
+
+  const degree = new Map<string, number>();
+  for (const { source, target } of pairs) {
+    degree.set(source.id, (degree.get(source.id) ?? 0) + 1);
+    degree.set(target.id, (degree.get(target.id) ?? 0) + 1);
+  }
+  const used = new Map<string, number>();
+
+  const routeAroundObstacles = services.length <= OBSTACLE_ROUTING_MAX_SERVICES;
+  const allAabbs = routeAroundObstacles ? services.map(serviceAabb) : null;
+  const priorSegments: SegmentObstacle[] = [];
+  const paths: ConnectorPath[] = [];
+
+  for (const { source, target } of pairs) {
+    const fromSlot = used.get(source.id) ?? 0;
+    const toSlot = used.get(target.id) ?? 0;
+    used.set(source.id, fromSlot + 1);
+    used.set(target.id, toSlot + 1);
+
+    const obstacles = allAabbs
+      ? allAabbs.filter(
+          (box) => box.id !== source.id && box.id !== target.id,
+        )
+      : [];
+
+    const path = buildConnectorPath(
+      source,
+      target,
+      obstacles,
+      routeAroundObstacles ? priorSegments : [],
+      {
+        fromSlot,
+        fromCount: degree.get(source.id) ?? 1,
+        toSlot,
+        toCount: degree.get(target.id) ?? 1,
+      },
+    );
+    paths.push(path);
+
+    // Register only the routed mid (exit…entry), not face stubs into the blocks.
+    // points: center → face → mid… → face → center
+    if (routeAroundObstacles && path.points.length >= 6) {
+      const mid = path.points.slice(2, -2);
+      priorSegments.push(...segmentsFromPoints(mid));
+    } else if (routeAroundObstacles && path.points.length >= 4) {
+      const mid = path.points.slice(1, -1);
+      priorSegments.push(...segmentsFromPoints(mid));
     }
   }
 

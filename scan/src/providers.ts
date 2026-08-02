@@ -26,12 +26,16 @@ export function transformProviders(
     const namespace = match[1];
     if (!namespace) continue;
 
+    const apiKey = value.trim();
+    if (!apiKey) continue;
+
     providers.push({
       provider: "cf",
-      apiKey: value.trim(),
+      apiKey,
       namespace,
     });
   }
 
   return providers.sort((a, b) => a.namespace.localeCompare(b.namespace));
 }
+

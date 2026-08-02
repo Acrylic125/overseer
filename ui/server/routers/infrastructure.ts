@@ -1,9 +1,15 @@
 import { z } from "zod";
 
+import { loadInfrastructureDb } from "@/lib/infrastructure-db";
+import { layoutServices } from "@/lib/providers/cloudflare/layout";
 import { publicProcedure, router } from "@/server/trpc";
 
 /** Visual block kind rendered in the 3D scene. */
-export type InfrastructureCategory = "compute" | "storage" | "database";
+export type InfrastructureCategory =
+  | "compute"
+  | "storage"
+  | "database"
+  | "integration";
 
 /** @deprecated Prefer `category` for silhouette. Kept for Cloudflare transformer compatibility. */
 export type InfrastructureSpecies =
@@ -12,7 +18,8 @@ export type InfrastructureSpecies =
   | "microservice"
   | "queue"
   | "cdn_edge"
-  | "load_balancer";
+  | "load_balancer"
+  | "object_storage";
 
 export type NodeHealth = "healthy" | "warning" | "critical";
 
@@ -65,16 +72,25 @@ export const infrastructureRouter = router({
         })
         .optional(),
     )
-    .query(async () => {
-      // TEMPORARY: provider querying disabled — canvas generates mock client-side.
+    .query(async ({ input }) => {
+      const db = await loadInfrastructureDb();
+
+      const services = input?.namespace
+        ? db.services.filter((service) =>
+            service.id.startsWith(`${input.namespace}:`),
+          )
+        : db.services;
+
+      const laidOut = layoutServices(services);
+
       return {
-        services: [],
-        edges: [],
-        warnings: [
-          "TEMPORARY mock data active — Cloudflare provider querying is disabled.",
-        ],
-        centerGuide: { x: 0, y: 0, radius: 200 },
-        useClientMock: true as const,
+        services: laidOut.services,
+        edges: laidOut.edges,
+        warnings: db.warnings,
+        centerGuide: laidOut.centerGuide,
+        platforms: laidOut.platforms,
+        bounds: laidOut.bounds,
+        scannedAt: db.scannedAt,
       };
     }),
 });
