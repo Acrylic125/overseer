@@ -1,78 +1,58 @@
 import Cloudflare from "cloudflare";
 
 import type { CloudflareProvider } from "../providers.js";
-import type { ScannedService } from "../schema.js";
+import type { ScannedService, ServiceFields } from "../schema.js";
+
+type CfServiceKind =
+  | "Worker"
+  | "KV"
+  | "D1"
+  | "R2"
+  | "Queue"
+  | "Vectorize";
 
 type RawService = ScannedService & { lookupKeys: string[] };
 
-type SpeciesMeta = Pick<ScannedService, "species" | "zone" | "group" | "category">;
-
-function speciesForType(type: string): SpeciesMeta {
-  switch (type) {
+function groupForService(service: CfServiceKind): string {
+  switch (service) {
     case "D1":
     case "KV":
     case "Vectorize":
-      return {
-        species: "database",
-        zone: "data",
-        group: "data",
-        category: "database",
-      };
+      return "data";
     case "R2":
-      return {
-        species: "object_storage",
-        zone: "data",
-        group: "storage",
-        category: "storage",
-      };
+      return "storage";
     case "Queue":
-      return {
-        species: "queue",
-        zone: "compute",
-        group: "messaging",
-        category: "integration",
-      };
+      return "messaging";
     case "Worker":
-      return {
-        species: "microservice",
-        zone: "compute",
-        group: "compute",
-        category: "compute",
-      };
-    default:
-      return {
-        species: "microservice",
-        zone: "compute",
-        group: "compute",
-        category: "compute",
-      };
+      return "compute";
   }
 }
 
-function withCategory(
-  service: Omit<
-    RawService,
-    | "category"
-    | "color"
-    | "species"
-    | "health"
-    | "zone"
-    | "metrics"
-    | "group"
-    | "width"
-    | "depth"
-  >,
-): RawService {
-  const meta = speciesForType(service.type);
-  return {
-    ...service,
-    ...meta,
-    color: "#111827",
-    health: "healthy",
-    width: 1,
-    depth: 1,
-    metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
-  };
+function formatCorsEntries(
+  rules: Array<{
+    allowedOrigins?: string[];
+    allowedMethods?: string[];
+  }>,
+): string[] {
+  const entries: string[] = [];
+  for (const rule of rules) {
+    const origins = rule.allowedOrigins ?? [];
+    const methods = rule.allowedMethods ?? [];
+    for (const method of methods) {
+      for (const origin of origins) {
+        entries.push(`${method} ${origin}`);
+      }
+    }
+  }
+  return entries;
+}
+
+function workerViewLogUrl(accountId: string, name: string) {
+  return `https://dash.cloudflare.com/${accountId}/workers/services/view/${encodeURIComponent(name)}/production/observability/events`;
+}
+
+function r2S3ApiUrl(accountId: string, bucketName: string) {
+  return `https://${accountId}.r2.cloudflarestorage.com/${bucketName}`;
 }
 
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -159,6 +139,15 @@ function isAuthFailure(error: unknown): boolean {
 function isRateLimited(error: unknown): boolean {
   const text = errorText(error);
   return /\b429\b/.test(text) || text.includes("10502");
+}
+
+/** Cloudflare returns 404 / code 10059 when a bucket has no CORS policy yet. */
+function isMissingR2CorsConfig(error: unknown): boolean {
+  const text = errorText(error);
+  return (
+    text.includes("10059") ||
+    text.includes("The CORS configuration does not exist")
+  );
 }
 
 function formatAuthFailure(namespace: string, error: unknown): string {
@@ -621,97 +610,129 @@ async function fetchAccountInfrastructure(
   function trackService(service: RawService) {
     services.push(service);
     log("scanning service", {
-      type: service.type,
+      service: service.service,
       name: service.name,
       id: service.id,
-      ...(service.additionalInfo
-        ? { additionalInfo: service.additionalInfo }
-        : {}),
     });
   }
 
   for (const name of workerList.names) {
-    const domain =
+    const entryDomain =
       workerDomains.get(name) ??
       (workersDevSubdomain
         ? `${name}.${workersDevSubdomain}.workers.dev`
-        : undefined);
-    trackService(
-      withCategory({
-        id: serviceId(ns, accountId, "worker", name),
-        type: "Worker",
-        name,
-        connections: [],
-        lookupKeys: [name],
-        additionalInfo: domain,
-      }),
-    );
+        : "");
+    const fields: ServiceFields = {
+      networking: {
+        "bool:Is Open To Internet": Boolean(entryDomain),
+        ...(entryDomain ? { "link:Entry Domain": entryDomain } : {}),
+      },
+      observability: {
+        "link:View Logs": workerViewLogUrl(accountId, name),
+      },
+    };
+    trackService({
+      id: serviceId(ns, accountId, "worker", name),
+      sourceType: "cf",
+      service: "Worker",
+      name,
+      group: groupForService("Worker"),
+      connections: [],
+      fields,
+      lookupKeys: [name],
+    });
   }
 
   for (const kv of kvNamespaces) {
-    trackService(
-      withCategory({
-        id: serviceId(ns, accountId, "kv", kv.id),
-        type: "KV",
-        name: kv.title,
-        connections: [],
-        lookupKeys: [kv.id, kv.title],
-      }),
-    );
+    trackService({
+      id: serviceId(ns, accountId, "kv", kv.id),
+      sourceType: "cf",
+      service: "KV",
+      name: kv.title,
+      group: groupForService("KV"),
+      connections: [],
+      fields: {
+        networking: {
+          "bool:Is Open To Internet": false,
+        },
+      },
+      lookupKeys: [kv.id, kv.title],
+    });
   }
 
   for (const db of d1Databases) {
     if (!db.uuid || !db.name) continue;
-    trackService(
-      withCategory({
-        id: serviceId(ns, accountId, "d1", db.uuid),
-        type: "D1",
-        name: db.name,
-        connections: [],
-        lookupKeys: [db.uuid, db.name],
-      }),
-    );
+    trackService({
+      id: serviceId(ns, accountId, "d1", db.uuid),
+      sourceType: "cf",
+      service: "D1",
+      name: db.name,
+      group: groupForService("D1"),
+      connections: [],
+      fields: {
+        networking: {
+          "bool:Is Open To Internet": false,
+        },
+      },
+      lookupKeys: [db.uuid, db.name],
+    });
   }
 
   for (const bucket of r2Response.buckets ?? []) {
     if (!bucket.name) continue;
-    trackService(
-      withCategory({
-        id: serviceId(ns, accountId, "r2", bucket.name),
-        type: "R2",
-        name: bucket.name,
-        connections: [],
-        lookupKeys: [bucket.name],
-      }),
-    );
+    trackService({
+      id: serviceId(ns, accountId, "r2", bucket.name),
+      sourceType: "cf",
+      service: "R2",
+      name: bucket.name,
+      group: groupForService("R2"),
+      connections: [],
+      fields: {
+        networking: {
+          "bool:Is Open To Internet": false,
+          "link:S3 API URL": r2S3ApiUrl(accountId, bucket.name),
+        },
+      },
+      lookupKeys: [bucket.name],
+    });
   }
 
   for (const index of vectorizeIndexes) {
     if (!index.name) continue;
-    trackService(
-      withCategory({
-        id: serviceId(ns, accountId, "vectorize", index.name),
-        type: "Vectorize",
-        name: index.name,
-        connections: [],
-        lookupKeys: [index.name],
-      }),
-    );
+    trackService({
+      id: serviceId(ns, accountId, "vectorize", index.name),
+      sourceType: "cf",
+      service: "Vectorize",
+      name: index.name,
+      group: groupForService("Vectorize"),
+      connections: [],
+      fields: {
+        networking: {
+          "bool:Is Open To Internet": false,
+        },
+      },
+      lookupKeys: [index.name],
+    });
   }
 
   for (const queue of queues) {
     const name = queue.queue_name;
     const id = queue.queue_id ?? name;
     if (!name || !id) continue;
-    trackService(
-      withCategory({
-        id: serviceId(ns, accountId, "queue", id),
-        type: "Queue",
-        name,
-        connections: [],
-        lookupKeys: [name, id],
-      }),
-    );
+    trackService({
+      id: serviceId(ns, accountId, "queue", id),
+      sourceType: "cf",
+      service: "Queue",
+      name,
+      group: groupForService("Queue"),
+      connections: [],
+      fields: {
+        networking: {
+          "bool:Is Open To Internet": false,
+        },
+      },
+      lookupKeys: [name, id],
+    });
   }
 
   const byKvId = new Map<string, string>();
@@ -722,15 +743,16 @@ async function fetchAccountInfrastructure(
   const byWorkerName = new Map<string, string>();
 
   for (const service of services) {
-    if (service.type === "Worker") byWorkerName.set(service.name, service.id);
-    else if (service.type === "KV")
+    if (service.service === "Worker")
+      byWorkerName.set(service.name, service.id);
+    else if (service.service === "KV")
       byKvId.set(service.lookupKeys[0]!, service.id);
-    else if (service.type === "D1")
+    else if (service.service === "D1")
       byD1Id.set(service.lookupKeys[0]!, service.id);
-    else if (service.type === "R2") byR2Name.set(service.name, service.id);
-    else if (service.type === "Vectorize")
+    else if (service.service === "R2") byR2Name.set(service.name, service.id);
+    else if (service.service === "Vectorize")
       byVectorizeName.set(service.name, service.id);
-    else if (service.type === "Queue")
+    else if (service.service === "Queue")
       byQueueName.set(service.name, service.id);
   }
 
@@ -743,7 +765,93 @@ async function fetchAccountInfrastructure(
     byWorkerName,
   };
 
-  const workerServices = services.filter((s) => s.type === "Worker");
+  const r2Services = services.filter((s) => s.service === "R2");
+  if (r2Services.length > 0) {
+    log("fetching r2 networking", {
+      buckets: r2Services.length,
+      concurrency: BINDING_CONCURRENCY,
+    });
+    await mapPool(r2Services, BINDING_CONCURRENCY, async (bucket) => {
+      const start = Date.now();
+      const account = { account_id: accountId };
+
+      const [managedResult, customResult, corsResult] = await Promise.all([
+        settled(
+          withTimeout(
+            client.r2.buckets.domains.managed.list(bucket.name, account),
+            BINDING_TIMEOUT_MS,
+            `r2.managed:${bucket.name}`,
+          ),
+          null,
+          `r2.managed:${bucket.name}`,
+        ),
+        settled(
+          withTimeout(
+            client.r2.buckets.domains.custom.list(bucket.name, account),
+            BINDING_TIMEOUT_MS,
+            `r2.custom:${bucket.name}`,
+          ),
+          null,
+          `r2.custom:${bucket.name}`,
+        ),
+        settled(
+          withTimeout(
+            client.r2.buckets.cors.get(bucket.name, account).catch((error) => {
+              // No CORS configured is a normal bucket state, not a scan failure.
+              if (isMissingR2CorsConfig(error)) return { rules: [] };
+              throw error;
+            }),
+            BINDING_TIMEOUT_MS,
+            `r2.cors:${bucket.name}`,
+          ),
+          null,
+          `r2.cors:${bucket.name}`,
+        ),
+      ]);
+
+      const listedDomains = customResult.value?.domains ?? [];
+      const customDomains = listedDomains
+        .map((domain) => domain.domain)
+        .filter((domain): domain is string => Boolean(domain));
+      const enabledCustomDomain = listedDomains.some(
+        (domain) => domain.enabled && domain.domain,
+      );
+
+      const managedEnabled = Boolean(managedResult.value?.enabled);
+      const corsEntries = formatCorsEntries(
+        (corsResult.value?.rules ?? []).map((rule) => ({
+          allowedOrigins: rule.allowed?.origins ?? [],
+          allowedMethods: rule.allowed?.methods ?? [],
+        })),
+      );
+
+      const networking = {
+        ...(bucket.fields.networking ?? {}),
+        "bool:Is Open To Internet": managedEnabled || enabledCustomDomain,
+        ...(customDomains.length > 0
+          ? { "link:Custom Domains": customDomains }
+          : {}),
+        ...(corsEntries.length > 0 ? { cors: corsEntries } : {}),
+      };
+      bucket.fields = {
+        ...bucket.fields,
+        networking,
+      };
+
+      log("r2 networking resolved", {
+        bucket: bucket.name,
+        customDomains: customDomains.length,
+        corsRules: corsEntries.length,
+        isOpenToInternet: managedEnabled || enabledCustomDomain,
+        duration: elapsed(start),
+        ...(managedResult.error ? { managedError: managedResult.error } : {}),
+        ...(customResult.error ? { customError: customResult.error } : {}),
+        ...(corsResult.error ? { corsError: corsResult.error } : {}),
+      });
+    });
+  }
+
+  const workerServices = services.filter((s) => s.service === "Worker");
   const bindingsStart = Date.now();
   let bindingsOk = 0;
   let bindingsFailed = 0;
@@ -908,7 +1016,7 @@ export async function scrapeCloudflare(
 
   console.log(`[scan:cf] services scanned (${cleaned.length}):`);
   for (const service of cleaned) {
-    console.log(`  - ${service.type}: ${service.name}`);
+    console.log(`  - ${service.service}: ${service.name}`);
   }
 
   log("scrape complete", {

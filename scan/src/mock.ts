@@ -24,9 +24,6 @@ const GROUP_COUNT = 100;
 const MIN_KINDS_PER_GROUP = 3;
 const MAX_KINDS_PER_GROUP = 6;
 
-const ZONES = ["payment", "auth", "edge", "data", "compute"] as const;
-const HEALTH = ["healthy", "warning", "critical"] as const;
-
 const GROUP_NAMES = [
   "auth",
   "billing",
@@ -81,76 +78,20 @@ const SUFFIXES = [
   "system",
 ] as const;
 
-const COLORS = [
-  "#111827",
-  "#1e3a5f",
-  "#14532d",
-  "#713f12",
-  "#4c1d95",
-  "#7f1d1d",
-  "#0f766e",
-  "#1e40af",
-] as const;
-
 /** Distinct service kinds that can be mixed inside a group. */
 const SERVICE_KINDS = [
-  {
-    type: "Worker",
-    species: "microservice",
-    category: "compute",
-  },
-  {
-    type: "D1",
-    species: "database",
-    category: "database",
-  },
-  {
-    type: "KV",
-    species: "database",
-    category: "database",
-  },
-  {
-    type: "R2",
-    species: "object_storage",
-    category: "storage",
-  },
-  {
-    type: "Queue",
-    species: "queue",
-    category: "integration",
-  },
-  {
-    type: "Vectorize",
-    species: "database",
-    category: "database",
-  },
-  {
-    type: "Gateway",
-    species: "api_gateway",
-    category: "integration",
-  },
-  {
-    type: "CDN",
-    species: "cdn_edge",
-    category: "compute",
-  },
-  {
-    type: "LoadBalancer",
-    species: "load_balancer",
-    category: "compute",
-  },
-] as const satisfies ReadonlyArray<{
-  type: string;
-  species: ScannedService["species"];
-  category: ScannedService["category"];
-}>;
+  "Worker",
+  "D1",
+  "KV",
+  "R2",
+  "Queue",
+  "Vectorize",
+] as const;
 
 type ServiceKind = (typeof SERVICE_KINDS)[number];
 
 type MockGroup = {
   group: string;
-  zone: ScannedService["zone"];
-  color: string;
   /** Mixture of kinds that members of this group will draw from. */
   kinds: ServiceKind[];
 };
@@ -169,22 +110,17 @@ function pick<T>(rand: () => number, items: readonly T[]): T {
   return items[Math.floor(rand() * items.length)]!;
 }
 
-function shuffle<T>(rand: () => number, items: readonly T[]): T[] {
-  const next = [...items];
-  for (let i = next.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(rand() * (i + 1));
-    const tmp = next[i]!;
-    next[i] = next[j]!;
-    next[j] = tmp;
-  }
-  return next;
-}
-
 function pickKinds(rand: () => number): ServiceKind[] {
   const count =
     MIN_KINDS_PER_GROUP +
     Math.floor(rand() * (MAX_KINDS_PER_GROUP - MIN_KINDS_PER_GROUP + 1));
-  return shuffle(rand, SERVICE_KINDS).slice(0, count);
+  const pool = [...SERVICE_KINDS];
+  const kinds: ServiceKind[] = [];
+  while (kinds.length < count && pool.length > 0) {
+    const index = Math.floor(rand() * pool.length);
+    kinds.push(pool.splice(index, 1)[0]!);
+  }
+  return kinds;
 }
 
 function buildGroups(rand: () => number): MockGroup[] {
@@ -192,29 +128,17 @@ function buildGroups(rand: () => number): MockGroup[] {
   const used = new Set<string>();
 
   while (groups.length < GROUP_COUNT) {
-    const base = pick(rand, GROUP_NAMES);
-    const suffix = pick(rand, SUFFIXES);
-    const group = `${base}-${suffix}`;
+    const group = `${pick(rand, GROUP_NAMES)}-${pick(rand, SUFFIXES)}`;
     if (used.has(group)) continue;
     used.add(group);
 
     groups.push({
       group,
-      zone: pick(rand, ZONES),
-      color: pick(rand, COLORS),
       kinds: pickKinds(rand),
     });
   }
 
   return groups;
-}
-
-function randomMetrics(rand: () => number): ScannedService["metrics"] {
-  return {
-    rps: Math.round(rand() * 5000),
-    errorRate: Number((rand() * 0.08).toFixed(4)),
-    latencyMs: Math.round(8 + rand() * 240),
-  };
 }
 
 /**
@@ -236,6 +160,63 @@ function allocateMembership(
   }
 
   return membership;
+}
+
+function buildService(
+  kind: ServiceKind,
+  base: {
+    id: string;
+    name: string;
+    group: string;
+    connections: string[];
+  },
+): ScannedService {
+  const shared = {
+    ...base,
+    sourceType: "cf",
+  };
+
+  switch (kind) {
+    case "Worker":
+      return {
+        ...shared,
+        service: "Worker",
+        fields: {
+          networking: {
+            "bool:Is Open To Internet": true,
+            "link:Entry Domain": `${base.name}.example.workers.dev`,
+          },
+          observability: {
+            "link:View Logs": `https://dash.cloudflare.com/mock/workers/services/view/${encodeURIComponent(base.name)}/production/observability/events`,
+          },
+        },
+      };
+    case "R2":
+      return {
+        ...shared,
+        service: "R2",
+        fields: {
+          networking: {
+            "bool:Is Open To Internet": false,
+            "link:S3 API URL": `https://mock.r2.cloudflarestorage.com/${base.name}`,
+            cors: ["GET https://example.com", "PUT https://example.com"],
+          },
+        },
+      };
+    case "D1":
+    case "KV":
+    case "Queue":
+    case "Vectorize":
+      return {
+        ...shared,
+        service: kind,
+        fields: {
+          networking: {
+            "bool:Is Open To Internet": false,
+          },
+        },
+      };
+  }
 }
 
 /** Build 1000 scanned services across ~100 groups with mixed kinds per group. */
@@ -261,21 +242,14 @@ export function createMockServices(seed = 42): ScannedService[] {
     kindCursor[groupIndex] = cursor + 1;
 
     const n = i + 1;
-    services.push({
-      id: `mock-${String(n).padStart(4, "0")}`,
-      type: kind.type,
-      name: `${template.group}-${kind.type.toLowerCase()}-${String(n).padStart(4, "0")}`,
-      width: 1,
-      depth: 1,
-      group: template.group,
-      connections: [],
-      species: kind.species,
-      category: kind.category,
-      health: pick(rand, HEALTH),
-      zone: template.zone,
-      metrics: randomMetrics(rand),
-      color: template.color,
-    });
+    services.push(
+      buildService(kind, {
+        id: `mock-${String(n).padStart(4, "0")}`,
+        name: `${template.group}-${kind.toLowerCase()}-${String(n).padStart(4, "0")}`,
+        group: template.group,
+        connections: [],
+      }),
+    );
   }
 
   // Wire a few random connections so the UI has something to draw.
@@ -316,7 +290,7 @@ async function main() {
   const byGroup = new Map<string, Set<string>>();
   for (const service of db.services) {
     const types = byGroup.get(service.group) ?? new Set<string>();
-    types.add(service.type);
+    types.add(service.service);
     byGroup.set(service.group, types);
   }
 

@@ -17,8 +17,13 @@ import {
   FrostedPlatform,
   WorldGrid,
 } from "@/components/infrastructure/frosted-platform";
+import {
+  PUBLIC_INTERNET_ID,
+  PublicInternetCloud,
+} from "@/components/infrastructure/public-internet-cloud";
 import { ServiceConnectors } from "@/components/infrastructure/service-connectors";
 import { InstancedServiceBlocks } from "@/components/infrastructure/instanced-service-blocks";
+import { ServiceDetailSheet } from "@/components/infrastructure/service-detail-sheet";
 import { TopViewControls } from "@/components/infrastructure/top-view-controls";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cssToThreeColor } from "@/lib/css-color";
@@ -30,7 +35,8 @@ import {
   RENDER_WINDOW,
   windowAround,
 } from "@/lib/graph/service-streaming";
-import { SCENE } from "@/lib/infrastructure-styles";
+import { isOpenToInternet } from "@/lib/infrastructure-schema";
+import { CELL_SIZE, SCENE } from "@/lib/infrastructure-styles";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
@@ -39,6 +45,7 @@ export type ViewMode = "top" | "explore";
 type InfrastructureCanvasProps = {
   services: InfrastructureService[];
   platforms: PackLayoutResult["platforms"];
+  publicInternet: PackLayoutResult["publicInternet"];
   bounds: PackLayoutResult["bounds"];
 };
 
@@ -56,6 +63,43 @@ const TOP_STREAM_HALF = RENDER_HALF * 2.2;
 const EXPLORE_STREAM_HALF = RENDER_HALF * 1.6;
 const TOP_STREAM_MARGIN = RENDER_HALF * 0.8;
 const EXPLORE_STREAM_MARGIN = RENDER_HALF * 0.45;
+
+/** Synthetic hub so open-to-internet services can route connectors to the cloud. */
+function publicInternetHub(
+  platform: PackLayoutResult["publicInternet"],
+): InfrastructureService {
+  const width = platform.width / CELL_SIZE;
+  const depth = platform.depth / CELL_SIZE;
+  return {
+    id: PUBLIC_INTERNET_ID,
+    type: "PublicInternet",
+    name: "Public Internet",
+    x: platform.centerX / CELL_SIZE - width / 2,
+    y: platform.centerZ / CELL_SIZE - depth / 2,
+    width,
+    depth,
+    group: platform.group,
+    connections: [],
+    species: "cdn_edge",
+    category: "compute",
+    health: "healthy",
+    zone: "edge",
+    metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
+    color: SCENE.publicInternet,
+    fields: {},
+  };
+}
+
+function withPublicInternetLink(
+  service: InfrastructureService,
+): InfrastructureService {
+  if (!isOpenToInternet(service.fields)) return service;
+  if (service.connections.includes(PUBLIC_INTERNET_ID)) return service;
+  return {
+    ...service,
+    connections: [...service.connections, PUBLIC_INTERNET_ID],
+  };
+}
 
 function sameServiceIds(
   a: InfrastructureService[],
@@ -194,6 +238,7 @@ function CameraModeSync({ viewMode }: { viewMode: ViewMode }) {
 function Scene({
   services,
   platforms,
+  publicInternet,
   bounds,
   viewMode,
   selectedServiceId,
@@ -215,7 +260,8 @@ function Scene({
   const inboundByTarget = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const service of services) {
-      for (const targetId of service.connections) {
+      const linked = withPublicInternetLink(service);
+      for (const targetId of linked.connections) {
         const list = map.get(targetId);
         if (list) list.push(service.id);
         else map.set(targetId, [service.id]);
@@ -223,6 +269,10 @@ function Scene({
     }
     return map;
   }, [services]);
+  const internetHub = useMemo(
+    () => publicInternetHub(publicInternet),
+    [publicInternet],
+  );
   const windowHalf = streamWindowHalf(viewMode);
   const margin = streamMargin(viewMode);
 
@@ -352,26 +402,39 @@ function Scene({
   );
 
   // Keep one-hop neighbors so connectors at the window edge stay intact.
+  // Open-to-internet services also link to the synthetic public-internet hub.
+  // The hub is always present so unrelated connectors route around the cloud.
   const connectorServices = useMemo(() => {
     if (visibleServices.length === 0) return visibleServices;
     const extra = new Map<string, InfrastructureService>();
+
     for (const service of visibleServices) {
-      extra.set(service.id, service);
-      for (const targetId of service.connections) {
+      const linked = withPublicInternetLink(service);
+      extra.set(linked.id, linked);
+
+      for (const targetId of linked.connections) {
+        if (targetId === PUBLIC_INTERNET_ID) continue;
         if (extra.has(targetId)) continue;
         const target = servicesById.get(targetId);
-        if (target) extra.set(target.id, target);
+        if (target) extra.set(target.id, withPublicInternetLink(target));
       }
       const inbound = inboundByTarget.get(service.id);
       if (!inbound) continue;
       for (const sourceId of inbound) {
         if (extra.has(sourceId)) continue;
         const source = servicesById.get(sourceId);
-        if (source) extra.set(source.id, source);
+        if (source) extra.set(source.id, withPublicInternetLink(source));
       }
     }
+
+    // Always include the hub AABB so paths treat it like a service block,
+    // except when the path's source/target is the hub itself.
+    // (Do not pull every internet-open service on the map — that forced a
+    // full connector rebuild across the whole graph whenever the cloud was
+    // in view and froze the main thread.)
+    extra.set(internetHub.id, internetHub);
     return [...extra.values()];
-  }, [servicesById, inboundByTarget, visibleServices]);
+  }, [servicesById, inboundByTarget, internetHub, visibleServices]);
 
   return (
     <>
@@ -412,6 +475,13 @@ function Scene({
         />
       ))}
 
+      <PublicInternetCloud
+        centerX={publicInternet.centerX}
+        centerZ={publicInternet.centerZ}
+        width={publicInternet.width}
+        depth={publicInternet.depth}
+      />
+
       <InstancedServiceBlocks services={visibleServices} />
 
       <ServiceConnectors
@@ -435,6 +505,7 @@ function Scene({
 export function InfrastructureCanvas({
   services,
   platforms,
+  publicInternet,
   bounds,
 }: InfrastructureCanvasProps) {
   const frame = useMemo(() => getCameraFrame(bounds), [bounds]);
@@ -450,9 +521,10 @@ export function InfrastructureCanvas({
     () => new Map(services.map((service) => [service.id, service])),
     [services],
   );
-  const selectedName = selectedServiceId
-    ? (servicesById.get(selectedServiceId)?.name ?? selectedServiceId)
+  const selectedService = selectedServiceId
+    ? (servicesById.get(selectedServiceId) ?? null)
     : null;
+  const selectedName = selectedService?.name ?? null;
 
   useEffect(() => {
     if (viewMode !== "explore" && lookLocked) {
@@ -514,6 +586,7 @@ export function InfrastructureCanvas({
           <Scene
             services={services}
             platforms={platforms}
+            publicInternet={publicInternet}
             bounds={bounds}
             viewMode={viewMode}
             selectedServiceId={selectedServiceId}
@@ -561,6 +634,13 @@ export function InfrastructureCanvas({
       <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md bg-black/50 px-3 py-1.5 font-mono text-[11px] tracking-wide text-white/75 backdrop-blur-sm">
         {helpText}
       </div>
+
+      <ServiceDetailSheet
+        service={selectedService}
+        onOpenChange={(open) => {
+          if (!open) setSelectedServiceId(null);
+        }}
+      />
     </div>
   );
 }

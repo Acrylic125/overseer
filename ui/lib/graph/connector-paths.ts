@@ -739,7 +739,7 @@ export function buildConnectorPath(
 }
 
 /** Above this, skip per-segment obstacle walks — they are O(paths × services). */
-const OBSTACLE_ROUTING_MAX_SERVICES = 350;
+const OBSTACLE_ROUTING_MAX_SERVICES = 120;
 
 export function buildAllConnectorPaths(
   services: InfrastructureService[],

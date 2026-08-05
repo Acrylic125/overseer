@@ -39,6 +39,8 @@ export const SCENE = {
   connector: "oklch(37.2% 0.044 257.287)",
   /** Bright accent for connectors linked to the selected service. */
   connectorHighlight: "#8ec7ff",
+  /** Public-internet cloud mass. */
+  publicInternet: "oklch(37.2% 0.044 257.287)",
 } as const;
 
 export const PLATFORM_THICKNESS = 0.15;
@@ -46,6 +48,30 @@ export const PLATFORM_THICKNESS = 0.15;
 export const PLATFORM_PAD = 0.75;
 /** Minimum edge-to-edge gap between group platforms (cells). */
 export const PLATFORM_SEPARATION = 4;
+/**
+ * Public-internet cloud footprint at 1 service platform (3×2 cells).
+ * Actual size = BASE * sqrt(platformCount), rounded per axis.
+ */
+export const PUBLIC_INTERNET_BASE_WIDTH = 3;
+export const PUBLIC_INTERNET_BASE_DEPTH = 2;
+export const PUBLIC_INTERNET_GROUP = "public-internet";
+
+/** Cloud platform width×depth in cells for a given service-platform count. */
+export function publicInternetFootprint(platformCount: number) {
+  const n = Math.max(1, platformCount);
+  const s = Math.sqrt(n);
+  return {
+    width: Math.max(
+      PUBLIC_INTERNET_BASE_WIDTH,
+      Math.round(PUBLIC_INTERNET_BASE_WIDTH * s),
+    ),
+    depth: Math.max(
+      PUBLIC_INTERNET_BASE_DEPTH,
+      Math.round(PUBLIC_INTERNET_BASE_DEPTH * s),
+    ),
+  };
+}
+
 export const BLOCK_GAP = 1;
 export const MATERIAL_ROUGHNESS = 0.28;
 export const GRID_MAJOR_EVERY = 4;

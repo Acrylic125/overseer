@@ -52,6 +52,7 @@ export function InfrastructureView() {
       <InfrastructureCanvas
         services={data.services}
         platforms={data.platforms}
+        publicInternet={data.publicInternet}
         bounds={data.bounds}
       />
       {data.warnings[0] ? (

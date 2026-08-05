@@ -94,3 +94,15 @@ export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;
 export type ScannedService = z.infer<typeof scannedServiceSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
+
+const OPEN_TO_INTERNET_KEY = "bool:Is Open To Internet";
+
+/** True when `fields.networking["bool:Is Open To Internet"]` is set. */
+export function isOpenToInternet(
+  fields: ServiceFields | null | undefined,
+): boolean {
+  const value = fields?.networking?.[OPEN_TO_INTERNET_KEY];
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.some(Boolean);
+  return false;
+}

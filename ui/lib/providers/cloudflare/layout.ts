@@ -20,6 +20,13 @@ export type LayoutResult = {
     width: number;
     depth: number;
   }[];
+  publicInternet: {
+    group: string;
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  };
   bounds: {
     centerX: number;
     centerZ: number;
@@ -72,6 +79,7 @@ export function layoutServices(
     edges: [],
     centerGuide: { x: 0, y: 0, radius: maxR + 4 },
     platforms: packed.platforms,
+    publicInternet: packed.publicInternet,
     bounds: packed.bounds,
   };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
 import {
@@ -773,33 +773,42 @@ function useIconAssetMap(services: InfrastructureService[]) {
 
   const keysSig = keys.join("|");
   const [assets, setAssets] = useState(() => new Map<string, IconAsset>());
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
 
   useEffect(() => {
     let cancelled = false;
     const wanted = keysSig.split("|").filter(Boolean);
+    const missing = wanted.filter((key) => !assetsRef.current.has(key));
+    if (missing.length === 0) return;
 
     void (async () => {
-      const next = new Map<string, IconAsset>();
+      const loaded = new Map<string, IconAsset>();
       await Promise.all(
-        wanted.map(async (key) => {
+        missing.map(async (key) => {
           try {
             if (key.startsWith("svg:")) {
               const geometry = await loadSvgIconGeometry(key.slice(4));
-              next.set(key, { kind: "svg", geometry });
+              loaded.set(key, { kind: "svg", geometry });
             } else {
               const category = key.slice(7) as InfrastructureCategory;
               const texture = await loadLucideIconTexture(
                 lucideNodesFor(category),
                 "#111827",
               );
-              next.set(key, { kind: "lucide", texture });
+              loaded.set(key, { kind: "lucide", texture });
             }
           } catch {
             // Skip failed icons.
           }
         }),
       );
-      if (!cancelled) setAssets(next);
+      if (cancelled || loaded.size === 0) return;
+      setAssets((prev) => {
+        const next = new Map(prev);
+        for (const [key, asset] of loaded) next.set(key, asset);
+        return next;
+      });
     })();
 
     return () => {

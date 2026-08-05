@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useMemo } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
 import { cssToThreeColor } from "@/lib/css-color";
@@ -18,7 +18,6 @@ const JOINT_RADIUS = CONNECTOR_SIZE * 0.55;
 const HIGHLIGHT_SCALE = 1.55;
 
 let connectorMaterial: THREE.MeshStandardMaterial | null = null;
-let dimMaterial: THREE.MeshStandardMaterial | null = null;
 let highlightMaterial: THREE.MeshStandardMaterial | null = null;
 let segmentGeometry: THREE.BoxGeometry | null = null;
 let jointGeometry: THREE.SphereGeometry | null = null;
@@ -40,27 +39,6 @@ function getConnectorMaterial() {
     connectorMaterial.emissiveIntensity = 0.08;
   }
   return connectorMaterial;
-}
-
-function getDimMaterial() {
-  const color = cssToThreeColor(SCENE.connector);
-  if (!dimMaterial) {
-    dimMaterial = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.02,
-      roughness: 0.5,
-      metalness: 0.05,
-      flatShading: true,
-      transparent: true,
-      opacity: 0.22,
-      depthWrite: false,
-    });
-  } else {
-    dimMaterial.color.copy(color);
-    dimMaterial.emissive.copy(color);
-  }
-  return dimMaterial;
 }
 
 function getHighlightMaterial() {
@@ -204,6 +182,27 @@ function pathLinkedTo(path: ConnectorPath, serviceId: string) {
   return path.sourceId === serviceId || path.targetId === serviceId;
 }
 
+function servicesSignature(services: InfrastructureService[]) {
+  // Identity + connection lists — enough to know routing inputs changed.
+  let sig = `${services.length}|`;
+  for (const service of services) {
+    sig += service.id;
+    sig += ">";
+    sig += service.connections.join(",");
+    sig += ";";
+  }
+  return sig;
+}
+
+function scheduleIdle(fn: () => void): () => void {
+  if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+    const id = window.requestIdleCallback(() => fn(), { timeout: 180 });
+    return () => window.cancelIdleCallback(id);
+  }
+  const id = window.setTimeout(fn, 0);
+  return () => window.clearTimeout(id);
+}
+
 export function ServiceConnectors({
   services,
   selectedServiceId = null,
@@ -211,30 +210,41 @@ export function ServiceConnectors({
   services: InfrastructureService[];
   selectedServiceId?: string | null;
 }) {
-  const paths = useMemo(() => buildAllConnectorPaths(services), [services]);
+  const signature = useMemo(() => servicesSignature(services), [services]);
+  const servicesRef = useRef(services);
+  servicesRef.current = services;
+
+  const [paths, setPaths] = useState<ConnectorPath[]>([]);
+
+  // Build routes off the critical render path — sync useMemo was freezing pans.
+  useEffect(() => {
+    let cancelled = false;
+    const cancel = scheduleIdle(() => {
+      if (cancelled) return;
+      setPaths(buildAllConnectorPaths(servicesRef.current));
+    });
+    return () => {
+      cancelled = true;
+      cancel();
+    };
+  }, [signature]);
 
   const meshes = useMemo(() => {
     if (!selectedServiceId) {
       const { segments, joints } = collectFromPaths(paths);
       const built = buildMeshes(segments, joints, getConnectorMaterial());
       return {
-        dimSeg: null as THREE.InstancedMesh | null,
-        dimJoint: null as THREE.InstancedMesh | null,
-        hiSeg: built.segmentMesh,
-        hiJoint: built.jointMesh,
+        allSeg: built.segmentMesh,
+        allJoint: built.jointMesh,
+        hiSeg: null as THREE.InstancedMesh | null,
+        hiJoint: null as THREE.InstancedMesh | null,
       };
     }
 
-    const linked: ConnectorPath[] = [];
-    const other: ConnectorPath[] = [];
-    for (const path of paths) {
-      if (pathLinkedTo(path, selectedServiceId)) linked.push(path);
-      else other.push(path);
-    }
-
-    const dim = collectFromPaths(other);
+    const linked = paths.filter((path) =>
+      pathLinkedTo(path, selectedServiceId),
+    );
     const hi = collectFromPaths(linked);
-    const dimMeshes = buildMeshes(dim.segments, dim.joints, getDimMaterial());
     const hiMeshes = buildMeshes(
       hi.segments,
       hi.joints,
@@ -243,8 +253,8 @@ export function ServiceConnectors({
     );
 
     return {
-      dimSeg: dimMeshes.segmentMesh,
-      dimJoint: dimMeshes.jointMesh,
+      allSeg: null as THREE.InstancedMesh | null,
+      allJoint: null as THREE.InstancedMesh | null,
       hiSeg: hiMeshes.segmentMesh,
       hiJoint: hiMeshes.jointMesh,
     };
@@ -252,8 +262,8 @@ export function ServiceConnectors({
 
   useLayoutEffect(
     () => () => {
-      meshes.dimSeg?.dispose();
-      meshes.dimJoint?.dispose();
+      meshes.allSeg?.dispose();
+      meshes.allJoint?.dispose();
       meshes.hiSeg?.dispose();
       meshes.hiJoint?.dispose();
     },
@@ -262,8 +272,8 @@ export function ServiceConnectors({
 
   return (
     <group>
-      {meshes.dimSeg ? <primitive object={meshes.dimSeg} /> : null}
-      {meshes.dimJoint ? <primitive object={meshes.dimJoint} /> : null}
+      {meshes.allSeg ? <primitive object={meshes.allSeg} /> : null}
+      {meshes.allJoint ? <primitive object={meshes.allJoint} /> : null}
       {meshes.hiSeg ? <primitive object={meshes.hiSeg} /> : null}
       {meshes.hiJoint ? <primitive object={meshes.hiJoint} /> : null}
     </group>
