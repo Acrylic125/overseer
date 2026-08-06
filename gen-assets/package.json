@@ -1,0 +1,29 @@
+{
+  "name": "gen-assets",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Preprocess SVG icons into a single icons.glb for Three.js InstancedMesh",
+  "scripts": {
+    "icons": "tsx src/icons.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.26.0",
+  "dependencies": {
+    "@gltf-transform/core": "^4.2.1",
+    "@gltf-transform/extensions": "^4.2.1",
+    "@gltf-transform/functions": "^4.2.1",
+    "linkedom": "^0.18.12",
+    "meshoptimizer": "^1.2.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/three": "^0.185.4",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}
