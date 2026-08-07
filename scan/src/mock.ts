@@ -2,6 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { iconServiceForCfKind } from "./icons.js";
+import { layoutServices } from "./layout-service.js";
 import {
   infrastructureDbSchema,
   type InfrastructureDb,
@@ -180,7 +182,7 @@ function buildService(
     case "Worker":
       return {
         ...shared,
-        service: "Worker",
+        service: iconServiceForCfKind("Worker"),
         fields: {
           networking: {
             "bool:Is Open To Internet": true,
@@ -194,7 +196,7 @@ function buildService(
     case "R2":
       return {
         ...shared,
-        service: "R2",
+        service: iconServiceForCfKind("R2"),
         fields: {
           networking: {
             "bool:Is Open To Internet": false,
@@ -209,7 +211,7 @@ function buildService(
     case "Vectorize":
       return {
         ...shared,
-        service: kind,
+        service: iconServiceForCfKind(kind),
         fields: {
           networking: {
             "bool:Is Open To Internet": false,
@@ -269,10 +271,14 @@ export function createMockServices(seed = 42): ScannedService[] {
 }
 
 export function createMockInfrastructureDb(seed = 42): InfrastructureDb {
+  const services = createMockServices(seed);
+  const layout = layoutServices(services);
   return infrastructureDbSchema.parse({
     version: 1 as const,
     scannedAt: new Date().toISOString(),
-    services: createMockServices(seed),
+    services,
+    resources: layout.resources,
+    scene: layout.scene,
     warnings: ["Generated from scan/src/mock.ts"],
   });
 }
@@ -295,8 +301,14 @@ async function main() {
   }
 
   const mixed = [...byGroup.values()].filter((types) => types.size >= 2).length;
+  const platforms = db.resources.filter((r) => r.type === "platform").length;
+  const icons = db.resources.filter((r) => r.type === "icon").length;
+  const connectors = db.resources.filter((r) => r.type === "connector").length;
   console.log(
     `[mock] wrote ${db.services.length} services across ${byGroup.size} groups → ${outPath}`,
+  );
+  console.log(
+    `[mock] layout: ${platforms} platforms, ${icons} icons, ${connectors} connectors`,
   );
   console.log(
     `[mock] ${mixed}/${byGroup.size} groups contain a mixture of service types`,

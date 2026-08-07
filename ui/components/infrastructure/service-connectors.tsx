@@ -9,34 +9,31 @@ import {
   buildAllConnectorPaths,
   type ConnectorPath,
 } from "@/lib/graph/connector-paths";
+import type { SceneBake } from "@/lib/infrastructure-schema";
 import { SCENE } from "@/lib/infrastructure-styles";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
-/** Tube sits just above the platform top (y = 0). */
-const TUBE_Y = CONNECTOR_SIZE / 2 + 0.02;
-const JOINT_RADIUS = CONNECTOR_SIZE * 0.55;
+/** Flat ribbon thickness — centered on y = 0 (below icons at 0.01). */
+const CONNECTOR_THICKNESS = 0.008;
+const CONNECTOR_Y = 0;
+const JOINT_RADIUS = CONNECTOR_SIZE * 0.7;
 const HIGHLIGHT_SCALE = 1.55;
 
-let connectorMaterial: THREE.MeshStandardMaterial | null = null;
-let highlightMaterial: THREE.MeshStandardMaterial | null = null;
+let connectorMaterial: THREE.MeshBasicMaterial | null = null;
+let highlightMaterial: THREE.MeshBasicMaterial | null = null;
 let segmentGeometry: THREE.BoxGeometry | null = null;
-let jointGeometry: THREE.SphereGeometry | null = null;
+let jointGeometry: THREE.CylinderGeometry | null = null;
 
 function getConnectorMaterial() {
   const color = cssToThreeColor(SCENE.connector);
   if (!connectorMaterial) {
-    connectorMaterial = new THREE.MeshStandardMaterial({
+    connectorMaterial = new THREE.MeshBasicMaterial({
       color,
-      emissive: color,
-      emissiveIntensity: 0.08,
-      roughness: 0.42,
-      metalness: 0.08,
-      flatShading: true,
+      toneMapped: false,
+      depthWrite: true,
     });
   } else {
     connectorMaterial.color.copy(color);
-    connectorMaterial.emissive.copy(color);
-    connectorMaterial.emissiveIntensity = 0.08;
   }
   return connectorMaterial;
 }
@@ -44,36 +41,38 @@ function getConnectorMaterial() {
 function getHighlightMaterial() {
   const color = cssToThreeColor(SCENE.connectorHighlight);
   if (!highlightMaterial) {
-    highlightMaterial = new THREE.MeshStandardMaterial({
+    highlightMaterial = new THREE.MeshBasicMaterial({
       color,
-      emissive: color,
-      emissiveIntensity: 0.55,
-      roughness: 0.28,
-      metalness: 0.12,
-      flatShading: true,
+      toneMapped: false,
+      depthWrite: true,
     });
   } else {
     highlightMaterial.color.copy(color);
-    highlightMaterial.emissive.copy(color);
-    highlightMaterial.emissiveIntensity = 0.55;
   }
   return highlightMaterial;
 }
 
+/** Unit-length flat ribbon in XZ (width × thickness × length-1). */
 function getSegmentGeometry() {
   if (!segmentGeometry) {
     segmentGeometry = new THREE.BoxGeometry(
       CONNECTOR_SIZE,
-      CONNECTOR_SIZE,
+      CONNECTOR_THICKNESS,
       1,
     );
   }
   return segmentGeometry;
 }
 
+/** Flat disc joint (thin cylinder standing on Y). */
 function getJointGeometry() {
   if (!jointGeometry) {
-    jointGeometry = new THREE.SphereGeometry(JOINT_RADIUS, 8, 6);
+    jointGeometry = new THREE.CylinderGeometry(
+      JOINT_RADIUS,
+      JOINT_RADIUS,
+      CONNECTOR_THICKNESS,
+      12,
+    );
   }
   return jointGeometry;
 }
@@ -84,11 +83,20 @@ type SegmentInstance = {
   length: number;
   dx: number;
   dz: number;
+  sourceId?: string;
+  targetId?: string;
+};
+
+type JointInstance = {
+  x: number;
+  z: number;
+  sourceId?: string;
+  targetId?: string;
 };
 
 function collectFromPaths(paths: ConnectorPath[]) {
   const segments: SegmentInstance[] = [];
-  const joints: { x: number; z: number }[] = [];
+  const joints: JointInstance[] = [];
 
   for (const path of paths) {
     const pts = path.points;
@@ -105,20 +113,34 @@ function collectFromPaths(paths: ConnectorPath[]) {
         length,
         dx: dx / length,
         dz: dz / length,
+        sourceId: path.sourceId,
+        targetId: path.targetId,
       });
     }
     for (let i = 1; i < pts.length - 1; i += 1) {
       const p = pts[i]!;
-      joints.push({ x: p.x, z: p.z });
+      joints.push({
+        x: p.x,
+        z: p.z,
+        sourceId: path.sourceId,
+        targetId: path.targetId,
+      });
     }
   }
 
   return { segments, joints };
 }
 
+function linkedTo(
+  item: { sourceId?: string; targetId?: string },
+  serviceId: string,
+) {
+  return item.sourceId === serviceId || item.targetId === serviceId;
+}
+
 function buildMeshes(
   segments: SegmentInstance[],
-  joints: { x: number; z: number }[],
+  joints: JointInstance[],
   material: THREE.Material,
   scale = 1,
 ) {
@@ -141,8 +163,9 @@ function buildMeshes(
       const s = segments[i]!;
       dir.set(s.dx, 0, s.dz);
       quat.setFromUnitVectors(zAxis, dir);
-      dummy.position.set(s.midX, TUBE_Y, s.midZ);
-      dummy.scale.set(scale, scale, s.length);
+      dummy.position.set(s.midX, CONNECTOR_Y, s.midZ);
+      // Scale X (width) + Y (thickness) uniformly; Z stretches to segment length.
+      dummy.scale.set(scale, 1, s.length);
       dummy.quaternion.copy(quat);
       dummy.updateMatrix();
       segmentMesh.setMatrixAt(i, dummy.matrix);
@@ -154,18 +177,14 @@ function buildMeshes(
 
   const jointMesh =
     joints.length > 0
-      ? new THREE.InstancedMesh(
-          getJointGeometry(),
-          material,
-          joints.length,
-        )
+      ? new THREE.InstancedMesh(getJointGeometry(), material, joints.length)
       : null;
 
   if (jointMesh) {
     for (let i = 0; i < joints.length; i += 1) {
       const j = joints[i]!;
-      dummy.position.set(j.x, TUBE_Y, j.z);
-      dummy.scale.set(scale, scale, scale);
+      dummy.position.set(j.x, CONNECTOR_Y, j.z);
+      dummy.scale.set(scale, 1, scale);
       dummy.quaternion.identity();
       dummy.updateMatrix();
       jointMesh.setMatrixAt(i, dummy.matrix);
@@ -176,10 +195,6 @@ function buildMeshes(
   }
 
   return { segmentMesh, jointMesh };
-}
-
-function pathLinkedTo(path: ConnectorPath, serviceId: string) {
-  return path.sourceId === serviceId || path.targetId === serviceId;
 }
 
 function servicesSignature(services: InfrastructureService[]) {
@@ -206,18 +221,39 @@ function scheduleIdle(fn: () => void): () => void {
 export function ServiceConnectors({
   services,
   selectedServiceId = null,
+  /** When provided (from scan layout), skip client-side re-routing. */
+  precomputedPaths = null,
+  /** Dense bake from scan — preferred over deriving segments from paths. */
+  precomputedSegments = null,
+  precomputedJoints = null,
 }: {
   services: InfrastructureService[];
   selectedServiceId?: string | null;
+  precomputedPaths?: ConnectorPath[] | null;
+  precomputedSegments?: SceneBake["connectorSegments"] | null;
+  precomputedJoints?: SceneBake["connectorJoints"] | null;
 }) {
   const signature = useMemo(() => servicesSignature(services), [services]);
   const servicesRef = useRef(services);
   servicesRef.current = services;
 
-  const [paths, setPaths] = useState<ConnectorPath[]>([]);
+  const hasBakedInstances =
+    precomputedSegments != null && precomputedJoints != null;
 
-  // Build routes off the critical render path — sync useMemo was freezing pans.
+  const [paths, setPaths] = useState<ConnectorPath[]>(
+    () => precomputedPaths ?? [],
+  );
+
+  // Prefer scan-authored paths; otherwise build routes off the critical path.
+  // Skip entirely when segment instances are already baked.
   useEffect(() => {
+    if (hasBakedInstances) return;
+
+    if (precomputedPaths != null) {
+      setPaths(precomputedPaths);
+      return;
+    }
+
     let cancelled = false;
     const cancel = scheduleIdle(() => {
       if (cancelled) return;
@@ -227,12 +263,23 @@ export function ServiceConnectors({
       cancelled = true;
       cancel();
     };
-  }, [signature]);
+  }, [signature, precomputedPaths, hasBakedInstances]);
 
   const meshes = useMemo(() => {
+    const all =
+      hasBakedInstances
+        ? {
+            segments: precomputedSegments,
+            joints: precomputedJoints,
+          }
+        : collectFromPaths(paths);
+
     if (!selectedServiceId) {
-      const { segments, joints } = collectFromPaths(paths);
-      const built = buildMeshes(segments, joints, getConnectorMaterial());
+      const built = buildMeshes(
+        all.segments,
+        all.joints,
+        getConnectorMaterial(),
+      );
       return {
         allSeg: built.segmentMesh,
         allJoint: built.jointMesh,
@@ -241,13 +288,13 @@ export function ServiceConnectors({
       };
     }
 
-    const linked = paths.filter((path) =>
-      pathLinkedTo(path, selectedServiceId),
+    const hiSegments = all.segments.filter((s) =>
+      linkedTo(s, selectedServiceId),
     );
-    const hi = collectFromPaths(linked);
+    const hiJoints = all.joints.filter((j) => linkedTo(j, selectedServiceId));
     const hiMeshes = buildMeshes(
-      hi.segments,
-      hi.joints,
+      hiSegments,
+      hiJoints,
       getHighlightMaterial(),
       HIGHLIGHT_SCALE,
     );
@@ -258,7 +305,13 @@ export function ServiceConnectors({
       hiSeg: hiMeshes.segmentMesh,
       hiJoint: hiMeshes.jointMesh,
     };
-  }, [paths, selectedServiceId]);
+  }, [
+    paths,
+    selectedServiceId,
+    hasBakedInstances,
+    precomputedSegments,
+    precomputedJoints,
+  ]);
 
   useLayoutEffect(
     () => () => {

@@ -1,131 +1,135 @@
 "use client";
 
 import { Text } from "@react-three/drei";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
-import { cssToThreeColor } from "@/lib/css-color";
 import {
   CELL_SIZE,
   PUBLIC_INTERNET_BASE_DEPTH,
   PUBLIC_INTERNET_BASE_WIDTH,
-  SCENE,
 } from "@/lib/infrastructure-styles";
+import {
+  loadPlatformGradient,
+  loadShapeGeometry,
+} from "@/lib/platform-assets";
 
 export const PUBLIC_INTERNET_ID = "public-internet";
+/** `gen-assets/shapes/cloud.svg` mesh name in `/shapes.glb`. */
+export const PUBLIC_INTERNET_SHAPE = "cloud";
 
-type Puff = {
-  /** Position / scale authored for the BASE 3×2 footprint. */
-  position: [number, number, number];
-  /** Horizontal radius X and thin height Y; mesh scale is [X, Y, X]. */
-  scale: [number, number];
-};
-
-/**
- * Iconic cloud from five flat ellipsoids, authored for a 3×2 cell footprint.
- * Scale rule per lobe: [X, Y, X]. Lobe centers sit on y = 0.
- */
-const BASE_PUFFS: Puff[] = [
-  // Wide base
-  { position: [0.0, 0, 0.06], scale: [1.15, 0.28] },
-  // Left lobe
-  { position: [-0.95, 0, 0.02], scale: [0.75, 0.26] },
-  // Right lobe
-  { position: [1.0, 0, 0.02], scale: [0.8, 0.26] },
-  // Rear-left bump
-  { position: [-0.35, 0, -0.35], scale: [0.65, 0.3] },
-  // Peak bump
-  { position: [0.35, 0, -0.32], scale: [0.75, 0.32] },
-];
-
-/** Low tessellation is enough for flat ellipsoids; keeps the bake cheap. */
-const SPHERE_WIDTH_SEGMENTS = 16;
-const SPHERE_HEIGHT_SEGMENTS = 12;
-
-/** Baked once at base 3×2 — live footprints only scale this mesh. */
-let cachedCloudGeometry: THREE.BufferGeometry | null = null;
-
-function getCloudGeometry(): THREE.BufferGeometry {
-  if (cachedCloudGeometry) return cachedCloudGeometry;
-
-  const parts: THREE.BufferGeometry[] = [];
-  const matrix = new THREE.Matrix4();
-
-  for (const puff of BASE_PUFFS) {
-    const sx = puff.scale[0];
-    const sy = puff.scale[1];
-    matrix.makeScale(sx, sy, sx);
-    matrix.setPosition(puff.position[0], puff.position[1], puff.position[2]);
-
-    const part = new THREE.SphereGeometry(
-      1,
-      SPHERE_WIDTH_SEGMENTS,
-      SPHERE_HEIGHT_SEGMENTS,
-    );
-    part.applyMatrix4(matrix);
-    parts.push(part);
-  }
-
-  const merged = mergeGeometries(parts, false);
-  for (const part of parts) part.dispose();
-  if (!merged) {
-    throw new Error("Failed to merge public-internet cloud geometry");
-  }
-  merged.computeVertexNormals();
-  cachedCloudGeometry = merged;
-  return merged;
-}
+/** Lie flat on XZ (facing +Y). Parent group owns this so troika can't reset it. */
+const FLAT_ON_GROUND: [number, number, number] = [-Math.PI / 2, 0, 0];
+const TITLE_FONT = 0.35;
 
 type PublicInternetCloudProps = {
   centerX?: number;
   centerZ?: number;
-  /** Footprint width in world units (defaults to base 3). */
+  /** Footprint width in world units (defaults to base 4). */
   width?: number;
   /** Footprint depth in world units (defaults to base 2). */
   depth?: number;
+  /** Optional override; defaults to the cloud silhouette. */
+  shape?: string;
+  label?: string;
 };
 
+/**
+ * Public Internet hub — `cloud` shape from gen-assets with the shared
+ * platform gradient. Uniform scale preserves the SVG aspect ratio and fits
+ * inside the reserved width×depth footprint.
+ */
 export function PublicInternetCloud({
   centerX = 0,
   centerZ = 0,
   width = PUBLIC_INTERNET_BASE_WIDTH * CELL_SIZE,
   depth = PUBLIC_INTERNET_BASE_DEPTH * CELL_SIZE,
+  shape = PUBLIC_INTERNET_SHAPE,
+  label = "Public Internet",
 }: PublicInternetCloudProps) {
-  const color = useMemo(() => cssToThreeColor(SCENE.publicInternet), []);
-  const geometry = useMemo(() => getCloudGeometry(), []);
-  const scaleX = width / (PUBLIC_INTERNET_BASE_WIDTH * CELL_SIZE);
-  const scaleZ = depth / (PUBLIC_INTERNET_BASE_DEPTH * CELL_SIZE);
-  const scaleY = (scaleX + scaleZ) / 2;
-  const fontSize = Math.max(0.28, 0.36 * scaleX);
-  // Just above the tallest lobe (peak bump half-height 0.32).
-  const labelY = 0.45 * scaleY;
+  const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
+  const [gradient, setGradient] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([loadShapeGeometry(shape), loadPlatformGradient()]).then(
+      ([geo, texture]) => {
+        if (cancelled) {
+          geo.dispose();
+          return;
+        }
+        setGeometry(geo);
+        setGradient(texture);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [shape]);
+
+  useEffect(() => {
+    return () => {
+      geometry?.dispose();
+    };
+  }, [geometry]);
+
+  const material = useMemo(() => {
+    if (!gradient) return null;
+    return new THREE.MeshBasicMaterial({
+      map: gradient,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+      depthWrite: true,
+    });
+  }, [gradient]);
+
+  useEffect(() => {
+    return () => {
+      material?.dispose();
+    };
+  }, [material]);
+
+  const box = useMemo(() => {
+    if (!geometry) return null;
+    geometry.computeBoundingBox();
+    const bounds = geometry.boundingBox;
+    if (!bounds) return null;
+    // Bake/export may center the mesh — snap the top face to y = 0.
+    if (Math.abs(bounds.max.y) > 1e-6) {
+      geometry.translate(0, -bounds.max.y, 0);
+      geometry.computeBoundingBox();
+    }
+    return geometry.boundingBox;
+  }, [geometry]);
+
+  // Unit bake: longer side = 1. Scale uniformly so the silhouette isn't squished.
+  const baseW = box ? Math.max(box.max.x - box.min.x, 0.01) : 1;
+  const baseD = box ? Math.max(box.max.z - box.min.z, 0.01) : 0.49;
+  const scale = Math.min(width / baseW, depth / baseD);
+  const fontSize = Math.max(TITLE_FONT, 0.28 * scale);
+
+  if (!geometry || !material) return null;
 
   return (
     <group position={[centerX, 0, centerZ]}>
-      <mesh geometry={geometry} scale={[scaleX, scaleY, scaleZ]}>
-        <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={0.2}
-          roughness={0.72}
-          metalness={0}
-        />
-      </mesh>
+      <mesh geometry={geometry} material={material} scale={[scale, 1, scale]} />
 
-      <Text
-        position={[0, labelY, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={fontSize}
-        color="#d7dde5"
-        anchorX="center"
-        anchorY="middle"
-        renderOrder={3}
-        maxWidth={width * 0.9}
-        textAlign="center"
-      >
-        Public Internet
-      </Text>
+      <group position={[0, 0.001, 0]} rotation={FLAT_ON_GROUND}>
+        <Text
+          fontSize={fontSize}
+          color="#F8FAFC"
+          anchorX="center"
+          anchorY="middle"
+          maxWidth={Math.max(width * 0.9, fontSize)}
+          overflowWrap="normal"
+          whiteSpace="nowrap"
+          textAlign="center"
+          renderOrder={2}
+          depthOffset={-1}
+        >
+          {label}
+        </Text>
+      </group>
     </group>
   );
 }

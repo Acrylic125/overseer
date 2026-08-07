@@ -1,7 +1,14 @@
 # Overseer scan
 
-TypeScript Node scraper that pulls Cloudflare resources and writes a JSON
-"database" for the Next.js UI.
+TypeScript Node scrapers that pull provider resources, pack them into a
+layout, and write a JSON "database" for the Next.js UI.
+
+## Structure
+
+- `ServiceScanner` (`src/scanner.ts`) — provider scan contract
+- `scanners/cf-scanner.ts` — Cloudflare: (1) scan & transform, (2) group
+- `layout-service.ts` — cluster pack → shelf pack → platforms / icons / connectors
+- `connector-paths.ts` — orthogonal walk (ported from the UI path router)
 
 ## Setup
 

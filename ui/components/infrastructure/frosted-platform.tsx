@@ -1,7 +1,7 @@
 "use client";
 
 import { Text } from "@react-three/drei";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 
 import { cssToThreeColor } from "@/lib/css-color";
@@ -9,9 +9,16 @@ import {
   CELL_SIZE,
   GRID_EXTENT,
   GRID_MAJOR_EVERY,
-  PLATFORM_THICKNESS,
-  SCENE,
 } from "@/lib/infrastructure-styles";
+import { loadPlatformGradient } from "@/lib/platform-assets";
+import { createPlatformGeometries } from "@/lib/platform-mesh";
+
+/** Matches scan `GROUP_TITLE_HEIGHT`. */
+const TITLE_FONT = 0.35;
+/** Label at (0.5, 0.5) from the platform's top-left (scan layout contract). */
+const LABEL_INSET = 0.5;
+/** Lie flat on XZ (facing +Y). Parent group owns this so troika can't reset it. */
+const FLAT_ON_GROUND: [number, number, number] = [-Math.PI / 2, 0, 0];
 
 type PlatformProps = {
   group: string;
@@ -78,23 +85,18 @@ export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
     return geo;
   }, [major]);
 
-  const minorColor = useMemo(
-    () => cssToThreeColor(SCENE.gridMinor),
-    [SCENE.gridMinor],
-  );
-  const majorColor = useMemo(
-    () => cssToThreeColor(SCENE.gridMajor),
-    [SCENE.gridMajor],
-  );
+  const minorColor = useMemo(() => cssToThreeColor("#2A3344"), []);
+  const majorColor = useMemo(() => cssToThreeColor("#3B4556"), []);
 
   return (
-    <group position={[0, 0.001, 0]}>
+    <group position={[0, -0.04, 0]}>
       <lineSegments geometry={minorGeo}>
         <lineBasicMaterial
           color={minorColor}
           transparent
-          opacity={0.28}
+          opacity={0.35}
           depthWrite={false}
+          toneMapped={false}
         />
       </lineSegments>
       <lineSegments geometry={majorGeo}>
@@ -103,13 +105,17 @@ export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
           transparent
           opacity={0.55}
           depthWrite={false}
+          toneMapped={false}
         />
       </lineSegments>
     </group>
   );
 }
 
-/** Frosted glass slab under one group's blocks. */
+/**
+ * Squircle group platform — shape + gradient from `gen-assets`
+ * (parametric ExtrudeGeometry sized per pad, baked gradient map).
+ */
 export function FrostedPlatform({
   group,
   centerX,
@@ -117,44 +123,86 @@ export function FrostedPlatform({
   width,
   depth,
 }: PlatformProps) {
-  const platformColor = useMemo(
-    () => cssToThreeColor(SCENE.platform),
-    // Re-resolve when the scene token changes (incl. HMR).
-    [SCENE.platform],
-  );
-  // Flat on the platform top, just past the +Z edge — same placement as service labels.
-  const labelY = PLATFORM_THICKNESS / 2 + 0.09;
-  const labelZ = depth / 2 + 0.35;
+  const [gradient, setGradient] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadPlatformGradient().then((texture) => {
+      if (!cancelled) setGradient(texture);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const { body, border, bodyMaterial, borderMaterial } = useMemo(() => {
+    const { body: bodyGeo, border: borderGeo } = createPlatformGeometries(
+      width,
+      depth,
+      "xz",
+    );
+
+    const bodyMat = new THREE.MeshBasicMaterial({
+      map: gradient,
+      toneMapped: false,
+      side: THREE.FrontSide,
+      depthWrite: true,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
+    const borderMat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      toneMapped: false,
+      side: THREE.FrontSide,
+      depthWrite: true,
+    });
+
+    return {
+      body: bodyGeo,
+      border: borderGeo,
+      bodyMaterial: bodyMat,
+      borderMaterial: borderMat,
+    };
+  }, [width, depth, gradient]);
+
+  useEffect(() => {
+    return () => {
+      body.dispose();
+      border.dispose();
+      // Shared gradient map — do not dispose.
+      bodyMaterial.dispose();
+      borderMaterial.dispose();
+    };
+  }, [body, border, bodyMaterial, borderMaterial]);
+
+  // (0.5, 0.5) from top-left: scan y → world z; top = −Z edge of the platform.
+  const titlePos: [number, number, number] = [
+    -width / 2 + LABEL_INSET,
+    0.02,
+    -depth / 2 + LABEL_INSET,
+  ];
+
+  if (!gradient) return null;
 
   return (
-    <group position={[centerX, -PLATFORM_THICKNESS / 2, centerZ]}>
-      <mesh>
-        <boxGeometry args={[width, PLATFORM_THICKNESS, depth]} />
-        <meshPhysicalMaterial
-          color={platformColor}
-          roughness={0.8}
-          metalness={0}
-          transmission={0.12}
-          thickness={PLATFORM_THICKNESS * 2}
-          ior={1.45}
-          transparent
-          opacity={0.55}
-          depthWrite={false}
-          attenuationColor={platformColor}
-          attenuationDistance={0.5}
-        />
-      </mesh>
-      <Text
-        position={[0, labelY, labelZ]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={0.7}
-        color="#d7dde5"
-        anchorX="center"
-        anchorY="top"
-        renderOrder={2}
-      >
-        {group}
-      </Text>
+    <group position={[centerX, 0, centerZ]}>
+      <mesh geometry={body} material={bodyMaterial} />
+      <mesh geometry={border} material={borderMaterial} />
+      <group position={titlePos} rotation={FLAT_ON_GROUND}>
+        <Text
+          fontSize={TITLE_FONT}
+          color="#F8FAFC"
+          anchorX="left"
+          anchorY="top"
+          maxWidth={Math.max(width - LABEL_INSET * 2, TITLE_FONT)}
+          overflowWrap="normal"
+          whiteSpace="nowrap"
+          renderOrder={2}
+        >
+          {group}
+        </Text>
+      </group>
     </group>
   );
 }

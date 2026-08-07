@@ -7,6 +7,9 @@ import * as THREE from "three";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
+import { loadPlatformGradient } from "@/lib/platform-assets";
+import { createPlatformGeometries } from "@/lib/platform-mesh";
+
 const ICONS_URL = "/icons.glb";
 const ICON_GAP_X = 1.55;
 const ICON_GAP_Y = 1.85;
@@ -17,16 +20,11 @@ const BG = "#0A0A0A";
 /** Fine graph-paper grid (major every 1, sub every 0.25). */
 const GRID_MAJOR = 1;
 const GRID_MINOR = 0.25;
-const SQUIRCLE_DEPTH = 0.2;
-const SQUIRCLE_BORDER = 0.02;
 /** Outer padding from content AABB to platform edge. */
 const PAD_TOP = 0.4;
 const PAD_SIDE = 0.2;
-/** Corner radius must stay ≤ padding or top-left looks artificially empty. */
-const SQUIRCLE_RADIUS = 0.12;
 const LABEL_FONT = 0.2;
 const TITLE_FONT = 0.18;
-const BORDER_COLOR = new THREE.Color("#364153");
 const CLUSTER_TITLE = "Cluster 1";
 
 function collectMeshes(root: THREE.Object3D) {
@@ -57,75 +55,6 @@ function forceUnlitMaterial(source: THREE.Material | THREE.Material[]) {
       }),
   );
   return next.length === 1 ? next[0]! : next;
-}
-
-function roundedRectShape(
-  width: number,
-  height: number,
-  radius: number,
-): THREE.Shape {
-  const w = width / 2;
-  const h = height / 2;
-  const r = Math.min(radius, w, h);
-  const shape = new THREE.Shape();
-  shape.moveTo(-w + r, -h);
-  shape.lineTo(w - r, -h);
-  shape.quadraticCurveTo(w, -h, w, -h + r);
-  shape.lineTo(w, h - r);
-  shape.quadraticCurveTo(w, h, w - r, h);
-  shape.lineTo(-w + r, h);
-  shape.quadraticCurveTo(-w, h, -w, h - r);
-  shape.lineTo(-w, -h + r);
-  shape.quadraticCurveTo(-w, -h, -w + r, -h);
-  return shape;
-}
-
-function bakeSolidColor(geometry: THREE.BufferGeometry, hex: THREE.Color) {
-  const pos = geometry.getAttribute("position");
-  const colors = new Float32Array(pos.count * 3);
-  // THREE.Color from a hex string is already linear under ColorManagement.
-  for (let i = 0; i < pos.count; i++) {
-    colors[i * 3] = hex.r;
-    colors[i * 3 + 1] = hex.g;
-    colors[i * 3 + 2] = hex.b;
-  }
-  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-}
-
-function mapXyUvs(geometry: THREE.BufferGeometry) {
-  geometry.computeBoundingBox();
-  const box = geometry.boundingBox;
-  if (!box) return;
-  const pos = geometry.getAttribute("position");
-  const uvs = new Float32Array(pos.count * 2);
-  const w = box.max.x - box.min.x || 1;
-  const h = box.max.y - box.min.y || 1;
-  for (let i = 0; i < pos.count; i++) {
-    uvs[i * 2] = (pos.getX(i) - box.min.x) / w;
-    uvs[i * 2 + 1] = (pos.getY(i) - box.min.y) / h;
-  }
-  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-}
-
-function createDiagonalGradientTexture() {
-  const size = 512;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not create gradient canvas");
-
-  // 45° top-left (#1E2939) → bottom-right (#030712)
-  const gradient = ctx.createLinearGradient(0, 0, size, size);
-  gradient.addColorStop(0, "#1E2939");
-  gradient.addColorStop(1, "#030712");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
-  return texture;
 }
 
 type Bounds = {
@@ -249,52 +178,48 @@ function WorldSpan({
 }
 
 function SquirclePlatform({ bounds }: { bounds: Bounds }) {
-  const { body, border, bodyMaterial, borderMaterial } = useMemo(() => {
+  const [gradient, setGradient] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadPlatformGradient().then((texture) => {
+      if (!cancelled) setGradient(texture);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const { body, border, bodyMaterial, borderMaterial, cx, cy } = useMemo(() => {
     const minX = bounds.minX - PAD_SIDE;
     const maxX = bounds.maxX + PAD_SIDE;
     const minY = bounds.minY - PAD_SIDE;
     const maxY = bounds.maxY + PAD_TOP;
     const width = maxX - minX;
     const height = maxY - minY;
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const radius = Math.min(SQUIRCLE_RADIUS, width / 2, height / 2);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
 
-    const outer = roundedRectShape(width, height, radius);
-    const bodyGeo = new THREE.ExtrudeGeometry(outer, {
-      depth: SQUIRCLE_DEPTH,
-      bevelEnabled: false,
-      curveSegments: 4,
-      steps: 1,
-    });
-    bodyGeo.translate(cx, cy, -SQUIRCLE_DEPTH);
-    mapXyUvs(bodyGeo);
-
-    const frame = roundedRectShape(width, height, radius);
-    const hole = roundedRectShape(
-      width - SQUIRCLE_BORDER * 2,
-      height - SQUIRCLE_BORDER * 2,
-      Math.max(radius - SQUIRCLE_BORDER, 0.04),
+    const { body: bodyGeo, border: borderGeo } = createPlatformGeometries(
+      width,
+      height,
+      "xy",
     );
-    frame.holes.push(hole);
-    const borderGeo = new THREE.ExtrudeGeometry(frame, {
-      depth: SQUIRCLE_DEPTH + 0.012,
-      bevelEnabled: false,
-      curveSegments: 4,
-      steps: 1,
-    });
-    borderGeo.translate(cx, cy, -SQUIRCLE_DEPTH - 0.006);
-    bakeSolidColor(borderGeo, BORDER_COLOR);
 
     const bodyMat = new THREE.MeshBasicMaterial({
-      map: createDiagonalGradientTexture(),
+      map: gradient,
       toneMapped: false,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
+      depthWrite: true,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     });
     const borderMat = new THREE.MeshBasicMaterial({
       vertexColors: true,
       toneMapped: false,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
+      depthWrite: true,
     });
 
     return {
@@ -302,21 +227,24 @@ function SquirclePlatform({ bounds }: { bounds: Bounds }) {
       border: borderGeo,
       bodyMaterial: bodyMat,
       borderMaterial: borderMat,
+      cx: centerX,
+      cy: centerY,
     };
-  }, [bounds]);
+  }, [bounds, gradient]);
 
   useEffect(() => {
     return () => {
       body.dispose();
       border.dispose();
-      bodyMaterial.map?.dispose();
       bodyMaterial.dispose();
       borderMaterial.dispose();
     };
   }, [body, border, bodyMaterial, borderMaterial]);
 
+  if (!gradient) return null;
+
   return (
-    <group>
+    <group position={[cx, cy, 0]}>
       <mesh geometry={body} material={bodyMaterial} />
       <mesh geometry={border} material={borderMaterial} />
     </group>

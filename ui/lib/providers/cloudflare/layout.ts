@@ -22,6 +22,7 @@ export type LayoutResult = {
   }[];
   publicInternet: {
     group: string;
+    shape?: string;
     centerX: number;
     centerZ: number;
     width: number;

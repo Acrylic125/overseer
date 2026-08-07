@@ -65,7 +65,12 @@ export const categoryFieldsSchema = z
     }
   });
 
-/** Shared identity / graph fields on every scanned service. */
+/**
+ * Shared identity / graph fields on every scanned service.
+ *
+ * `service` is the icon basename from `gen-assets/icons/` (e.g. `cf-worker`,
+ * `r2`) — not a path. Unresolvable icons should use `all-unknown`.
+ */
 export const scannedServiceBaseSchema = z.object({
   id: z.string().min(1),
   group: z.string().min(1),
@@ -83,16 +88,125 @@ export const scannedServiceSchema = scannedServiceBaseSchema.extend({
   fields: z.record(z.string(), categoryFieldsSchema),
 });
 
+const vec3Schema = z.object({
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+});
+
+/** Packed layout primitives produced by the scan layout service. */
+export const layoutResourceSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("platform"),
+    /** Cluster / group label shown on the platform. */
+    group: z.string().min(1),
+    width: z.number(),
+    height: z.number(),
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+  }),
+  z.object({
+    type: z.literal("icon"),
+    /** Scanned service id this icon represents. */
+    id: z.string().min(1),
+    source: z.string().min(1),
+    width: z.number(),
+    height: z.number(),
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+  }),
+  z.object({
+    type: z.literal("connector"),
+    sourceId: z.string().min(1),
+    targetId: z.string().min(1),
+    path: z.array(vec3Schema),
+  }),
+  /**
+   * Silhouette from `gen-assets/shapes/` (basename, e.g. `cloud`).
+   */
+  z.object({
+    type: z.literal("shape"),
+    shape: z.string().min(1),
+    group: z.string().min(1),
+    label: z.string().optional(),
+    width: z.number(),
+    height: z.number(),
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+  }),
+]);
+
+/**
+ * Dense 3D scene bake (world XZ). Written by scan alongside `resources`.
+ */
+export const sceneBakeSchema = z.object({
+  bounds: z.object({
+    minX: z.number(),
+    maxX: z.number(),
+    minZ: z.number(),
+    maxZ: z.number(),
+    centerX: z.number(),
+    centerZ: z.number(),
+    width: z.number(),
+    depth: z.number(),
+  }),
+  camera: z.object({
+    position: z.tuple([z.number(), z.number(), z.number()]),
+    span: z.number(),
+    far: z.number(),
+  }),
+  centerGuide: z.object({
+    x: z.number(),
+    y: z.number(),
+    radius: z.number(),
+  }),
+  publicInternet: z.object({
+    group: z.string().min(1),
+    /** `gen-assets/shapes/` basename used to draw this hub. */
+    shape: z.string().min(1).default("cloud"),
+    centerX: z.number(),
+    centerZ: z.number(),
+    width: z.number(),
+    depth: z.number(),
+  }),
+  connectorSegments: z.array(
+    z.object({
+      midX: z.number(),
+      midZ: z.number(),
+      length: z.number(),
+      dx: z.number(),
+      dz: z.number(),
+      sourceId: z.string().min(1),
+      targetId: z.string().min(1),
+    }),
+  ),
+  connectorJoints: z.array(
+    z.object({
+      x: z.number(),
+      z: z.number(),
+      sourceId: z.string().min(1),
+      targetId: z.string().min(1),
+    }),
+  ),
+});
+
 export const infrastructureDbSchema = z.object({
   version: z.literal(1),
   scannedAt: z.string().datetime({ offset: true }),
   services: z.array(scannedServiceSchema),
+  resources: z.array(layoutResourceSchema).default([]),
+  scene: sceneBakeSchema.optional(),
   warnings: z.array(z.string()),
 });
 
 export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;
 export type ScannedService = z.infer<typeof scannedServiceSchema>;
+export type LayoutResource = z.infer<typeof layoutResourceSchema>;
+export type SceneBake = z.infer<typeof sceneBakeSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
 
 const OPEN_TO_INTERNET_KEY = "bool:Is Open To Internet";

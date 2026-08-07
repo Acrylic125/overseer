@@ -1,5 +1,6 @@
 import Cloudflare from "cloudflare";
 
+import { iconServiceForCfKind } from "../icons.js";
 import type { CloudflareProvider } from "../providers.js";
 import type { ScannedService, ServiceFields } from "../schema.js";
 
@@ -11,7 +12,10 @@ type CfServiceKind =
   | "Queue"
   | "Vectorize";
 
-type RawService = ScannedService & { lookupKeys: string[] };
+type RawService = ScannedService & {
+  kind: CfServiceKind;
+  lookupKeys: string[];
+};
 
 function groupForService(service: CfServiceKind): string {
   switch (service) {
@@ -634,7 +638,8 @@ async function fetchAccountInfrastructure(
     trackService({
       id: serviceId(ns, accountId, "worker", name),
       sourceType: "cf",
-      service: "Worker",
+      service: iconServiceForCfKind("Worker"),
+      kind: "Worker",
       name,
       group: groupForService("Worker"),
       connections: [],
@@ -647,7 +652,8 @@ async function fetchAccountInfrastructure(
     trackService({
       id: serviceId(ns, accountId, "kv", kv.id),
       sourceType: "cf",
-      service: "KV",
+      service: iconServiceForCfKind("KV"),
+      kind: "KV",
       name: kv.title,
       group: groupForService("KV"),
       connections: [],
@@ -665,7 +671,8 @@ async function fetchAccountInfrastructure(
     trackService({
       id: serviceId(ns, accountId, "d1", db.uuid),
       sourceType: "cf",
-      service: "D1",
+      service: iconServiceForCfKind("D1"),
+      kind: "D1",
       name: db.name,
       group: groupForService("D1"),
       connections: [],
@@ -683,7 +690,8 @@ async function fetchAccountInfrastructure(
     trackService({
       id: serviceId(ns, accountId, "r2", bucket.name),
       sourceType: "cf",
-      service: "R2",
+      service: iconServiceForCfKind("R2"),
+      kind: "R2",
       name: bucket.name,
       group: groupForService("R2"),
       connections: [],
@@ -702,7 +710,8 @@ async function fetchAccountInfrastructure(
     trackService({
       id: serviceId(ns, accountId, "vectorize", index.name),
       sourceType: "cf",
-      service: "Vectorize",
+      service: iconServiceForCfKind("Vectorize"),
+      kind: "Vectorize",
       name: index.name,
       group: groupForService("Vectorize"),
       connections: [],
@@ -722,7 +731,8 @@ async function fetchAccountInfrastructure(
     trackService({
       id: serviceId(ns, accountId, "queue", id),
       sourceType: "cf",
-      service: "Queue",
+      service: iconServiceForCfKind("Queue"),
+      kind: "Queue",
       name,
       group: groupForService("Queue"),
       connections: [],
@@ -743,16 +753,16 @@ async function fetchAccountInfrastructure(
   const byWorkerName = new Map<string, string>();
 
   for (const service of services) {
-    if (service.service === "Worker")
+    if (service.kind === "Worker")
       byWorkerName.set(service.name, service.id);
-    else if (service.service === "KV")
+    else if (service.kind === "KV")
       byKvId.set(service.lookupKeys[0]!, service.id);
-    else if (service.service === "D1")
+    else if (service.kind === "D1")
       byD1Id.set(service.lookupKeys[0]!, service.id);
-    else if (service.service === "R2") byR2Name.set(service.name, service.id);
-    else if (service.service === "Vectorize")
+    else if (service.kind === "R2") byR2Name.set(service.name, service.id);
+    else if (service.kind === "Vectorize")
       byVectorizeName.set(service.name, service.id);
-    else if (service.service === "Queue")
+    else if (service.kind === "Queue")
       byQueueName.set(service.name, service.id);
   }
 
@@ -765,7 +775,7 @@ async function fetchAccountInfrastructure(
     byWorkerName,
   };
 
-  const r2Services = services.filter((s) => s.service === "R2");
+  const r2Services = services.filter((service) => service.kind === "R2");
   if (r2Services.length > 0) {
     log("fetching r2 networking", {
       buckets: r2Services.length,
@@ -851,7 +861,9 @@ async function fetchAccountInfrastructure(
     });
   }
 
-  const workerServices = services.filter((s) => s.service === "Worker");
+  const workerServices = services.filter(
+    (service) => service.kind === "Worker",
+  );
   const bindingsStart = Date.now();
   let bindingsOk = 0;
   let bindingsFailed = 0;
@@ -1011,7 +1023,7 @@ export async function scrapeCloudflare(
   }
 
   const cleaned: ScannedService[] = services.map(
-    ({ lookupKeys: _lookupKeys, ...rest }) => rest,
+    ({ kind: _kind, lookupKeys: _lookupKeys, ...rest }) => rest,
   );
 
   console.log(`[scan:cf] services scanned (${cleaned.length}):`);

@@ -21,6 +21,8 @@ export type GroupPlatform = {
   centerZ: number;
   width: number;
   depth: number;
+  /** `gen-assets/shapes/` basename when this pad is a silhouette (e.g. cloud). */
+  shape?: string;
 };
 
 export type PackLayoutResult = {
@@ -28,7 +30,7 @@ export type PackLayoutResult = {
   /** One frosted platform per service group (excludes public internet). */
   platforms: GroupPlatform[];
   /**
-   * Public-internet platform sized to (3×2) * sqrt(service platform count);
+   * Public-internet platform sized to (4×2) * sqrt(service platform count);
    * layout is recentered on it.
    */
   publicInternet: GroupPlatform;
@@ -98,6 +100,7 @@ function publicInternetPlatform(
 ): GroupPlatform {
   return {
     group: PUBLIC_INTERNET_GROUP,
+    shape: "cloud",
     centerX,
     centerZ,
     width: width * CELL_SIZE,
@@ -110,7 +113,7 @@ function publicInternetPlatform(
  * Same-group blocks stay contiguous; every block is ≥1 cell from its neighbors.
  * Each group gets its own platform; platforms are ≥ PLATFORM_SEPARATION apart.
  *
- * The public-internet cloud is sized to (3×2) * sqrt(platform count) and placed
+ * The public-internet cloud is sized to (4×2) * sqrt(platform count) and placed
  * at the origin. Service platforms are packed among themselves first, then docked
  * beside the cloud with PLATFORM_SEPARATION — not shelf-packed into the same
  * grid as the cloud (which left a large empty band under the short cloud row).

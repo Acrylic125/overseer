@@ -3,17 +3,22 @@ import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export const CONNECTOR_CLEARANCE = 0.5;
 export const CONNECTOR_STANDOFF = 0.4;
-export const CONNECTOR_SIZE = 0.05;
+/** Ribbon width — keep below {@link CONNECTOR_PORT_SEP} so 4px centers don't fuse. */
+export const CONNECTOR_SIZE = 0.03;
 export const CONNECTOR_STEP = 0.1;
 /**
- * Minimum center-to-center gap between parallel connectors.
- * Large enough that tubes read as separate, not joined.
+ * Preferred center-to-center gap between connectors after the jut
+ * (≈4 CSS px at 48px/unit). Compressed when the face can't fit.
+ * Walk clearance matches this so parallel stubs aren't forced to overlap.
  */
-export const CONNECTOR_SEP = 0.55;
-/** Lane pitch for detours — one clean jog, never stair-steps. */
+export const CONNECTOR_PORT_SEP = 4 / 48;
+export const CONNECTOR_SEP = CONNECTOR_PORT_SEP;
+/** Lane pitch for detours / BFS grid — must stay coarse or routing freezes. */
 export const CONNECTOR_LANE = 0.55;
 /** How many lane offsets to try before giving up (down first, then up). */
 const MAX_LANE_TRIES = 8;
+/** Hard cap so a dense map can't hang routing. */
+const MAX_BFS_VISITS = 20_000;
 
 export type WorldAabb = {
   id: string;
@@ -458,8 +463,11 @@ function bfsAroundBoxes(
 
   let found: Pt | null = null;
   const goalR = step * 0.51;
+  let visits = 0;
 
   while (q.length > 0) {
+    if (visits >= MAX_BFS_VISITS) return null;
+    visits += 1;
     const cur = q.shift()!;
     if (
       Math.abs(cur.pt.x - goal.x) <= goalR &&
@@ -629,13 +637,21 @@ function offsetAlongFace(
   if (slotCount <= 1) return face;
   const tangent = faceTangent(out);
   const mid = (slotCount - 1) / 2;
-  const delta = (slot - mid) * CONNECTOR_SEP;
+  const inset = 0.15;
+  const avail =
+    tangent.x !== 0
+      ? Math.max(0, box.maxX - box.minX - inset * 2)
+      : Math.max(0, box.maxZ - box.minZ - inset * 2);
+  const desired = (slotCount - 1) * CONNECTOR_PORT_SEP;
+  const sep =
+    desired <= avail ? CONNECTOR_PORT_SEP : avail / (slotCount - 1);
+  const delta = (slot - mid) * sep;
   const ox = face.x + tangent.x * delta;
   const oz = face.z + tangent.z * delta;
   if (out.x !== 0) {
-    return { x: face.x, z: clamp(oz, box.minZ + 0.15, box.maxZ - 0.15) };
+    return { x: face.x, z: clamp(oz, box.minZ + inset, box.maxZ - inset) };
   }
-  return { x: clamp(ox, box.minX + 0.15, box.maxX - 0.15), z: face.z };
+  return { x: clamp(ox, box.minX + inset, box.maxX - inset), z: face.z };
 }
 
 export function buildConnectorPath(
@@ -741,6 +757,10 @@ export function buildConnectorPath(
 /** Above this, skip per-segment obstacle walks — they are O(paths × services). */
 const OBSTACLE_ROUTING_MAX_SERVICES = 120;
 
+function faceKey(id: string, out: { x: number; z: number }): string {
+  return `${id}|${out.x},${out.z}`;
+}
+
 export function buildAllConnectorPaths(
   services: InfrastructureService[],
 ): ConnectorPath[] {
@@ -749,6 +769,8 @@ export function buildAllConnectorPaths(
   const pairs: {
     source: InfrastructureService;
     target: InfrastructureService;
+    outFrom: Dir;
+    outTo: Dir;
   }[] = [];
 
   for (const source of services) {
@@ -758,27 +780,43 @@ export function buildAllConnectorPaths(
       const key = [source.id, target.id].sort().join("|");
       if (seen.has(key)) continue;
       seen.add(key);
-      pairs.push({ source, target });
+      const fromBox = serviceAabb(source);
+      const toBox = serviceAabb(target);
+      const { from: faceHint, to: faceHintTo } = closestPointsBetween(
+        fromBox,
+        toBox,
+      );
+      pairs.push({
+        source,
+        target,
+        outFrom: outwardNormal(fromBox, faceHint, faceHintTo),
+        outTo: outwardNormal(toBox, faceHintTo, faceHint),
+      });
     }
   }
 
-  const degree = new Map<string, number>();
-  for (const { source, target } of pairs) {
-    degree.set(source.id, (degree.get(source.id) ?? 0) + 1);
-    degree.set(target.id, (degree.get(target.id) ?? 0) + 1);
+  // Slot ports per exit face so same-side stubs pack at PORT_SEP.
+  const faceDegree = new Map<string, number>();
+  for (const { source, target, outFrom, outTo } of pairs) {
+    const fromFace = faceKey(source.id, outFrom);
+    const toFace = faceKey(target.id, outTo);
+    faceDegree.set(fromFace, (faceDegree.get(fromFace) ?? 0) + 1);
+    faceDegree.set(toFace, (faceDegree.get(toFace) ?? 0) + 1);
   }
-  const used = new Map<string, number>();
+  const faceUsed = new Map<string, number>();
 
   const routeAroundObstacles = services.length <= OBSTACLE_ROUTING_MAX_SERVICES;
   const allAabbs = routeAroundObstacles ? services.map(serviceAabb) : null;
   const priorSegments: SegmentObstacle[] = [];
   const paths: ConnectorPath[] = [];
 
-  for (const { source, target } of pairs) {
-    const fromSlot = used.get(source.id) ?? 0;
-    const toSlot = used.get(target.id) ?? 0;
-    used.set(source.id, fromSlot + 1);
-    used.set(target.id, toSlot + 1);
+  for (const { source, target, outFrom, outTo } of pairs) {
+    const fromFace = faceKey(source.id, outFrom);
+    const toFace = faceKey(target.id, outTo);
+    const fromSlot = faceUsed.get(fromFace) ?? 0;
+    const toSlot = faceUsed.get(toFace) ?? 0;
+    faceUsed.set(fromFace, fromSlot + 1);
+    faceUsed.set(toFace, toSlot + 1);
 
     const obstacles = allAabbs
       ? allAabbs.filter(
@@ -793,9 +831,9 @@ export function buildAllConnectorPaths(
       routeAroundObstacles ? priorSegments : [],
       {
         fromSlot,
-        fromCount: degree.get(source.id) ?? 1,
+        fromCount: faceDegree.get(fromFace) ?? 1,
         toSlot,
-        toCount: degree.get(target.id) ?? 1,
+        toCount: faceDegree.get(toFace) ?? 1,
       },
     );
     paths.push(path);

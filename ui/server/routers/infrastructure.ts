@@ -5,6 +5,9 @@ import {
   type ScannedService,
   type ServiceFields,
 } from "@/lib/infrastructure-db";
+import type { ConnectorPath } from "@/lib/graph/connector-paths";
+import type { SceneBake } from "@/lib/infrastructure-schema";
+import { layoutFromResources } from "@/lib/layout-from-resources";
 import { layoutServices } from "@/lib/providers/cloudflare/layout";
 import { resolveServiceType } from "@/lib/service-types";
 import { publicProcedure, router } from "@/server/trpc";
@@ -68,34 +71,28 @@ export type InfrastructureService = {
   fields: ServiceFields;
 };
 
-function speciesForService(service: string): InfrastructureSpecies {
-  switch (service) {
-    case "D1":
-    case "KV":
-    case "Vectorize":
+function speciesForCategory(
+  category: InfrastructureCategory,
+): InfrastructureSpecies {
+  switch (category) {
+    case "database":
       return "database";
-    case "R2":
+    case "storage":
       return "object_storage";
-    case "Queue":
+    case "integration":
       return "queue";
-    case "Worker":
-      return "microservice";
-    default:
+    case "compute":
       return "microservice";
   }
 }
 
-function zoneForService(service: string): InfrastructureZone {
-  switch (service) {
-    case "D1":
-    case "KV":
-    case "Vectorize":
-    case "R2":
+function zoneForCategory(category: InfrastructureCategory): InfrastructureZone {
+  switch (category) {
+    case "database":
+    case "storage":
       return "data";
-    case "Queue":
-    case "Worker":
-      return "compute";
-    default:
+    case "integration":
+    case "compute":
       return "compute";
   }
 }
@@ -104,20 +101,14 @@ function zoneForService(service: string): InfrastructureZone {
 function enrichScannedService(
   scanned: ScannedService,
 ): Omit<InfrastructureService, "x" | "y"> {
-  const species = speciesForService(scanned.service);
-  const category =
-    resolveServiceType(scanned.service)?.type ??
-    (species === "object_storage"
-      ? "storage"
-      : species === "queue"
-        ? "integration"
-        : species === "database"
-          ? "database"
-          : "compute");
+  // `service` is an icons.glb mesh basename; unknown → all-unknown.
+  const meta = resolveServiceType(scanned.service);
+  const category = meta.type;
+  const species = speciesForCategory(category);
 
   return {
     id: scanned.id,
-    type: scanned.service,
+    type: meta.icon,
     name: scanned.name,
     width: 1,
     depth: 1,
@@ -126,7 +117,7 @@ function enrichScannedService(
     species,
     category,
     health: "healthy",
-    zone: zoneForService(scanned.service),
+    zone: zoneForCategory(category),
     metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
     color: "#111827",
     fields: scanned.fields,
@@ -151,6 +142,37 @@ export const infrastructureRouter = router({
           )
         : db.services;
 
+      // Prefer scan-produced layout resources (+ scene bake) when present.
+      const fromScan = layoutFromResources(
+        services,
+        db.resources,
+        enrichScannedService,
+        db.scene,
+      );
+
+      if (fromScan) {
+        const scene = fromScan.scene!;
+        return {
+          services: fromScan.services,
+          edges: [] as {
+            source: string;
+            target: string;
+            path: { x: number; y: number }[];
+          }[],
+          warnings: db.warnings,
+          centerGuide: scene.centerGuide,
+          platforms: fromScan.platforms,
+          publicInternet: fromScan.publicInternet,
+          bounds: fromScan.bounds,
+          connectorPaths: fromScan.connectorPaths,
+          camera: scene.camera,
+          connectorSegments: scene.connectorSegments,
+          connectorJoints: scene.connectorJoints,
+          scannedAt: db.scannedAt,
+        };
+      }
+
+      // Fallback for older DBs without resources — client rebuilds connectors.
       const laidOut = layoutServices(services.map(enrichScannedService));
 
       return {
@@ -161,6 +183,10 @@ export const infrastructureRouter = router({
         platforms: laidOut.platforms,
         publicInternet: laidOut.publicInternet,
         bounds: laidOut.bounds,
+        connectorPaths: null as ConnectorPath[] | null,
+        camera: null as SceneBake["camera"] | null,
+        connectorSegments: null as SceneBake["connectorSegments"] | null,
+        connectorJoints: null as SceneBake["connectorJoints"] | null,
         scannedAt: db.scannedAt,
       };
     }),

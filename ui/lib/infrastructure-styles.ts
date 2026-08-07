@@ -49,10 +49,11 @@ export const PLATFORM_PAD = 0.75;
 /** Minimum edge-to-edge gap between group platforms (cells). */
 export const PLATFORM_SEPARATION = 4;
 /**
- * Public-internet cloud footprint at 1 service platform (3×2 cells).
+ * Public-internet cloud footprint at 1 service platform.
+ * Aspect ≈ `gen-assets/shapes/cloud.svg` (647×318 ≈ 2:1).
  * Actual size = BASE * sqrt(platformCount), rounded per axis.
  */
-export const PUBLIC_INTERNET_BASE_WIDTH = 3;
+export const PUBLIC_INTERNET_BASE_WIDTH = 4;
 export const PUBLIC_INTERNET_BASE_DEPTH = 2;
 export const PUBLIC_INTERNET_GROUP = "public-internet";
 

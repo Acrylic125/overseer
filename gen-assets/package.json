@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Preprocess SVG icons into a single icons.glb for Three.js InstancedMesh",
+  "description": "Preprocess SVG icons and platform meshes into GLBs for Three.js",
   "scripts": {
     "icons": "tsx src/icons.ts",
+    "platform": "tsx src/platform.ts",
+    "shapes": "tsx src/shapes.ts",
+    "build": "pnpm run icons && pnpm run platform && pnpm run shapes",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

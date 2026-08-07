@@ -37,7 +37,9 @@ import {
 } from "@/lib/graph/service-streaming";
 import { isOpenToInternet } from "@/lib/infrastructure-schema";
 import { CELL_SIZE, SCENE } from "@/lib/infrastructure-styles";
+import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
+import type { SceneBake } from "@/lib/infrastructure-schema";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type ViewMode = "top" | "explore";
@@ -47,6 +49,13 @@ type InfrastructureCanvasProps = {
   platforms: PackLayoutResult["platforms"];
   publicInternet: PackLayoutResult["publicInternet"];
   bounds: PackLayoutResult["bounds"];
+  /** Pre-routed connectors from scan layout resources (optional). */
+  connectorPaths?: ConnectorPath[] | null;
+  /** Baked camera framing from scan scene (optional). */
+  cameraFrame?: SceneBake["camera"] | null;
+  /** Baked connector instances from scan scene (optional). */
+  connectorSegments?: SceneBake["connectorSegments"] | null;
+  connectorJoints?: SceneBake["connectorJoints"] | null;
 };
 
 type SceneProps = InfrastructureCanvasProps & {
@@ -124,7 +133,11 @@ function isTypingTarget(target: EventTarget | null) {
   );
 }
 
-function getCameraFrame(bounds: PackLayoutResult["bounds"]) {
+function getCameraFrame(
+  bounds: PackLayoutResult["bounds"],
+  baked: SceneBake["camera"] | null | undefined = null,
+) {
+  if (baked) return baked;
   // Spawn over the map so the camera-centered 100×100 window has content.
   // (Previously the camera sat far outside the cluster → empty black void.)
   const height = Math.min(42, Math.max(20, RENDER_HALF * 0.65));
@@ -240,6 +253,10 @@ function Scene({
   platforms,
   publicInternet,
   bounds,
+  connectorPaths = null,
+  cameraFrame: bakedCamera = null,
+  connectorSegments = null,
+  connectorJoints = null,
   viewMode,
   selectedServiceId,
   onSelectedServiceIdChange,
@@ -247,11 +264,10 @@ function Scene({
 }: SceneProps) {
   const { camera, gl } = useThree();
   const background = useMemo(() => cssToThreeColor(SCENE.background), []);
-  const ambient = useMemo(() => cssToThreeColor(SCENE.ambient), []);
-  const keyLight = useMemo(() => cssToThreeColor(SCENE.keyLight), []);
-  const hemiSky = useMemo(() => cssToThreeColor(SCENE.hemiSky), []);
-  const hemiGround = useMemo(() => cssToThreeColor(SCENE.hemiGround), []);
-  const frame = useMemo(() => getCameraFrame(bounds), [bounds]);
+  const frame = useMemo(
+    () => getCameraFrame(bounds, bakedCamera),
+    [bounds, bakedCamera],
+  );
   const index = useMemo(() => buildServiceSpatialIndex(services), [services]);
   const servicesById = useMemo(
     () => new Map(services.map((service) => [service.id, service])),
@@ -445,23 +461,6 @@ function Scene({
         args={[background, 28, 90]}
       />
 
-      <ambientLight color={ambient} intensity={0.48} />
-      <directionalLight
-        color={keyLight}
-        position={[40, 45, 40]}
-        intensity={1.7}
-      />
-      <directionalLight
-        color={hemiSky}
-        position={[-30, 24, -18]}
-        intensity={0.65}
-      />
-      <hemisphereLight
-        color={hemiSky}
-        groundColor={hemiGround}
-        intensity={0.5}
-      />
-
       <WorldGrid />
 
       {visiblePlatforms.map((platform) => (
@@ -480,6 +479,7 @@ function Scene({
         centerZ={publicInternet.centerZ}
         width={publicInternet.width}
         depth={publicInternet.depth}
+        shape={publicInternet.shape ?? "cloud"}
       />
 
       <InstancedServiceBlocks services={visibleServices} />
@@ -487,6 +487,9 @@ function Scene({
       <ServiceConnectors
         services={connectorServices}
         selectedServiceId={selectedServiceId}
+        precomputedPaths={connectorPaths}
+        precomputedSegments={connectorSegments}
+        precomputedJoints={connectorJoints}
       />
 
       <CameraModeSync viewMode={viewMode} />
@@ -507,8 +510,15 @@ export function InfrastructureCanvas({
   platforms,
   publicInternet,
   bounds,
+  connectorPaths = null,
+  cameraFrame: bakedCamera = null,
+  connectorSegments = null,
+  connectorJoints = null,
 }: InfrastructureCanvasProps) {
-  const frame = useMemo(() => getCameraFrame(bounds), [bounds]);
+  const frame = useMemo(
+    () => getCameraFrame(bounds, bakedCamera),
+    [bounds, bakedCamera],
+  );
   const background = useMemo(() => cssToThreeColor(SCENE.background), []);
   const largeScene = services.length >= 80;
   const maxDpr = largeScene ? 1 : 1.5;
@@ -588,6 +598,10 @@ export function InfrastructureCanvas({
             platforms={platforms}
             publicInternet={publicInternet}
             bounds={bounds}
+            connectorPaths={connectorPaths}
+            cameraFrame={bakedCamera}
+            connectorSegments={connectorSegments}
+            connectorJoints={connectorJoints}
             viewMode={viewMode}
             selectedServiceId={selectedServiceId}
             onSelectedServiceIdChange={setSelectedServiceId}
