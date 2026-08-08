@@ -113,7 +113,7 @@ export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
 }
 
 /**
- * Squircle group platform — shape + gradient from `gen-assets`
+ * Squircle group platform — shape + gradient from scan assets
  * (parametric ExtrudeGeometry sized per pad, baked gradient map).
  */
 export function FrostedPlatform({
@@ -200,7 +200,7 @@ export function FrostedPlatform({
           whiteSpace="nowrap"
           renderOrder={2}
         >
-          {group}
+          {group.includes("/") ? group.slice(group.lastIndexOf("/") + 1) : group}
         </Text>
       </group>
     </group>

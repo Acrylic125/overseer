@@ -1,28 +1,18 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { iconServiceForCfKind } from "./icons.js";
-import { layoutServices } from "./layout-service.js";
-import {
-  infrastructureDbSchema,
-  type InfrastructureDb,
-  type ScannedService,
-} from "./schema.js";
+import type { ScannedService } from "./schema.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const scanRoot = path.resolve(__dirname, "..");
-const repoRoot = path.resolve(scanRoot, "..");
-const defaultOutPath = path.join(
-  repoRoot,
-  "ui",
-  "data",
-  "infrastructure.json",
-);
+const SERVICE_COUNT = 10000;
+/** Rough target for distinct group paths that can hold services. */
+const GROUP_PATH_COUNT = 120;
+/**
+ * How many A→B→C trees always place services on A, on A/B, and on A/B/C.
+ */
+const DEEP_TREES_WITH_ANCESTOR_SERVICES = 16;
+/** Nesting depth inclusive: 1 = flat, 3 = root/mid/leaf. */
+const MAX_GROUP_DEPTH = 3;
+const GROUP_SEP = "/";
 
-const SERVICE_COUNT = 1000;
-const GROUP_COUNT = 100;
-/** Minimum distinct service kinds that must appear inside every group. */
+/** Minimum distinct service kinds that must appear inside every group path. */
 const MIN_KINDS_PER_GROUP = 3;
 const MAX_KINDS_PER_GROUP = 6;
 
@@ -93,8 +83,8 @@ const SERVICE_KINDS = [
 type ServiceKind = (typeof SERVICE_KINDS)[number];
 
 type MockGroup = {
+  /** Full path, e.g. `payments-hub`, `payments-hub/checkout`, or `…/edge`. */
   group: string;
-  /** Mixture of kinds that members of this group will draw from. */
   kinds: ServiceKind[];
 };
 
@@ -112,6 +102,19 @@ function pick<T>(rand: () => number, items: readonly T[]): T {
   return items[Math.floor(rand() * items.length)]!;
 }
 
+function uniqueSegment(rand: () => number, used: Set<string>): string {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const segment = `${pick(rand, GROUP_NAMES)}-${pick(rand, SUFFIXES)}`;
+    if (!used.has(segment)) {
+      used.add(segment);
+      return segment;
+    }
+  }
+  const fallback = `group-${used.size}`;
+  used.add(fallback);
+  return fallback;
+}
+
 function pickKinds(rand: () => number): ServiceKind[] {
   const count =
     MIN_KINDS_PER_GROUP +
@@ -125,37 +128,60 @@ function pickKinds(rand: () => number): ServiceKind[] {
   return kinds;
 }
 
+/** Register `a`, `a/b`, … for a path so ancestors can own services too. */
+function addPathAndAncestors(
+  path: string,
+  rand: () => number,
+  groups: MockGroup[],
+  usedPaths: Set<string>,
+): void {
+  const segments = path.split(GROUP_SEP).filter(Boolean);
+  for (let i = 1; i <= segments.length; i += 1) {
+    const prefix = segments.slice(0, i).join(GROUP_SEP);
+    if (usedPaths.has(prefix)) continue;
+    usedPaths.add(prefix);
+    groups.push({ group: prefix, kinds: pickKinds(rand) });
+  }
+}
+
+/**
+ * Build group paths (depth 1–3). Deep A→B→C trees also register A and A/B so
+ * services can sit on ancestors, not only leaves.
+ */
 function buildGroups(rand: () => number): MockGroup[] {
   const groups: MockGroup[] = [];
-  const used = new Set<string>();
+  const usedSegments = new Set<string>();
+  const usedPaths = new Set<string>();
 
-  while (groups.length < GROUP_COUNT) {
-    const group = `${pick(rand, GROUP_NAMES)}-${pick(rand, SUFFIXES)}`;
-    if (used.has(group)) continue;
-    used.add(group);
+  // Guaranteed A → B → C trees with services at every level.
+  for (let i = 0; i < DEEP_TREES_WITH_ANCESTOR_SERVICES; i += 1) {
+    const a = uniqueSegment(rand, usedSegments);
+    const b = uniqueSegment(rand, usedSegments);
+    const c = uniqueSegment(rand, usedSegments);
+    addPathAndAncestors([a, b, c].join(GROUP_SEP), rand, groups, usedPaths);
+  }
 
-    groups.push({
-      group,
-      kinds: pickKinds(rand),
-    });
+  // Fill remaining diversity with random depths (ancestors included).
+  while (groups.length < GROUP_PATH_COUNT) {
+    const depth = 1 + Math.floor(rand() * MAX_GROUP_DEPTH);
+    const segments: string[] = [];
+    for (let d = 0; d < depth; d += 1) {
+      segments.push(uniqueSegment(rand, usedSegments));
+    }
+    const before = groups.length;
+    addPathAndAncestors(segments.join(GROUP_SEP), rand, groups, usedPaths);
+    if (groups.length === before) break;
   }
 
   return groups;
 }
 
-/**
- * Assign roughly even membership across groups, then guarantee every group
- * contains at least MIN_KINDS_PER_GROUP distinct service types.
- */
-function allocateMembership(
-  rand: () => number,
-  groups: MockGroup[],
-): number[] {
+/** Assign roughly even membership across all service-bearing group paths. */
+function allocateMembership(rand: () => number, groups: MockGroup[]): number[] {
   const membership = Array.from({ length: SERVICE_COUNT }, () =>
     Math.floor(rand() * groups.length),
   );
 
-  // Ensure no group is empty so the mixture pass can run.
   for (let g = 0; g < groups.length; g += 1) {
     if (membership.includes(g)) continue;
     membership[g % SERVICE_COUNT] = g;
@@ -221,22 +247,22 @@ function buildService(
   }
 }
 
-/** Build 1000 scanned services across ~100 groups with mixed kinds per group. */
+/**
+ * Build 10000 scanned services across nested groups (depth ≤ 3).
+ * Deep trees place services on A, A/B, and A/B/C — not only the leaf.
+ */
 export function createMockServices(seed = 42): ScannedService[] {
   const rand = mulberry32(seed);
   const groups = buildGroups(rand);
   const membership = allocateMembership(rand, groups);
   const services: ScannedService[] = [];
 
-  // Per-group counters so we can force a mixture of kinds.
   const kindCursor = groups.map(() => 0);
 
   for (let i = 0; i < SERVICE_COUNT; i += 1) {
     const groupIndex = membership[i]!;
     const template = groups[groupIndex]!;
     const cursor = kindCursor[groupIndex]!;
-    // Round-robin through the group's kind mix so every kind appears,
-    // then fall back to random picks for leftovers.
     const kind =
       cursor < template.kinds.length
         ? template.kinds[cursor]!
@@ -244,23 +270,32 @@ export function createMockServices(seed = 42): ScannedService[] {
     kindCursor[groupIndex] = cursor + 1;
 
     const n = i + 1;
+    const label = template.group.split(GROUP_SEP).at(-1) ?? template.group;
     services.push(
       buildService(kind, {
-        id: `mock-${String(n).padStart(4, "0")}`,
-        name: `${template.group}-${kind.toLowerCase()}-${String(n).padStart(4, "0")}`,
+        id: `mock-${String(n).padStart(5, "0")}`,
+        name: `${label}-${kind.toLowerCase()}-${String(n).padStart(5, "0")}`,
         group: template.group,
         connections: [],
       }),
     );
   }
 
-  // Wire a few random connections so the UI has something to draw.
+  // Prefer connections inside the same group path (including A↔A, B↔B).
+  const byGroup = new Map<string, ScannedService[]>();
+  for (const service of services) {
+    const list = byGroup.get(service.group) ?? [];
+    list.push(service);
+    byGroup.set(service.group, list);
+  }
+
   for (let i = 0; i < SERVICE_COUNT; i += 1) {
     const degree = Math.floor(rand() * 3);
     const source = services[i]!;
+    const pool = byGroup.get(source.group) ?? services;
     const targets = new Set<string>();
     for (let d = 0; d < degree; d += 1) {
-      const target = pick(rand, services);
+      const target = pick(rand, pool);
       if (target.id === source.id) continue;
       targets.add(target.id);
     }
@@ -268,60 +303,4 @@ export function createMockServices(seed = 42): ScannedService[] {
   }
 
   return services;
-}
-
-export function createMockInfrastructureDb(seed = 42): InfrastructureDb {
-  const services = createMockServices(seed);
-  const layout = layoutServices(services);
-  return infrastructureDbSchema.parse({
-    version: 1 as const,
-    scannedAt: new Date().toISOString(),
-    services,
-    resources: layout.resources,
-    scene: layout.scene,
-    warnings: ["Generated from scan/src/mock.ts"],
-  });
-}
-
-async function main() {
-  const outPath = process.argv[2]
-    ? path.resolve(process.cwd(), process.argv[2])
-    : defaultOutPath;
-
-  const db = createMockInfrastructureDb();
-
-  await mkdir(path.dirname(outPath), { recursive: true });
-  await writeFile(outPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
-
-  const byGroup = new Map<string, Set<string>>();
-  for (const service of db.services) {
-    const types = byGroup.get(service.group) ?? new Set<string>();
-    types.add(service.service);
-    byGroup.set(service.group, types);
-  }
-
-  const mixed = [...byGroup.values()].filter((types) => types.size >= 2).length;
-  const platforms = db.resources.filter((r) => r.type === "platform").length;
-  const icons = db.resources.filter((r) => r.type === "icon").length;
-  const connectors = db.resources.filter((r) => r.type === "connector").length;
-  console.log(
-    `[mock] wrote ${db.services.length} services across ${byGroup.size} groups → ${outPath}`,
-  );
-  console.log(
-    `[mock] layout: ${platforms} platforms, ${icons} icons, ${connectors} connectors`,
-  );
-  console.log(
-    `[mock] ${mixed}/${byGroup.size} groups contain a mixture of service types`,
-  );
-}
-
-const isDirectRun =
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isDirectRun) {
-  main().catch((error) => {
-    console.error("[mock] failed", error);
-    process.exitCode = 1;
-  });
 }

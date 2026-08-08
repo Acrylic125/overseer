@@ -13,7 +13,7 @@ function resolveDbPath() {
     return path.resolve(process.env.INFRASTRUCTURE_DB_PATH);
   }
   // Next.js runs with cwd = ui/
-  return path.resolve(process.cwd(), "data", "infrastructure.json");
+  return path.resolve(process.cwd(), "public", "infrastructure.json");
 }
 
 /**

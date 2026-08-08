@@ -1,14 +1,46 @@
 # Overseer scan
 
-TypeScript Node scrapers that pull provider resources, pack them into a
-layout, and write a JSON "database" for the Next.js UI.
+Unified CLI for provider setup, asset baking, and the infrastructure pipeline.
 
-## Structure
+## Pipeline
 
-- `ServiceScanner` (`src/scanner.ts`) — provider scan contract
-- `scanners/cf-scanner.ts` — Cloudflare: (1) scan & transform, (2) group
-- `layout-service.ts` — cluster pack → shelf pack → platforms / icons / connectors
-- `connector-paths.ts` — orthogonal walk (ported from the UI path router)
+`scan` runs four steps end-to-end:
+
+1. **Precompute** — bake icons, platform, and shapes into `assets.glb`
+2. **Service scan** — pull live provider resources
+3. **Layout** — pack platforms, icons, connectors
+4. **Output** — write `infrastructure.json` (v2)
+
+All artifacts land flat in `./_generated` (cwd), or in `--dir <path>`:
+
+```
+_generated/
+  assets.glb
+  platform-gradient.png
+  infrastructure.json
+```
+
+## infrastructure.json v2
+
+```ts
+type Pos = [number, number, number]; // x, y, z
+type Size = [number, number];        // width, depth — omit → [1, 1]
+
+{
+  version: 2,
+  scannedAt: string,
+  warnings: string[],
+  services: [{ …identity, pos: Pos, size?: Size }],
+  pads: [
+    { type: "platform", id, group, parent?, pos, size? },
+    { type: "shape", id, shape, group, parent?, label?, pos, size? },
+  ],
+  connectors: [{ from, to, path: Pos[] }],
+}
+```
+
+Nest platforms with `parent` (pad id). Scene bake (bounds/camera/segments) is
+derived in the UI at load time — not stored.
 
 ## Setup
 
@@ -16,20 +48,28 @@ layout, and write a JSON "database" for the Next.js UI.
 pnpm install
 ```
 
-Copy API tokens into `scan/.env` or reuse `ui/.env`:
-
-```
-PROVIDER_CF_<Namespace>_API_KEY=...
-```
-
-## Run
+## Commands
 
 ```bash
+pnpm cli
+pnpm init
 pnpm scan
+pnpm scan --skip-assets
+pnpm scan --dir ./out
+pnpm assets
+pnpm assets --dir ../ui/public
+pnpm mock
 ```
 
-Writes `../ui/data/infrastructure.json` by default. Optional custom path:
+Copy into the UI when developing the Next app:
 
 ```bash
-pnpm scan ./out/my-db.json
+pnpm assets --dir ../ui/public
+pnpm mock --dir ../ui/public
+```
+
+Verbose Cloudflare API logs:
+
+```bash
+OVERSEER_DEBUG=1 pnpm scan
 ```

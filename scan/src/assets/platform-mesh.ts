@@ -131,8 +131,6 @@ export type PlatformGeometries = {
  *
  * - `xz`: ground plane (production) — top face at y = 0, extruded downward.
  * - `xy`: icon board (test page) — extruded along −Z; caller positions in XY.
- *
- * Keep in sync with `scan/src/assets` bake (`pnpm assets`).
  */
 export function createPlatformGeometries(
   width: number,
@@ -168,8 +166,8 @@ export function createPlatformGeometries(
   });
 
   if (plane === "xz") {
-    // UVs in XY before laying flat — same convention as `scan/assets/shapes`
-    // (cloud). After rotateX(-π/2), former +Y → −Z.
+    // UVs in XY before laying flat — same convention as `shapes/` (cloud).
+    // After rotateX(-π/2), former +Y → −Z.
     mapXyUvs(bodyGeo);
     // Extrude +Z → +Y after rotate; shift down so the top face sits at y = 0.
     bodyGeo.rotateX(-Math.PI / 2);
@@ -192,3 +190,4 @@ export function createPlatformGeometries(
 
   return { body: bodyGeo, border: borderGeo };
 }
+

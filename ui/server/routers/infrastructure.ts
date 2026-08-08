@@ -2,12 +2,12 @@ import { z } from "zod";
 
 import {
   loadInfrastructureDb,
-  type ScannedService,
+  type PlacedService,
   type ServiceFields,
 } from "@/lib/infrastructure-db";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { SceneBake } from "@/lib/infrastructure-schema";
-import { layoutFromResources } from "@/lib/layout-from-resources";
+import { layoutFromDb } from "@/lib/layout-from-db";
 import { layoutServices } from "@/lib/providers/cloudflare/layout";
 import { resolveServiceType } from "@/lib/service-types";
 import { publicProcedure, router } from "@/server/trpc";
@@ -99,9 +99,9 @@ function zoneForCategory(category: InfrastructureCategory): InfrastructureZone {
 
 /** Map wire-format scan rows into layout/render fields the 3D UI expects. */
 function enrichScannedService(
-  scanned: ScannedService,
-): Omit<InfrastructureService, "x" | "y"> {
-  // `service` is an icons.glb mesh basename; unknown → all-unknown.
+  scanned: PlacedService,
+): Omit<InfrastructureService, "x" | "y" | "width" | "depth"> {
+  // `service` is an assets.glb mesh basename; unknown → all-unknown.
   const meta = resolveServiceType(scanned.service);
   const category = meta.type;
   const species = speciesForCategory(category);
@@ -110,8 +110,6 @@ function enrichScannedService(
     id: scanned.id,
     type: meta.icon,
     name: scanned.name,
-    width: 1,
-    depth: 1,
     group: scanned.group,
     connections: scanned.connections,
     species,
@@ -142,16 +140,15 @@ export const infrastructureRouter = router({
           )
         : db.services;
 
-      // Prefer scan-produced layout resources (+ scene bake) when present.
-      const fromScan = layoutFromResources(
+      const fromScan = layoutFromDb(
         services,
-        db.resources,
+        db.pads,
+        db.connectors,
         enrichScannedService,
-        db.scene,
       );
 
       if (fromScan) {
-        const scene = fromScan.scene!;
+        const scene = fromScan.scene;
         return {
           services: fromScan.services,
           edges: [] as {
@@ -172,8 +169,14 @@ export const infrastructureRouter = router({
         };
       }
 
-      // Fallback for older DBs without resources — client rebuilds connectors.
-      const laidOut = layoutServices(services.map(enrichScannedService));
+      // Fallback when the DB has no placed services — client rebuilds layout.
+      const laidOut = layoutServices(
+        services.map((service) => ({
+          ...enrichScannedService(service),
+          width: 1,
+          depth: 1,
+        })),
+      );
 
       return {
         services: laidOut.services,

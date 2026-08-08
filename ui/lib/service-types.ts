@@ -1,13 +1,13 @@
 import type { InfrastructureCategory } from "@/server/routers/infrastructure";
 
 export type ServiceTypeMeta = {
-  /** Mesh name in `/icons.glb`, matching the source SVG filename. */
+  /** Mesh name in `/assets.glb`, matching the source SVG filename. */
   icon: string;
   /** Visual category driving block silhouette and accents. */
   type: InfrastructureCategory;
 };
 
-/** Fallback mesh basename when `service` is missing from `gen-assets/icons/`. */
+/** Fallback mesh basename when `service` is missing from `scan/assets/icons/`. */
 export const UNKNOWN_SERVICE = "all-unknown";
 
 /**
@@ -26,7 +26,7 @@ export function resolveServiceType(service: string): ServiceTypeMeta {
   return SERVICE_TYPES[service] ?? SERVICE_TYPES[UNKNOWN_SERVICE]!;
 }
 
-/** Mesh name in `/icons.glb`; always resolves to a bundled fallback. */
+/** Mesh name in `/assets.glb`; always resolves to a bundled fallback. */
 export function resolveServiceIcon(service: string): string {
   return resolveServiceType(service).icon;
 }

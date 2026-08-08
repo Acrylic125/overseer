@@ -16,12 +16,16 @@ export type PackableService = Omit<InfrastructureService, "x" | "y"> & {
 };
 
 export type GroupPlatform = {
+  /** Pad id from scan (for nested `parent` links). */
+  id?: string;
   group: string;
+  /** Containing platform pad id when nested. */
+  parent?: string;
   centerX: number;
   centerZ: number;
   width: number;
   depth: number;
-  /** `gen-assets/shapes/` basename when this pad is a silhouette (e.g. cloud). */
+  /** `scan/assets/shapes/` basename when this pad is a silhouette (e.g. cloud). */
   shape?: string;
 };
 

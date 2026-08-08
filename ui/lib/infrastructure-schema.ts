@@ -65,10 +65,24 @@ export const categoryFieldsSchema = z
     }
   });
 
+/** World / layout position: `[x, y, z]`. */
+export const posSchema = z.tuple([z.number(), z.number(), z.number()]);
+export type Pos = z.infer<typeof posSchema>;
+
+/** Footprint `[width, depth]`. Omitted → `[1, 1]`. */
+export const sizeSchema = z.tuple([z.number(), z.number()]);
+export type Size = z.infer<typeof sizeSchema>;
+
+export const DEFAULT_SIZE: Size = [1, 1];
+
+export function resolveSize(size?: Size | null): Size {
+  return size ?? DEFAULT_SIZE;
+}
+
 /**
  * Shared identity / graph fields on every scanned service.
  *
- * `service` is the icon basename from `gen-assets/icons/` (e.g. `cf-worker`,
+ * `service` is the icon basename from `scan/assets/icons/` (e.g. `cf-worker`,
  * `r2`) — not a path. Unresolvable icons should use `all-unknown`.
  */
 export const scannedServiceBaseSchema = z.object({
@@ -80,134 +94,109 @@ export const scannedServiceBaseSchema = z.object({
   service: z.string().min(1),
 });
 
-/**
- * Scanned service: base identity plus generic categorized fields.
- * Field keys use optional `"type:name"` templating (`link`, `bool`, or plain text).
- */
 export const scannedServiceSchema = scannedServiceBaseSchema.extend({
   fields: z.record(z.string(), categoryFieldsSchema),
 });
 
-const vec3Schema = z.object({
-  x: z.number(),
-  y: z.number(),
-  z: z.number(),
+/** Service with layout placement. `size` omitted → `[1, 1]`. */
+export const placedServiceSchema = scannedServiceSchema.extend({
+  pos: posSchema,
+  size: sizeSchema.optional(),
 });
 
-/** Packed layout primitives produced by the scan layout service. */
-export const layoutResourceSchema = z.discriminatedUnion("type", [
+/**
+ * Platforms and silhouettes. Nest via `parent` (pad id of the containing
+ * platform). Root pads omit `parent`. Positions are world-absolute.
+ */
+export const padSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("platform"),
-    /** Cluster / group label shown on the platform. */
-    group: z.string().min(1),
-    width: z.number(),
-    height: z.number(),
-    x: z.number(),
-    y: z.number(),
-    z: z.number(),
-  }),
-  z.object({
-    type: z.literal("icon"),
-    /** Scanned service id this icon represents. */
     id: z.string().min(1),
-    source: z.string().min(1),
-    width: z.number(),
-    height: z.number(),
-    x: z.number(),
-    y: z.number(),
-    z: z.number(),
+    group: z.string().min(1),
+    parent: z.string().min(1).optional(),
+    pos: posSchema,
+    size: sizeSchema.optional(),
   }),
-  z.object({
-    type: z.literal("connector"),
-    sourceId: z.string().min(1),
-    targetId: z.string().min(1),
-    path: z.array(vec3Schema),
-  }),
-  /**
-   * Silhouette from `gen-assets/shapes/` (basename, e.g. `cloud`).
-   */
   z.object({
     type: z.literal("shape"),
+    id: z.string().min(1),
     shape: z.string().min(1),
     group: z.string().min(1),
+    parent: z.string().min(1).optional(),
     label: z.string().optional(),
-    width: z.number(),
-    height: z.number(),
-    x: z.number(),
-    y: z.number(),
-    z: z.number(),
+    pos: posSchema,
+    size: sizeSchema.optional(),
   }),
 ]);
 
-/**
- * Dense 3D scene bake (world XZ). Written by scan alongside `resources`.
- */
-export const sceneBakeSchema = z.object({
-  bounds: z.object({
-    minX: z.number(),
-    maxX: z.number(),
-    minZ: z.number(),
-    maxZ: z.number(),
-    centerX: z.number(),
-    centerZ: z.number(),
-    width: z.number(),
-    depth: z.number(),
-  }),
-  camera: z.object({
-    position: z.tuple([z.number(), z.number(), z.number()]),
-    span: z.number(),
-    far: z.number(),
-  }),
-  centerGuide: z.object({
-    x: z.number(),
-    y: z.number(),
-    radius: z.number(),
-  }),
-  publicInternet: z.object({
-    group: z.string().min(1),
-    /** `gen-assets/shapes/` basename used to draw this hub. */
-    shape: z.string().min(1).default("cloud"),
-    centerX: z.number(),
-    centerZ: z.number(),
-    width: z.number(),
-    depth: z.number(),
-  }),
-  connectorSegments: z.array(
-    z.object({
-      midX: z.number(),
-      midZ: z.number(),
-      length: z.number(),
-      dx: z.number(),
-      dz: z.number(),
-      sourceId: z.string().min(1),
-      targetId: z.string().min(1),
-    }),
-  ),
-  connectorJoints: z.array(
-    z.object({
-      x: z.number(),
-      z: z.number(),
-      sourceId: z.string().min(1),
-      targetId: z.string().min(1),
-    }),
-  ),
+export const connectorSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  path: z.array(posSchema).min(2),
 });
 
 export const infrastructureDbSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   scannedAt: z.string().datetime({ offset: true }),
-  services: z.array(scannedServiceSchema),
-  resources: z.array(layoutResourceSchema).default([]),
-  scene: sceneBakeSchema.optional(),
+  services: z.array(placedServiceSchema),
+  pads: z.array(padSchema),
+  connectors: z.array(connectorSchema),
   warnings: z.array(z.string()),
 });
 
 export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;
 export type ScannedService = z.infer<typeof scannedServiceSchema>;
-export type LayoutResource = z.infer<typeof layoutResourceSchema>;
-export type SceneBake = z.infer<typeof sceneBakeSchema>;
+export type PlacedService = z.infer<typeof placedServiceSchema>;
+export type Pad = z.infer<typeof padSchema>;
+export type Connector = z.infer<typeof connectorSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
+
+/**
+ * Dense 3D scene bake derived at load time (not stored in the DB).
+ * World XZ ground plane (scan layout y → world z).
+ */
+export type SceneBake = {
+  bounds: {
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  };
+  camera: {
+    position: [number, number, number];
+    span: number;
+    far: number;
+  };
+  centerGuide: { x: number; y: number; radius: number };
+  publicInternet: {
+    group: string;
+    shape: string;
+    centerX: number;
+    centerZ: number;
+    width: number;
+    depth: number;
+  };
+  connectorSegments: Array<{
+    midX: number;
+    midZ: number;
+    length: number;
+    dx: number;
+    dz: number;
+    sourceId: string;
+    targetId: string;
+  }>;
+  connectorJoints: Array<{
+    x: number;
+    z: number;
+    sourceId: string;
+    targetId: string;
+  }>;
+};
 
 const OPEN_TO_INTERNET_KEY = "bool:Is Open To Internet";
 

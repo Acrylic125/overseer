@@ -50,7 +50,7 @@ export const PLATFORM_PAD = 0.75;
 export const PLATFORM_SEPARATION = 4;
 /**
  * Public-internet cloud footprint at 1 service platform.
- * Aspect ≈ `gen-assets/shapes/cloud.svg` (647×318 ≈ 2:1).
+ * Aspect ≈ `scan/assets/shapes/cloud.svg` (647×318 ≈ 2:1).
  * Actual size = BASE * sqrt(platformCount), rounded per axis.
  */
 export const PUBLIC_INTERNET_BASE_WIDTH = 4;
@@ -73,7 +73,7 @@ export function publicInternetFootprint(platformCount: number) {
   };
 }
 
-export const BLOCK_GAP = 1;
+export const BLOCK_GAP = 1.5;
 export const MATERIAL_ROUGHNESS = 0.28;
 export const GRID_MAJOR_EVERY = 4;
 /** World-space extent of the infinite-feeling floor grid. */

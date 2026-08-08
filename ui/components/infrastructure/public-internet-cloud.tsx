@@ -15,7 +15,7 @@ import {
 } from "@/lib/platform-assets";
 
 export const PUBLIC_INTERNET_ID = "public-internet";
-/** `gen-assets/shapes/cloud.svg` mesh name in `/shapes.glb`. */
+/** `scan/assets/shapes/cloud.svg` mesh name in `/assets.glb`. */
 export const PUBLIC_INTERNET_SHAPE = "cloud";
 
 /** Lie flat on XZ (facing +Y). Parent group owns this so troika can't reset it. */
@@ -35,7 +35,7 @@ type PublicInternetCloudProps = {
 };
 
 /**
- * Public Internet hub — `cloud` shape from gen-assets with the shared
+ * Public Internet hub — `cloud` shape from scan assets with the shared
  * platform gradient. Uniform scale preserves the SVG aspect ratio and fits
  * inside the reserved width×depth footprint.
  */

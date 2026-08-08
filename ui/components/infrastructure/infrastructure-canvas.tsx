@@ -465,7 +465,7 @@ function Scene({
 
       {visiblePlatforms.map((platform) => (
         <FrostedPlatform
-          key={platform.group}
+          key={platform.id ?? platform.group}
           group={platform.group}
           centerX={platform.centerX}
           centerZ={platform.centerZ}
