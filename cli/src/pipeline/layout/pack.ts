@@ -723,13 +723,19 @@ export async function layoutServices(
     })),
   );
 
-  const connectors: Connector[] = paths.map((path) => ({
-    from: path.sourceId,
-    to: path.targetId,
-    path: path.points.map(
-      (p): Pos => roundPos([p.x, p.y, CONNECTOR_Z]),
-    ),
-  }));
+  const connectors: Connector[] = paths.map((path) => {
+    const source = graphServices.find((service) => service.id === path.sourceId);
+    const meta = source?.connectionMeta?.[path.targetId];
+    return {
+      from: path.sourceId,
+      to: path.targetId,
+      path: path.points.map(
+        (p): Pos => roundPos([p.x, p.y, CONNECTOR_Z]),
+      ),
+      variant: meta?.variant ?? "default",
+      ...(meta?.text ? { text: meta.text } : {}),
+    };
+  });
 
   return {
     services: placedServices,

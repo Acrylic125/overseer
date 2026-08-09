@@ -108,6 +108,19 @@ export const scannedServiceBaseSchema = z.object({
   name: z.string().min(1),
   /** Omitted in JSON when empty; defaults to `[]` when read. */
   connections: z.array(z.string()).default([]),
+  /**
+   * Optional per-target edge metadata (keyed by connected service id).
+   * Used when building connectors (variant / label text).
+   */
+  connectionMeta: z
+    .record(
+      z.string(),
+      z.object({
+        variant: z.enum(["default", "warning"]).default("default"),
+        text: z.string().min(1).optional(),
+      }),
+    )
+    .optional(),
   sourceType: z.string().min(1),
   service: z.string().min(1),
 });
@@ -162,10 +175,17 @@ export const padSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+export const connectorVariantSchema = z.enum(["default", "warning"]);
+export type ConnectorVariant = z.infer<typeof connectorVariantSchema>;
+
 export const connectorSchema = z.object({
   from: z.string().min(1),
   to: z.string().min(1),
   path: z.array(posSchema).min(2),
+  /** Visual / severity variant. Omitted → default. */
+  variant: connectorVariantSchema.default("default"),
+  /** Shown in the UI only when an endpoint service is focused. */
+  text: z.string().min(1).optional(),
 });
 
 export const infrastructureDbSchema = z.object({

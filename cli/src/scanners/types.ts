@@ -65,6 +65,27 @@ export type ScrapedVercelProject = ScrapedBase & {
   envs: ScrapedEnvVar[];
 };
 
+export type ScrapedAzureEntraSecret = {
+  /** Portal "Description" column (`passwordCredentials.displayName` in Graph). */
+  description: string;
+  /**
+   * Hint from Graph (typically first 3 chars of the secret).
+   * Full secret values are never returned after creation.
+   */
+  hint: string | null;
+  /** ISO expiry timestamp from Graph (`endDateTime`). */
+  expiresAt: string | null;
+};
+
+export type ScrapedAzureEntra = ScrapedBase & {
+  kind: "azure-entra";
+  applicationId: string;
+  directoryId: string;
+  /** Redirect URIs from web / spa / publicClient. */
+  redirectUris: string[];
+  secrets: ScrapedAzureEntraSecret[];
+};
+
 /** Discriminated by `kind` — only the fields that service actually has. */
 export type ScrapedResource =
   | ScrapedCfWorker
@@ -73,7 +94,8 @@ export type ScrapedResource =
   | ScrapedCfR2
   | ScrapedCfVectorize
   | ScrapedCfQueue
-  | ScrapedVercelProject;
+  | ScrapedVercelProject
+  | ScrapedAzureEntra;
 
 /** Aggregated scrape results for one provider. */
 export type ScrapeContext = {
@@ -86,3 +108,16 @@ export type ScanOutcome = {
   services: ScannedService[];
   warnings: string[];
 };
+
+/**
+ * Provider scanner facade. New providers implement this in their scrape file:
+ *   1. `probe(provider)` — token check; `null` if scannable, else a reason
+ *   2. `scrape()` — emit {@link ScrapedResource} rows
+ *   3. `transform(ctx)` — map resources → {@link ScannedService}
+ *
+ * Cross-provider env→domain links run later via `finalizeScan`.
+ */
+export interface ServiceScanner {
+  scrape(): Promise<ScrapeContext>;
+  transform(ctx: ScrapeContext): ScannedService[];
+}

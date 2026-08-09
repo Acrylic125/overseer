@@ -2,6 +2,8 @@ import Cloudflare from "cloudflare";
 
 import { log as cli } from "../../cli/log.js";
 import type { CloudflareProvider } from "../../providers.js";
+import type { ScannedService } from "../../schema.js";
+import { resourceToService } from "../transform.js";
 import type {
   ScrapedCfD1,
   ScrapedCfKv,
@@ -12,6 +14,7 @@ import type {
   ScrapedEnvVar,
   ScrapedResource,
   ScrapeContext,
+  ServiceScanner,
 } from "../types.js";
 import {
   assertTokenUsable,
@@ -681,6 +684,28 @@ async function fetchAccountInfrastructure(
   return { resources, warnings };
 }
 
+/** Returns null when the token can scan; otherwise a human-readable reason. */
+export async function probeCloudflareProvider(
+  provider: CloudflareProvider,
+): Promise<string | null> {
+  const client = new Cloudflare({
+    apiToken: provider.apiKey,
+    maxRetries: 0,
+    timeout: REQUEST_TIMEOUT_MS,
+  });
+  const tokenCheck = await assertTokenUsable(
+    client,
+    provider.namespace,
+    provider.apiKey,
+  );
+  if ("error" in tokenCheck) {
+    const prefix = `provider:${provider.namespace}: `;
+    const message = tokenCheck.error;
+    return message.startsWith(prefix) ? message.slice(prefix.length) : message;
+  }
+  return null;
+}
+
 async function fetchProviderInfrastructure(
   provider: CloudflareProvider,
   showNamespace: boolean,
@@ -786,4 +811,27 @@ export async function scrapeCloudflare(
   });
 
   return { resources, warnings };
+}
+
+/**
+ * Cloudflare scanner facade.
+ *
+ * New providers mirror this in their scrape file:
+ *   probe → scrape → transform
+ */
+export class CloudflareScanner implements ServiceScanner {
+  constructor(private readonly providers: CloudflareProvider[]) {}
+
+  /** `null` if scannable; otherwise a human-readable reason. */
+  static probe(provider: CloudflareProvider): Promise<string | null> {
+    return probeCloudflareProvider(provider);
+  }
+
+  scrape(): Promise<ScrapeContext> {
+    return scrapeCloudflare(this.providers);
+  }
+
+  transform(ctx: ScrapeContext): ScannedService[] {
+    return ctx.resources.map(resourceToService);
+  }
 }

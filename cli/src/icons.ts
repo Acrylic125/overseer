@@ -18,6 +18,11 @@ const VERCEL_ICON_BY_KIND: Record<string, string> = {
   Project: "vercel",
 };
 
+/** Azure product kind → icon basename. */
+const AZURE_ICON_BY_KIND: Record<string, string> = {
+  Entra: "azure-entra",
+};
+
 /** Resolve a Cloudflare kind to an assets.glb mesh name. */
 export function iconServiceForCfKind(kind: string): string {
   return CF_ICON_BY_KIND[kind] ?? DEFAULT_ICON_SERVICE;
@@ -26,4 +31,9 @@ export function iconServiceForCfKind(kind: string): string {
 /** Resolve a Vercel kind to an assets.glb mesh name. */
 export function iconServiceForVercelKind(kind: string): string {
   return VERCEL_ICON_BY_KIND[kind] ?? DEFAULT_ICON_SERVICE;
+}
+
+/** Resolve an Azure kind to an assets.glb mesh name. */
+export function iconServiceForAzureKind(kind: string): string {
+  return AZURE_ICON_BY_KIND[kind] ?? DEFAULT_ICON_SERVICE;
 }

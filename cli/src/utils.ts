@@ -1,13 +1,10 @@
 /**
- * Redact secret values: keep first 3 and last 3 chars, obscure the middle.
- * Short values keep a leading prefix then `*********`.
+ * Redact secret values: keep first 3 and last 3 chars when long enough,
+ * with a fixed `******` middle. Shorter values are fully masked.
  */
 export function redactSensitiveValue(value: string): string {
-  if (value.length === 0) return "*********";
-  if (value.length <= 6) {
-    return `${value.slice(0, Math.min(3, value.length))}*********`;
-  }
-  return `${value.slice(0, 3)}*********${value.slice(-3)}`;
+  if (value.length <= 6) return "******";
+  return `${value.slice(0, 3)}******${value.slice(-3)}`;
 }
 
 /** True when an env var type should be redacted in scan output. */

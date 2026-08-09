@@ -1,11 +1,21 @@
-import type { CategoryFields, ScannedService, ServiceFields } from "../schema.js";
+import type {
+  CategoryFields,
+  ScannedService,
+  ServiceFields,
+} from "../schema.js";
 import { ensureInternetHub } from "../internet.js";
 import {
+  iconServiceForAzureKind,
   iconServiceForCfKind,
   iconServiceForVercelKind,
 } from "../icons.js";
 import { isSecretEnvType, redactSensitiveValue } from "../utils.js";
-import type { ScrapedEnvVar, ScrapedResource, ScanOutcome } from "./types.js";
+import type {
+  ScrapedAzureEntraSecret,
+  ScrapedEnvVar,
+  ScrapedResource,
+  ScanOutcome,
+} from "./types.js";
 
 /**
  * Field category keys for env vars, split by deploy target:
@@ -27,7 +37,7 @@ const ENV_TARGET_ORDER = [
 function displayEnvValue(env: ScrapedEnvVar): string {
   // Undecrypted ciphertext isn't useful in the UI — fully mask it.
   if (env.type === "encrypted" && env.decrypted === false) {
-    return "*********";
+    return "******";
   }
   if (isSecretEnvType(env.type)) {
     return redactSensitiveValue(env.value);
@@ -72,12 +82,8 @@ export function buildEnvironmentFieldsByTarget(
   }
 
   const ordered = [...buckets.keys()].sort((a, b) => {
-    const ai = ENV_TARGET_ORDER.indexOf(
-      a as (typeof ENV_TARGET_ORDER)[number],
-    );
-    const bi = ENV_TARGET_ORDER.indexOf(
-      b as (typeof ENV_TARGET_ORDER)[number],
-    );
+    const ai = ENV_TARGET_ORDER.indexOf(a as (typeof ENV_TARGET_ORDER)[number]);
+    const bi = ENV_TARGET_ORDER.indexOf(b as (typeof ENV_TARGET_ORDER)[number]);
     const aRank = ai === -1 ? ENV_TARGET_ORDER.length : ai;
     const bRank = bi === -1 ? ENV_TARGET_ORDER.length : bi;
     if (aRank !== bRank) return aRank - bRank;
@@ -148,7 +154,14 @@ export function hostsFromEnvValue(value: string): string[] {
 }
 
 function sourceTypeOf(resource: ScrapedResource): string {
-  return resource.kind === "vercel-project" ? "vercel" : "cf";
+  switch (resource.kind) {
+    case "vercel-project":
+      return "vercel";
+    case "azure-entra":
+      return "azure";
+    default:
+      return "cf";
+  }
 }
 
 function iconOf(resource: ScrapedResource): string {
@@ -167,6 +180,8 @@ function iconOf(resource: ScrapedResource): string {
       return iconServiceForCfKind("Queue");
     case "vercel-project":
       return iconServiceForVercelKind("Project");
+    case "azure-entra":
+      return iconServiceForAzureKind("Entra");
   }
 }
 
@@ -203,6 +218,29 @@ function networkingFields(
       ...extra,
     },
   };
+}
+
+/** Redacted value + expiry as a multiline string array for Client Secrets. */
+function formatEntraSecretValue(secret: ScrapedAzureEntraSecret): string[] {
+  const redacted = secret.hint ? `${secret.hint}******` : "******";
+  const expiry = secret.expiresAt ? secret.expiresAt.slice(0, 10) : "unknown";
+  return [redacted, expiry];
+}
+
+function entraSecretFields(secrets: ScrapedAzureEntraSecret[]): CategoryFields {
+  const fields: CategoryFields = {};
+  const usedKeys = new Map<string, number>();
+
+  for (const secret of secrets) {
+    // Graph `displayName` is the portal "Description" column.
+    const base = secret.description.trim() || "(no description)";
+    const count = usedKeys.get(base) ?? 0;
+    usedKeys.set(base, count + 1);
+    const key = count === 0 ? base : `${base} (${count + 1})`;
+    fields[key] = formatEntraSecretValue(secret);
+  }
+
+  return fields;
 }
 
 /** Map a scraped resource into a scanned service. */
@@ -253,6 +291,26 @@ export function resourceToService(resource: ScrapedResource): ScannedService {
             : {}),
         },
       };
+
+    case "azure-entra": {
+      const secretFields = entraSecretFields(resource.secrets);
+      return {
+        ...base,
+        connections: [],
+        fields: {
+          Overview: {
+            "Application (client) ID": resource.applicationId,
+            "Directory (tenant) ID": resource.directoryId,
+            ...(resource.redirectUris.length > 0
+              ? { "Redirect URIs": resource.redirectUris }
+              : {}),
+          },
+          ...(Object.keys(secretFields).length > 0
+            ? { "Client Secrets": secretFields }
+            : {}),
+        },
+      };
+    }
 
     case "cf-kv":
     case "cf-d1":
@@ -307,13 +365,127 @@ export function linkEnvToDomains(
   }
 }
 
-/** Cross-provider finalize: env→domain links + public-internet hub. */
+const CLIENT_ID_RE =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+function clientIdsFromEnvValue(value: string): string[] {
+  const ids = new Set<string>();
+  for (const match of value.matchAll(CLIENT_ID_RE)) {
+    const id = match[0]?.toLowerCase();
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+function addConnection(
+  service: ScannedService,
+  targetId: string,
+  meta?: { variant: "default" | "warning"; text?: string },
+): void {
+  if (!service.connections.includes(targetId)) {
+    service.connections.push(targetId);
+  }
+  if (!meta) return;
+
+  const prev = service.connectionMeta?.[targetId];
+  // Prefer warning over default when both linkers touch the same edge.
+  if (prev?.variant === "warning" && meta.variant !== "warning") return;
+
+  service.connectionMeta = {
+    ...(service.connectionMeta ?? {}),
+    [targetId]: {
+      variant: meta.variant,
+      ...(meta.text ? { text: meta.text } : {}),
+    },
+  };
+}
+
+function domainsMatchRedirects(
+  domains: string[],
+  redirectUris: string[],
+): boolean {
+  const serviceHosts = domains
+    .map((domain) => normalizeHost(domain))
+    .filter((host): host is string => Boolean(host));
+  if (serviceHosts.length === 0) return false;
+
+  for (const uri of redirectUris) {
+    const redirectHost = normalizeHost(uri);
+    if (!redirectHost) continue;
+    for (const host of serviceHosts) {
+      if (
+        host === redirectHost ||
+        host.endsWith(`.${redirectHost}`) ||
+        redirectHost.endsWith(`.${host}`)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Link services whose env values contain an Entra application (client) ID.
+ * Warning when the source has no domain, or domains don't match redirect URIs.
+ */
+export function linkEnvToAzureClientIds(
+  services: ScannedService[],
+  resources: ScrapedResource[],
+): void {
+  const entraByClientId = new Map<
+    string,
+    { id: string; redirectUris: string[] }
+  >();
+
+  for (const resource of resources) {
+    if (resource.kind !== "azure-entra") continue;
+    entraByClientId.set(resource.applicationId.toLowerCase(), {
+      id: resource.id,
+      redirectUris: resource.redirectUris,
+    });
+  }
+  if (entraByClientId.size === 0) return;
+
+  const byId = new Map(services.map((service) => [service.id, service]));
+
+  for (const resource of resources) {
+    const service = byId.get(resource.id);
+    if (!service || resource.kind === "azure-entra") continue;
+
+    const domains = resourceDomains(resource);
+    for (const env of resourceEnvs(resource)) {
+      if (!env.value || isSecretEnvType(env.type)) continue;
+      for (const clientId of clientIdsFromEnvValue(env.value)) {
+        const entra = entraByClientId.get(clientId);
+        if (!entra || entra.id === resource.id) continue;
+
+        if (domains.length === 0) {
+          addConnection(service, entra.id, {
+            variant: "warning",
+            text: "Service has no domain",
+          });
+        } else if (!domainsMatchRedirects(domains, entra.redirectUris)) {
+          addConnection(service, entra.id, {
+            variant: "warning",
+            text: "Domain does not match redirect URI",
+          });
+        } else {
+          addConnection(service, entra.id, { variant: "default" });
+        }
+      }
+    }
+  }
+}
+
+/** Cross-provider finalize: env→domain / env→Entra links + public-internet hub. */
 export function finalizeScan(
   services: ScannedService[],
   resources: ScrapedResource[],
   warnings: string[],
 ): ScanOutcome {
   linkEnvToDomains(services, resources);
+  linkEnvToAzureClientIds(services, resources);
   return {
     services: ensureInternetHub(services),
     warnings: [...warnings],

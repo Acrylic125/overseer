@@ -2,11 +2,14 @@ import { Vercel } from "@vercel/sdk";
 
 import { log as cli } from "../../cli/log.js";
 import type { VercelProvider } from "../../providers.js";
+import type { ScannedService } from "../../schema.js";
+import { resourceToService } from "../transform.js";
 import type {
   ScrapedEnvVar,
   ScrapedResource,
   ScrapedVercelProject,
   ScrapeContext,
+  ServiceScanner,
 } from "../types.js";
 import {
   elapsed,
@@ -383,6 +386,33 @@ async function decryptEnvs(
   return out;
 }
 
+/** Returns null when the token can scan; otherwise a human-readable reason. */
+export async function probeVercelProvider(
+  provider: VercelProvider,
+): Promise<string | null> {
+  const client = new Vercel({
+    bearerToken: provider.apiKey,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    retryConfig: { strategy: "none" },
+  });
+
+  try {
+    await withTimeout(
+      client.projects.getProjects({
+        limit: "1",
+        ...teamParams(provider),
+      }),
+      REQUEST_TIMEOUT_MS,
+      `probe:${provider.namespace}`,
+    );
+    return null;
+  } catch (error) {
+    const message = formatAuthFailure(provider.namespace, error);
+    const prefix = `provider:${provider.namespace}: `;
+    return message.startsWith(prefix) ? message.slice(prefix.length) : message;
+  }
+}
+
 async function fetchProviderProjects(
   provider: VercelProvider,
   showNamespace: boolean,
@@ -522,4 +552,27 @@ export async function scrapeVercel(
   });
 
   return { resources, warnings };
+}
+
+/**
+ * Vercel scanner facade.
+ *
+ * New providers mirror this in their scrape file:
+ *   probe → scrape → transform
+ */
+export class VercelScanner implements ServiceScanner {
+  constructor(private readonly providers: VercelProvider[]) {}
+
+  /** `null` if scannable; otherwise a human-readable reason. */
+  static probe(provider: VercelProvider): Promise<string | null> {
+    return probeVercelProvider(provider);
+  }
+
+  scrape(): Promise<ScrapeContext> {
+    return scrapeVercel(this.providers);
+  }
+
+  transform(ctx: ScrapeContext): ScannedService[] {
+    return ctx.resources.map(resourceToService);
+  }
 }

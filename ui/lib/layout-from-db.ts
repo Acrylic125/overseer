@@ -98,6 +98,8 @@ function deriveScene(
         dz: dz / length,
         sourceId: path.sourceId,
         targetId: path.targetId,
+        variant: path.variant ?? "default",
+        ...(path.text ? { text: path.text } : {}),
       });
     }
     for (let i = 1; i < pts.length - 1; i += 1) {
@@ -107,6 +109,8 @@ function deriveScene(
         z: p.z,
         sourceId: path.sourceId,
         targetId: path.targetId,
+        variant: path.variant ?? "default",
+        ...(path.text ? { text: path.text } : {}),
       });
     }
   }
@@ -204,6 +208,8 @@ export function layoutFromDb(
       id: `${connector.from}->${connector.to}:${index}`,
       sourceId: connector.from,
       targetId: connector.to,
+      variant: connector.variant ?? "default",
+      ...(connector.text ? { text: connector.text } : {}),
       // Scan path y → world z.
       points: connector.path.map(([x, y]) => ({ x, z: y })),
     }));

@@ -91,6 +91,32 @@ export class CliLog {
     this.redrawSpinner();
   }
 
+  /**
+   * Environments discovered from `.env`.
+   * Failed entries are printed in red with a reason.
+   */
+  environments(
+    entries: Array<{ name: string; platform: string; error?: string }>,
+  ): void {
+    this.clearSpinnerLine();
+    console.log(paint(ansi.bold, "Found environments:"));
+    if (entries.length === 0) {
+      console.log(" - (none)");
+    } else {
+      for (const entry of entries) {
+        const base = ` - ${entry.name} (${entry.platform})`;
+        if (entry.error) {
+          console.log(
+            paint(`${ansi.bold}${ansi.red}`, `${base} — ${entry.error}`),
+          );
+        } else {
+          console.log(base);
+        }
+      }
+    }
+    this.redrawSpinner();
+  }
+
   /** Tree child under the current section: `|_ Scanning Workers`. */
   step(title: string): void {
     this.clearSpinnerLine();

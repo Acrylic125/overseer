@@ -20,14 +20,24 @@ export type WriteDbInput = {
   outDir: string;
 };
 
-/** Drop empty `connections` so the wire JSON stays sparse. */
+/** Drop empty `connections` / `connectionMeta` so the wire JSON stays sparse. */
 function forWire(db: InfrastructureDb): InfrastructureDb {
   return {
     ...db,
     services: db.services.map((service) => {
-      if (service.connections.length > 0) return service;
-      const { connections: _omit, ...rest } = service;
-      return rest as PlacedService;
+      let next: PlacedService = service;
+      if (service.connections.length === 0) {
+        const { connections: _omit, ...rest } = next;
+        next = rest as PlacedService;
+      }
+      if (
+        !service.connectionMeta ||
+        Object.keys(service.connectionMeta).length === 0
+      ) {
+        const { connectionMeta: _omitMeta, ...rest } = next;
+        next = rest as PlacedService;
+      }
+      return next;
     }),
   };
 }

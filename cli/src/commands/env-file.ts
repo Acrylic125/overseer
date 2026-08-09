@@ -83,7 +83,7 @@ export function maskEnvLine(line: string): string {
 
   const key = trimmed.slice(0, eq);
   const value = trimmed.slice(eq + 1);
-  if (!/(API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY)$/i.test(key)) {
+  if (!/(API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY|PAT)$/i.test(key)) {
     return line;
   }
   return `${key}=${redactSensitiveValue(value)}`;

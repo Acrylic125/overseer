@@ -12,11 +12,21 @@ import { envPath, repoRoot } from "../paths.js";
 
 const CF_TOKEN_URL = "https://dash.cloudflare.com/profile/api-tokens";
 const VERCEL_TOKEN_URL = "https://vercel.com/account/tokens";
+const AZURE_NEW_APP_URL =
+  "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade";
+const AZURE_APPS_URL =
+  "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade";
+const AZURE_PERM_DOCS_URL =
+  "https://learn.microsoft.com/en-us/graph/permissions-reference#applicationreadall";
+const AZURE_CONSENT_DOCS_URL =
+  "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent";
+const AZURE_SECRET_DOCS_URL =
+  "https://learn.microsoft.com/en-us/entra/identity-platform/howto-create-service-principal-portal#option-3-create-a-new-client-secret";
 const NAMESPACE_RE = /^[a-zA-Z0-9_]+$/;
 
-type ServiceType = "cf" | "vercel";
+type ServiceType = "cf" | "vercel" | "azure";
 
-function envKeyFor(service: ServiceType, namespace: string): string {
+function envKeyFor(service: Exclude<ServiceType, "azure">, namespace: string): string {
   switch (service) {
     case "cf":
       return `PROVIDER_CF_${namespace}_API_KEY`;
@@ -27,6 +37,18 @@ function envKeyFor(service: ServiceType, namespace: string): string {
 
 function teamEnvKeyFor(namespace: string): string {
   return `PROVIDER_VERCEL_${namespace}_TEAM_ID`;
+}
+
+function azureTenantKeyFor(namespace: string): string {
+  return `PROVIDER_AZURE_${namespace}_TENANT_ID`;
+}
+
+function azureClientIdKeyFor(namespace: string): string {
+  return `PROVIDER_AZURE_${namespace}_CLIENT_ID`;
+}
+
+function azurePatKeyFor(namespace: string): string {
+  return `PROVIDER_AZURE_${namespace}_PAT`;
 }
 
 /** Interactive provider setup — writes API tokens into `cli/.env`. */
@@ -46,6 +68,11 @@ export async function runInit(): Promise<void> {
           name: "Vercel",
           value: "vercel" as const,
           description: "Projects, domains, and environment variables",
+        },
+        {
+          name: "Azure",
+          value: "azure" as const,
+          description: "Entra ID app registrations and client secrets",
         },
         {
           name: "Done",
@@ -138,6 +165,71 @@ export async function runInit(): Promise<void> {
         if (teamIdx >= 0) pending[teamIdx] = teamChange;
         else pending.push(teamChange);
         console.log(`Queued ${teamChange.key}`);
+      }
+      console.log();
+    }
+
+    if (service === "azure") {
+      const ns = namespace.trim();
+      const tenantKey = azureTenantKeyFor(ns);
+      const clientIdKey = azureClientIdKeyFor(ns);
+      const patKey = azurePatKeyFor(ns);
+
+      console.log("\nOne Entra app = scanner login (like a CF API token).");
+      console.log("Scan then lists all app registrations in the tenant.\n");
+      console.log("1. New registration (single tenant, no redirect)");
+      console.log(`   ${AZURE_NEW_APP_URL}`);
+      console.log("2. Overview → copy Tenant ID + Client ID");
+      console.log(`   ${AZURE_APPS_URL}`);
+      console.log("3. API permissions → Microsoft Graph → Application →");
+      console.log("   Application.Read.All, then Grant admin consent");
+      console.log(`   ${AZURE_PERM_DOCS_URL}`);
+      console.log(`   ${AZURE_CONSENT_DOCS_URL}`);
+      console.log("4. Certificates & secrets → New client secret (= PAT)");
+      console.log(`   ${AZURE_SECRET_DOCS_URL}`);
+      console.log(`\nStored as:\n  ${tenantKey}\n  ${clientIdKey}\n  ${patKey}\n`);
+
+      const tenantId = await input({
+        message: "Directory (tenant) ID",
+        validate: (value) =>
+          value.trim() ? true : "Tenant ID is required (Ctrl+C to cancel)",
+      });
+      const clientId = await input({
+        message: "Application (client) ID",
+        validate: (value) =>
+          value.trim() ? true : "Client ID is required (Ctrl+C to cancel)",
+      });
+      const pat = await input({
+        message: "PAT (client secret value)",
+        validate: (value) =>
+          value.trim() ? true : "PAT is required (Ctrl+C to cancel)",
+      });
+
+      const changes: PendingEnvChange[] = [
+        {
+          key: tenantKey,
+          value: tenantId.trim(),
+          service: "azure",
+          namespace: ns,
+        },
+        {
+          key: clientIdKey,
+          value: clientId.trim(),
+          service: "azure",
+          namespace: ns,
+        },
+        {
+          key: patKey,
+          value: pat.trim(),
+          service: "azure",
+          namespace: ns,
+        },
+      ];
+      for (const change of changes) {
+        const idx = pending.findIndex((p) => p.key === change.key);
+        if (idx >= 0) pending[idx] = change;
+        else pending.push(change);
+        console.log(`Queued ${change.key}`);
       }
       console.log();
     }

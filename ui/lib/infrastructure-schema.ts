@@ -94,6 +94,15 @@ export const scannedServiceBaseSchema = z.object({
   name: z.string().min(1),
   /** Omitted in JSON when empty; defaults to `[]` when read. */
   connections: z.array(z.string()).default([]),
+  connectionMeta: z
+    .record(
+      z.string(),
+      z.object({
+        variant: z.enum(["default", "warning"]).default("default"),
+        text: z.string().min(1).optional(),
+      }),
+    )
+    .optional(),
   sourceType: z.string().min(1),
   service: z.string().min(1),
 });
@@ -134,10 +143,15 @@ export const padSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+export const connectorVariantSchema = z.enum(["default", "warning"]);
+export type ConnectorVariant = z.infer<typeof connectorVariantSchema>;
+
 export const connectorSchema = z.object({
   from: z.string().min(1),
   to: z.string().min(1),
   path: z.array(posSchema).min(2),
+  variant: connectorVariantSchema.default("default"),
+  text: z.string().min(1).optional(),
 });
 
 export const infrastructureDbSchema = z.object({
@@ -194,12 +208,16 @@ export type SceneBake = {
     dz: number;
     sourceId: string;
     targetId: string;
+    variant?: "default" | "warning";
+    text?: string;
   }>;
   connectorJoints: Array<{
     x: number;
     z: number;
     sourceId: string;
     targetId: string;
+    variant?: "default" | "warning";
+    text?: string;
   }>;
 };
 

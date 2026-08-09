@@ -34,6 +34,10 @@ export const SCENE = {
   connector: "oklch(37.2% 0.044 257.287)",
   /** Bright accent for connectors linked to the selected service. */
   connectorHighlight: "#8ec7ff",
+  /** Warning connector (e.g. Entra domain / redirect mismatch). */
+  connectorWarning: "#df5a5a",
+  /** Selected warning connector accent. */
+  connectorWarningHighlight: "#ff8a8a",
   /** Public-internet cloud mass. */
   publicInternet: "oklch(37.2% 0.044 257.287)",
 } as const;

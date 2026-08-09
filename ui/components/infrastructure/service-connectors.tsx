@@ -1,5 +1,6 @@
 "use client";
 
+import { Html } from "@react-three/drei";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
@@ -19,37 +20,58 @@ const CONNECTOR_Y = 0;
 const JOINT_RADIUS = CONNECTOR_SIZE * 0.7;
 const HIGHLIGHT_SCALE = 1.55;
 
+type ConnectorVariant = "default" | "warning";
+
 let connectorMaterial: THREE.MeshBasicMaterial | null = null;
 let highlightMaterial: THREE.MeshBasicMaterial | null = null;
+let warningMaterial: THREE.MeshBasicMaterial | null = null;
+let warningHighlightMaterial: THREE.MeshBasicMaterial | null = null;
 let segmentGeometry: THREE.BoxGeometry | null = null;
 let jointGeometry: THREE.CylinderGeometry | null = null;
 
-function getConnectorMaterial() {
-  const color = cssToThreeColor(SCENE.connector);
-  if (!connectorMaterial) {
-    connectorMaterial = new THREE.MeshBasicMaterial({
+function getOrUpdateMaterial(
+  existing: THREE.MeshBasicMaterial | null,
+  css: string,
+): THREE.MeshBasicMaterial {
+  const color = cssToThreeColor(css);
+  if (!existing) {
+    return new THREE.MeshBasicMaterial({
       color,
       toneMapped: false,
       depthWrite: true,
     });
-  } else {
-    connectorMaterial.color.copy(color);
   }
+  existing.color.copy(color);
+  return existing;
+}
+
+function getConnectorMaterial() {
+  connectorMaterial = getOrUpdateMaterial(connectorMaterial, SCENE.connector);
   return connectorMaterial;
 }
 
 function getHighlightMaterial() {
-  const color = cssToThreeColor(SCENE.connectorHighlight);
-  if (!highlightMaterial) {
-    highlightMaterial = new THREE.MeshBasicMaterial({
-      color,
-      toneMapped: false,
-      depthWrite: true,
-    });
-  } else {
-    highlightMaterial.color.copy(color);
-  }
+  highlightMaterial = getOrUpdateMaterial(
+    highlightMaterial,
+    SCENE.connectorHighlight,
+  );
   return highlightMaterial;
+}
+
+function getWarningMaterial() {
+  warningMaterial = getOrUpdateMaterial(
+    warningMaterial,
+    SCENE.connectorWarning,
+  );
+  return warningMaterial;
+}
+
+function getWarningHighlightMaterial() {
+  warningHighlightMaterial = getOrUpdateMaterial(
+    warningHighlightMaterial,
+    SCENE.connectorWarningHighlight,
+  );
+  return warningHighlightMaterial;
 }
 
 /** Unit-length flat ribbon in XZ (width × thickness × length-1). */
@@ -85,6 +107,8 @@ type SegmentInstance = {
   dz: number;
   sourceId?: string;
   targetId?: string;
+  variant: ConnectorVariant;
+  text?: string;
 };
 
 type JointInstance = {
@@ -92,13 +116,26 @@ type JointInstance = {
   z: number;
   sourceId?: string;
   targetId?: string;
+  variant: ConnectorVariant;
+  text?: string;
+};
+
+type LabelInstance = {
+  x: number;
+  z: number;
+  text: string;
+  warning: boolean;
+  key: string;
 };
 
 function collectFromPaths(paths: ConnectorPath[]) {
   const segments: SegmentInstance[] = [];
   const joints: JointInstance[] = [];
+  const labels: LabelInstance[] = [];
 
   for (const path of paths) {
+    const variant: ConnectorVariant =
+      path.variant === "warning" ? "warning" : "default";
     const pts = path.points;
     for (let i = 0; i < pts.length - 1; i += 1) {
       const a = pts[i]!;
@@ -115,6 +152,8 @@ function collectFromPaths(paths: ConnectorPath[]) {
         dz: dz / length,
         sourceId: path.sourceId,
         targetId: path.targetId,
+        variant,
+        ...(path.text ? { text: path.text } : {}),
       });
     }
     for (let i = 1; i < pts.length - 1; i += 1) {
@@ -124,11 +163,55 @@ function collectFromPaths(paths: ConnectorPath[]) {
         z: p.z,
         sourceId: path.sourceId,
         targetId: path.targetId,
+        variant,
+        ...(path.text ? { text: path.text } : {}),
+      });
+    }
+    if (path.text && pts.length > 0) {
+      const mid = pts[Math.floor(pts.length / 2)]!;
+      labels.push({
+        x: mid.x,
+        z: mid.z,
+        text: path.text,
+        warning: variant === "warning",
+        key: path.id,
       });
     }
   }
 
-  return { segments, joints };
+  return { segments, joints, labels };
+}
+
+function collectFromBake(
+  segments: SceneBake["connectorSegments"],
+  joints: SceneBake["connectorJoints"],
+  paths: ConnectorPath[],
+) {
+  const mappedSegments: SegmentInstance[] = segments.map((s) => ({
+    ...s,
+    variant: s.variant === "warning" ? "warning" : "default",
+  }));
+  const mappedJoints: JointInstance[] = joints.map((j) => ({
+    ...j,
+    variant: j.variant === "warning" ? "warning" : "default",
+  }));
+  const labels: LabelInstance[] = [];
+  for (const path of paths) {
+    if (!path.text || path.points.length === 0) continue;
+    const mid = path.points[Math.floor(path.points.length / 2)]!;
+    labels.push({
+      x: mid.x,
+      z: mid.z,
+      text: path.text,
+      warning: path.variant === "warning",
+      key: path.id,
+    });
+  }
+  return {
+    segments: mappedSegments,
+    joints: mappedJoints,
+    labels,
+  };
 }
 
 function linkedTo(
@@ -218,6 +301,22 @@ function scheduleIdle(fn: () => void): () => void {
   return () => window.clearTimeout(id);
 }
 
+type MeshBundle = {
+  defaultSeg: THREE.InstancedMesh | null;
+  defaultJoint: THREE.InstancedMesh | null;
+  warningSeg: THREE.InstancedMesh | null;
+  warningJoint: THREE.InstancedMesh | null;
+};
+
+function emptyBundle(): MeshBundle {
+  return {
+    defaultSeg: null,
+    defaultJoint: null,
+    warningSeg: null,
+    warningJoint: null,
+  };
+}
+
 export function ServiceConnectors({
   services,
   selectedServiceId = null,
@@ -247,7 +346,10 @@ export function ServiceConnectors({
   // Prefer scan-authored paths; otherwise build routes off the critical path.
   // Skip entirely when segment instances are already baked.
   useEffect(() => {
-    if (hasBakedInstances) return;
+    if (hasBakedInstances) {
+      if (precomputedPaths != null) setPaths(precomputedPaths);
+      return;
+    }
 
     if (precomputedPaths != null) {
       setPaths(precomputedPaths);
@@ -265,70 +367,133 @@ export function ServiceConnectors({
     };
   }, [signature, precomputedPaths, hasBakedInstances]);
 
+  const geometry = useMemo(() => {
+    if (hasBakedInstances) {
+      return collectFromBake(
+        precomputedSegments!,
+        precomputedJoints!,
+        paths.length > 0 ? paths : (precomputedPaths ?? []),
+      );
+    }
+    return collectFromPaths(paths);
+  }, [
+    hasBakedInstances,
+    precomputedSegments,
+    precomputedJoints,
+    paths,
+    precomputedPaths,
+  ]);
+
   const meshes = useMemo(() => {
-    const all =
-      hasBakedInstances
-        ? {
-            segments: precomputedSegments,
-            joints: precomputedJoints,
-          }
-        : collectFromPaths(paths);
+    const split = (items: { variant: ConnectorVariant }[]) => ({
+      default: items.filter((item) => item.variant !== "warning"),
+      warning: items.filter((item) => item.variant === "warning"),
+    });
 
     if (!selectedServiceId) {
-      const built = buildMeshes(
-        all.segments,
-        all.joints,
+      const segs = split(geometry.segments);
+      const joints = split(geometry.joints);
+      const def = buildMeshes(
+        segs.default as SegmentInstance[],
+        joints.default as JointInstance[],
         getConnectorMaterial(),
       );
+      const warn = buildMeshes(
+        segs.warning as SegmentInstance[],
+        joints.warning as JointInstance[],
+        getWarningMaterial(),
+      );
       return {
-        allSeg: built.segmentMesh,
-        allJoint: built.jointMesh,
-        hiSeg: null as THREE.InstancedMesh | null,
-        hiJoint: null as THREE.InstancedMesh | null,
+        idle: {
+          defaultSeg: def.segmentMesh,
+          defaultJoint: def.jointMesh,
+          warningSeg: warn.segmentMesh,
+          warningJoint: warn.jointMesh,
+        } satisfies MeshBundle,
+        focused: emptyBundle(),
       };
     }
 
-    const hiSegments = all.segments.filter((s) =>
+    const linkedSegs = geometry.segments.filter((s) =>
       linkedTo(s, selectedServiceId),
     );
-    const hiJoints = all.joints.filter((j) => linkedTo(j, selectedServiceId));
-    const hiMeshes = buildMeshes(
-      hiSegments,
-      hiJoints,
+    const linkedJoints = geometry.joints.filter((j) =>
+      linkedTo(j, selectedServiceId),
+    );
+    const segs = split(linkedSegs);
+    const joints = split(linkedJoints);
+    const def = buildMeshes(
+      segs.default as SegmentInstance[],
+      joints.default as JointInstance[],
       getHighlightMaterial(),
+      HIGHLIGHT_SCALE,
+    );
+    const warn = buildMeshes(
+      segs.warning as SegmentInstance[],
+      joints.warning as JointInstance[],
+      getWarningHighlightMaterial(),
       HIGHLIGHT_SCALE,
     );
 
     return {
-      allSeg: null as THREE.InstancedMesh | null,
-      allJoint: null as THREE.InstancedMesh | null,
-      hiSeg: hiMeshes.segmentMesh,
-      hiJoint: hiMeshes.jointMesh,
+      idle: emptyBundle(),
+      focused: {
+        defaultSeg: def.segmentMesh,
+        defaultJoint: def.jointMesh,
+        warningSeg: warn.segmentMesh,
+        warningJoint: warn.jointMesh,
+      } satisfies MeshBundle,
     };
-  }, [
-    paths,
-    selectedServiceId,
-    hasBakedInstances,
-    precomputedSegments,
-    precomputedJoints,
-  ]);
+  }, [geometry, selectedServiceId]);
+
+  const focusLabels = useMemo(() => {
+    if (!selectedServiceId) return [] as LabelInstance[];
+    return geometry.labels.filter((label) => {
+      const path = paths.find((p) => p.id === label.key);
+      if (!path) return false;
+      return linkedTo(path, selectedServiceId);
+    });
+  }, [geometry.labels, paths, selectedServiceId]);
 
   useLayoutEffect(
     () => () => {
-      meshes.allSeg?.dispose();
-      meshes.allJoint?.dispose();
-      meshes.hiSeg?.dispose();
-      meshes.hiJoint?.dispose();
+      for (const bundle of [meshes.idle, meshes.focused]) {
+        bundle.defaultSeg?.dispose();
+        bundle.defaultJoint?.dispose();
+        bundle.warningSeg?.dispose();
+        bundle.warningJoint?.dispose();
+      }
     },
     [meshes],
   );
 
+  const active = selectedServiceId ? meshes.focused : meshes.idle;
+
   return (
     <group>
-      {meshes.allSeg ? <primitive object={meshes.allSeg} /> : null}
-      {meshes.allJoint ? <primitive object={meshes.allJoint} /> : null}
-      {meshes.hiSeg ? <primitive object={meshes.hiSeg} /> : null}
-      {meshes.hiJoint ? <primitive object={meshes.hiJoint} /> : null}
+      {active.defaultSeg ? <primitive object={active.defaultSeg} /> : null}
+      {active.defaultJoint ? <primitive object={active.defaultJoint} /> : null}
+      {active.warningSeg ? <primitive object={active.warningSeg} /> : null}
+      {active.warningJoint ? <primitive object={active.warningJoint} /> : null}
+      {focusLabels.map((label) => (
+        <Html
+          key={label.key}
+          position={[label.x, 0.35, label.z]}
+          center
+          distanceFactor={18}
+          style={{ pointerEvents: "none" }}
+        >
+          <div
+            className={
+              label.warning
+                ? "rounded-md border border-red-500/50 bg-red-950/90 px-2 py-1 text-[11px] font-medium whitespace-nowrap text-red-100 shadow-lg"
+                : "rounded-md border border-sky-400/40 bg-slate-950/90 px-2 py-1 text-[11px] font-medium whitespace-nowrap text-sky-100 shadow-lg"
+            }
+          >
+            {label.text}
+          </div>
+        </Html>
+      ))}
     </group>
   );
 }
