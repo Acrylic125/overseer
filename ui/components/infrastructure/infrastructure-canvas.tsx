@@ -6,6 +6,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -36,9 +37,13 @@ import {
   windowAround,
 } from "@/lib/graph/service-streaming";
 import { isOpenToInternet } from "@/lib/infrastructure-schema";
+import { isInternetService } from "@/lib/internet";
 import { CELL_SIZE, SCENE } from "@/lib/infrastructure-styles";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
-import type { PackLayoutResult } from "@/lib/graph/pack-layout";
+import {
+  serviceWorldCenter,
+  type PackLayoutResult,
+} from "@/lib/graph/pack-layout";
 import type { SceneBake } from "@/lib/infrastructure-schema";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
@@ -66,22 +71,36 @@ type SceneProps = InfrastructureCanvasProps & {
 };
 
 const TOP_DOWN_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "YXZ");
-const EXPLORE_BACK = 22;
-const EXPLORE_EYE_HEIGHT = 14;
+const TOP_DOWN_QUAT = new THREE.Quaternion().setFromEuler(TOP_DOWN_EULER);
+/** Fixed eye height when entering explore from top-down. */
+const EXPLORE_EYE_HEIGHT = 4;
+/** Fallback top-down height when no previous top Y was recorded. */
+const DEFAULT_TOP_HEIGHT = 10;
+const VIEW_TRANSITION_DURATION = 0.55;
 const TOP_STREAM_HALF = RENDER_HALF * 2.2;
 const EXPLORE_STREAM_HALF = RENDER_HALF * 1.6;
 const TOP_STREAM_MARGIN = RENDER_HALF * 0.8;
 const EXPLORE_STREAM_MARGIN = RENDER_HALF * 0.45;
 
-/** Synthetic hub so open-to-internet services can route connectors to the cloud. */
+const _lerpPos = new THREE.Vector3();
+const _slerpQ = new THREE.Quaternion();
+const _ndc = new THREE.Vector3();
+const _exploreLookRig = new THREE.Object3D();
+
+/**
+ * Hub service used for connector routing / picking.
+ * Prefer the placed scan service when present; otherwise synthesize from the pad.
+ */
 function publicInternetHub(
   platform: PackLayoutResult["publicInternet"],
+  fromScan?: InfrastructureService | null,
 ): InfrastructureService {
+  if (fromScan) return fromScan;
   const width = platform.width / CELL_SIZE;
   const depth = platform.depth / CELL_SIZE;
   return {
     id: PUBLIC_INTERNET_ID,
-    type: "PublicInternet",
+    type: "cloud",
     name: "Public Internet",
     x: platform.centerX / CELL_SIZE - width / 2,
     y: platform.centerZ / CELL_SIZE - depth / 2,
@@ -99,11 +118,16 @@ function publicInternetHub(
   };
 }
 
+/**
+ * Fallback for older scans that only set the networking bool — new scans already
+ * include `internet` in `connections`.
+ */
 function withPublicInternetLink(
   service: InfrastructureService,
 ): InfrastructureService {
-  if (!isOpenToInternet(service.fields)) return service;
+  if (isInternetService(service)) return service;
   if (service.connections.includes(PUBLIC_INTERNET_ID)) return service;
+  if (!isOpenToInternet(service.fields)) return service;
   return {
     ...service,
     connections: [...service.connections, PUBLIC_INTERNET_ID],
@@ -158,17 +182,109 @@ function streamMargin(viewMode: ViewMode) {
   return viewMode === "top" ? TOP_STREAM_MARGIN : EXPLORE_STREAM_MARGIN;
 }
 
-/** Drop into free-fly looking at the ground the top-down camera was focused on. */
-function applyExploreFraming(camera: THREE.Camera) {
-  const focusX = camera.position.x;
-  const focusZ = camera.position.z;
-  camera.up.set(0, 1, 0);
-  camera.position.set(
-    focusX + EXPLORE_BACK,
-    EXPLORE_EYE_HEIGHT,
-    focusZ + EXPLORE_BACK,
+function easeOutCubic(t: number) {
+  return 1 - (1 - t) ** 3;
+}
+
+/**
+ * Service whose world center projects closest to a screen point (client coords).
+ * `clientX`/`clientY` default to the viewport middle when omitted.
+ */
+function closestServiceToScreenPoint(
+  camera: THREE.Camera,
+  domElement: HTMLElement,
+  services: InfrastructureService[],
+  clientX: number,
+  clientY: number,
+): InfrastructureService | null {
+  camera.updateMatrixWorld();
+  if (services.length === 0) return null;
+
+  const rect = domElement.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  const targetNdcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const targetNdcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+  let best: InfrastructureService | null = null;
+  let bestDist = Infinity;
+
+  for (const service of services) {
+    const [x, y, z] = serviceWorldCenter(service);
+    _ndc.set(x, y, z).project(camera);
+    // Skip points behind the near plane / camera.
+    if (_ndc.z < -1 || _ndc.z > 1) continue;
+    const dx = _ndc.x - targetNdcX;
+    const dy = _ndc.y - targetNdcY;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = service;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Service under the cursor (or screen center) if there is a footprint hit;
+ * otherwise whichever service center projects closest to that screen point.
+ */
+function transitionTargetService(
+  camera: THREE.Camera,
+  domElement: HTMLCanvasElement,
+  services: InfrastructureService[],
+  clientX: number | null,
+  clientY: number | null,
+): InfrastructureService | null {
+  const rect = domElement.getBoundingClientRect();
+  const x = clientX ?? rect.left + rect.width / 2;
+  const y = clientY ?? rect.top + rect.height / 2;
+  const hitId = pickServiceAt(x, y, camera, domElement, services);
+  if (hitId) {
+    return services.find((service) => service.id === hitId) ?? null;
+  }
+  return closestServiceToScreenPoint(camera, domElement, services, x, y);
+}
+
+/**
+ * Same ground XZ; only height + orientation change.
+ * Target = service under cursor (screen center if none). Facing toward the
+ * target uses the flipped look direction (toPos − serviceCenter).
+ */
+function exploreQuatTowardTarget(
+  camera: THREE.Camera,
+  domElement: HTMLCanvasElement,
+  toPos: THREE.Vector3,
+  services: InfrastructureService[],
+  clientX: number | null,
+  clientY: number | null,
+  out: THREE.Quaternion,
+): THREE.Quaternion {
+  const target = transitionTargetService(
+    camera,
+    domElement,
+    services,
+    clientX,
+    clientY,
   );
-  camera.lookAt(focusX, 0, focusZ);
+
+  _exploreLookRig.position.copy(toPos);
+  _exploreLookRig.up.set(0, 1, 0);
+
+  if (!target) {
+    _exploreLookRig.lookAt(toPos.x + 1, toPos.y + 1, toPos.z + 1);
+  } else {
+    const [sx, sy, sz] = serviceWorldCenter(target);
+    // Flipped: aim along toPos − serviceCenter (facing toward the target).
+    _exploreLookRig.lookAt(
+      toPos.x * 2 - sx,
+      toPos.y * 2 - sy,
+      toPos.z * 2 - sz,
+    );
+  }
+
+  return out.copy(_exploreLookRig.quaternion);
 }
 
 function platformInWindow(
@@ -188,62 +304,141 @@ function platformInWindow(
   );
 }
 
-function CameraModeSync({ viewMode }: { viewMode: ViewMode }) {
+type ViewTransition = {
+  fromPos: THREE.Vector3;
+  toPos: THREE.Vector3;
+  fromQ: THREE.Quaternion;
+  toQ: THREE.Quaternion;
+  /** performance.now() when the blend started — wall-clock, not frame-delta. */
+  startMs: number;
+  durationMs: number;
+};
+
+/**
+ * Interpolates top ↔ explore. Ground XZ stays fixed; height + orientation blend.
+ * Top→explore: Y=4, face the service under the cursor (screen center if none).
+ * Explore→top: restore previous top Y (default 10).
+ */
+function CameraModeSync({
+  viewMode,
+  services,
+  onSettled,
+}: {
+  viewMode: ViewMode;
+  services: InfrastructureService[];
+  onSettled: (mode: ViewMode | null) => void;
+}) {
   const { camera, gl } = useThree();
   const prevMode = useRef<ViewMode | null>(null);
-  const lastExplorePose = useRef<{
-    position: THREE.Vector3;
-    quaternion: THREE.Quaternion;
-  } | null>(null);
-
-  useFrame(() => {
-    if (viewMode !== "explore") return;
-    if (!lastExplorePose.current) {
-      lastExplorePose.current = {
-        position: new THREE.Vector3(),
-        quaternion: new THREE.Quaternion(),
-      };
-    }
-    lastExplorePose.current.position.copy(camera.position);
-    lastExplorePose.current.quaternion.copy(camera.quaternion);
-  });
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
+  const transition = useRef<ViewTransition | null>(null);
+  const lastTopY = useRef(DEFAULT_TOP_HEIGHT);
+  /** Last pointer over the canvas; null → treat as viewport center. */
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
+  const _toExploreQ = useRef(new THREE.Quaternion());
 
   useEffect(() => {
+    const el = gl.domElement;
+    const onPointerMove = (event: PointerEvent) => {
+      lastPointer.current = { x: event.clientX, y: event.clientY };
+    };
+    el.addEventListener("pointermove", onPointerMove);
+    return () => el.removeEventListener("pointermove", onPointerMove);
+  }, [gl]);
+
+  useLayoutEffect(() => {
+    if (prevMode.current === null) {
+      prevMode.current = viewMode;
+      if (viewMode === "top") {
+        lastTopY.current = camera.position.y;
+      }
+      onSettledRef.current(viewMode);
+      return;
+    }
     if (prevMode.current === viewMode) return;
-    const previous = prevMode.current;
     prevMode.current = viewMode;
 
-    if (document.pointerLockElement === gl.domElement) {
+    // Only release look-lock when leaving explore. Entering explore keeps a
+    // lock acquired from the Tab/click user gesture through the blend.
+    if (
+      viewMode === "top" &&
+      document.pointerLockElement === gl.domElement
+    ) {
       document.exitPointerLock();
     }
 
+    // Unmount controls for the entire blend (including toggles mid-transition).
+    onSettledRef.current(null);
+
+    camera.up.set(0, 1, 0);
+
+    const fromPos = camera.position.clone();
+    const fromQ = camera.quaternion.clone();
+    const x = camera.position.x;
+    const z = camera.position.z;
+
+    let toPos: THREE.Vector3;
+    let toQ: THREE.Quaternion;
+
     if (viewMode === "top") {
-      // Look straight down at the point explore was facing toward.
-      const forward = new THREE.Vector3();
-      camera.getWorldDirection(forward);
-      const focusX = camera.position.x + forward.x * camera.position.y;
-      const focusZ = camera.position.z + forward.z * camera.position.y;
-      camera.position.set(
-        Number.isFinite(focusX) ? focusX : camera.position.x,
-        Math.max(20, Math.min(camera.position.y, 48)),
-        Number.isFinite(focusZ) ? focusZ : camera.position.z,
+      // Keep current XZ; restore previous top-down height (default 10).
+      toPos = new THREE.Vector3(x, lastTopY.current || DEFAULT_TOP_HEIGHT, z);
+      toQ = TOP_DOWN_QUAT.clone();
+    } else {
+      // Keep current XZ; drop to fixed explore eye height.
+      toPos = new THREE.Vector3(x, EXPLORE_EYE_HEIGHT, z);
+      const pointer = lastPointer.current;
+      toQ = exploreQuatTowardTarget(
+        camera,
+        gl.domElement,
+        toPos,
+        services,
+        pointer?.x ?? null,
+        pointer?.y ?? null,
+        _toExploreQ.current,
+      ).clone();
+    }
+
+    transition.current = {
+      fromPos,
+      toPos,
+      fromQ,
+      toQ,
+      startMs: performance.now(),
+      durationMs: VIEW_TRANSITION_DURATION * 1000,
+    };
+  }, [viewMode, camera, gl, services]);
+
+  useFrame(() => {
+    const t = transition.current;
+    if (t) {
+      const uLinear = Math.min(
+        1,
+        (performance.now() - t.startMs) / t.durationMs,
       );
-      camera.up.set(0, 1, 0);
-      camera.quaternion.setFromEuler(TOP_DOWN_EULER);
+      const u = easeOutCubic(uLinear);
+
+      _lerpPos.lerpVectors(t.fromPos, t.toPos, u);
+      camera.position.copy(_lerpPos);
+      _slerpQ.slerpQuaternions(t.fromQ, t.toQ, u);
+      camera.quaternion.copy(_slerpQ);
+
+      if (uLinear >= 1) {
+        camera.position.copy(t.toPos);
+        camera.quaternion.copy(t.toQ);
+        transition.current = null;
+        onSettledRef.current(viewModeRef.current);
+      }
       return;
     }
 
-    // Entering explore from top: stand off the focus and look at it.
-    if (previous === "top") {
-      if (lastExplorePose.current) {
-        camera.up.set(0, 1, 0);
-        camera.position.copy(lastExplorePose.current.position);
-        camera.quaternion.copy(lastExplorePose.current.quaternion);
-      } else {
-        applyExploreFraming(camera);
-      }
+    if (viewModeRef.current === "top") {
+      lastTopY.current = camera.position.y;
     }
-  }, [viewMode, camera, gl]);
+  });
 
   return null;
 }
@@ -285,9 +480,13 @@ function Scene({
     }
     return map;
   }, [services]);
+  const internetFromScan = useMemo(
+    () => services.find(isInternetService) ?? null,
+    [services],
+  );
   const internetHub = useMemo(
-    () => publicInternetHub(publicInternet),
-    [publicInternet],
+    () => publicInternetHub(publicInternet, internetFromScan),
+    [publicInternet, internetFromScan],
   );
   const windowHalf = streamWindowHalf(viewMode);
   const margin = streamMargin(viewMode);
@@ -316,6 +515,10 @@ function Scene({
   selectedRef.current = selectedServiceId;
   const onSelectRef = useRef(onSelectedServiceIdChange);
   onSelectRef.current = onSelectedServiceIdChange;
+  // Lags `viewMode` until the camera blend finishes — keeps controls unmounted
+  // for the whole transition (including the first frame after a mode change).
+  const [settledMode, setSettledMode] = useState<ViewMode | null>(null);
+  const controlsActive = settledMode === viewMode;
 
   // Re-center the buffered window when the mode or dataset changes.
   useEffect(() => {
@@ -335,8 +538,12 @@ function Scene({
   const handlePick = useCallback(
     (clientX: number, clientY: number) => {
       // Prefer the streamed window; fall back to full graph if empty.
-      const pool =
+      // Always include the internet hub so the cloud is clickable.
+      const base =
         visibleRef.current.length > 0 ? visibleRef.current : services;
+      const pool = base.some(isInternetService)
+        ? base
+        : [...base, internetHub];
       const hitId = pickServiceAt(
         clientX,
         clientY,
@@ -356,7 +563,7 @@ function Scene({
       );
       return true;
     },
-    [camera, gl, services],
+    [camera, gl, internetHub, services],
   );
 
   useFrame(({ camera }) => {
@@ -463,16 +670,21 @@ function Scene({
 
       <WorldGrid />
 
-      {visiblePlatforms.map((platform) => (
-        <FrostedPlatform
-          key={platform.id ?? platform.group}
-          group={platform.group}
-          centerX={platform.centerX}
-          centerZ={platform.centerZ}
-          width={platform.width}
-          depth={platform.depth}
-        />
-      ))}
+      {visiblePlatforms
+        .filter(
+          (platform): platform is typeof platform & { group: string } =>
+            platform.group != null,
+        )
+        .map((platform) => (
+          <FrostedPlatform
+            key={platform.id ?? platform.group}
+            group={platform.group}
+            centerX={platform.centerX}
+            centerZ={platform.centerZ}
+            width={platform.width}
+            depth={platform.depth}
+          />
+        ))}
 
       <PublicInternetCloud
         centerX={publicInternet.centerX}
@@ -482,7 +694,9 @@ function Scene({
         shape={publicInternet.shape ?? "cloud"}
       />
 
-      <InstancedServiceBlocks services={visibleServices} />
+      <InstancedServiceBlocks
+        services={visibleServices.filter((service) => !isInternetService(service))}
+      />
 
       <ServiceConnectors
         services={connectorServices}
@@ -492,15 +706,21 @@ function Scene({
         precomputedJoints={connectorJoints}
       />
 
-      <CameraModeSync viewMode={viewMode} />
-      {viewMode === "top" ? (
+      <CameraModeSync
+        viewMode={viewMode}
+        services={services}
+        onSettled={setSettledMode}
+      />
+      {controlsActive && viewMode === "top" ? (
         <TopViewControls onPick={handlePick} />
-      ) : (
+      ) : null}
+      {controlsActive && viewMode === "explore" ? (
         <FlyControls
           onPick={handlePick}
           onLookLockChange={onLookLockChange}
+          autoLock
         />
-      )}
+      ) : null}
     </>
   );
 }
@@ -527,14 +747,44 @@ export function InfrastructureCanvas({
   );
   const [lookLocked, setLookLocked] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("top");
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
+  const canvasElRef = useRef<HTMLCanvasElement | null>(null);
   const servicesById = useMemo(
     () => new Map(services.map((service) => [service.id, service])),
     [services],
   );
+  const internetHub = useMemo(
+    () =>
+      publicInternetHub(
+        publicInternet,
+        services.find(isInternetService) ?? null,
+      ),
+    [publicInternet, services],
+  );
   const selectedService = selectedServiceId
-    ? (servicesById.get(selectedServiceId) ?? null)
+    ? (servicesById.get(selectedServiceId) ??
+      (selectedServiceId === PUBLIC_INTERNET_ID ? internetHub : null))
     : null;
   const selectedName = selectedService?.name ?? null;
+
+  const setViewModeFromUi = useCallback((next: ViewMode) => {
+    if (next === "explore") {
+      // Must run inside the user gesture (Tab / click) so the browser allows it.
+      void canvasElRef.current?.requestPointerLock();
+    }
+    setViewMode(next);
+  }, []);
+
+  useEffect(() => {
+    const el = canvasElRef.current;
+    if (!el) return;
+    // Hide the OS cursor for the whole explore session (incl. transition).
+    el.style.cursor = viewMode === "explore" ? "none" : "";
+    return () => {
+      el.style.cursor = "";
+    };
+  }, [viewMode]);
 
   useEffect(() => {
     if (viewMode !== "explore" && lookLocked) {
@@ -549,18 +799,19 @@ export function InfrastructureCanvas({
       }
       if (isTypingTarget(event.target)) return;
       event.preventDefault();
-      setViewMode((mode) => (mode === "top" ? "explore" : "top"));
+      const next = viewModeRef.current === "top" ? "explore" : "top";
+      setViewModeFromUi(next);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [setViewModeFromUi]);
 
   const helpText =
     viewMode === "top"
       ? "WASD move · drag to pan · scroll to zoom · orientation locked · Tab to explore"
       : lookLocked
         ? "WASD move · look with mouse · click crosshair to select · Esc unlock · Tab for top view"
-        : "WASD move · drag/click empty to look · Alt/Win+drag pan · Tab for top view";
+        : "WASD move · click to look · Alt/Win+drag pan · Tab for top view";
 
   return (
     <div
@@ -584,6 +835,7 @@ export function InfrastructureCanvas({
           outputColorSpace: THREE.SRGBColorSpace,
         }}
         onCreated={({ camera, gl }) => {
+          canvasElRef.current = gl.domElement;
           camera.up.set(0, 1, 0);
           camera.position.set(...frame.position);
           // Default spawn is top-down over the map.
@@ -614,7 +866,7 @@ export function InfrastructureCanvas({
         <Tabs
           value={viewMode}
           onValueChange={(value) => {
-            if (value === "top" || value === "explore") setViewMode(value);
+            if (value === "top" || value === "explore") setViewModeFromUi(value);
           }}
         >
           <TabsList className="bg-black/55 text-white/55 backdrop-blur-sm">

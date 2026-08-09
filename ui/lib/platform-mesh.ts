@@ -5,7 +5,7 @@ export const SQUIRCLE_DEPTH = 0.2;
 export const SQUIRCLE_BORDER = 0.02;
 /** Corner radius capped so pads don't look empty. */
 export const SQUIRCLE_RADIUS = 0.12;
-export const BORDER_HEX = "#7C3AED";
+export const BORDER_HEX = "#364153";
 /** Diagonal gradient: top-left → bottom-right. */
 export const GRADIENT_FROM_HEX = "#1E2939";
 export const GRADIENT_TO_HEX = "#030712";

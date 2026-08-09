@@ -85,9 +85,12 @@ export function resolveSize(size?: Size | null): Size {
  * `service` is the icon basename from `scan/assets/icons/` (e.g. `cf-worker`,
  * `r2`) — not a path. Unresolvable icons should use `all-unknown`.
  */
+/** Cluster path, or `null` for ungrouped hubs (e.g. public internet). */
+export const serviceGroupSchema = z.union([z.string().min(1), z.null()]);
+
 export const scannedServiceBaseSchema = z.object({
   id: z.string().min(1),
-  group: z.string().min(1),
+  group: serviceGroupSchema,
   name: z.string().min(1),
   connections: z.array(z.string()),
   sourceType: z.string().min(1),
@@ -121,7 +124,8 @@ export const padSchema = z.discriminatedUnion("type", [
     type: z.literal("shape"),
     id: z.string().min(1),
     shape: z.string().min(1),
-    group: z.string().min(1),
+    /** Optional cluster label; `null`/omitted for standalone hubs. */
+    group: serviceGroupSchema.optional(),
     parent: z.string().min(1).optional(),
     label: z.string().optional(),
     pos: posSchema,
@@ -174,7 +178,7 @@ export type SceneBake = {
   };
   centerGuide: { x: number; y: number; radius: number };
   publicInternet: {
-    group: string;
+    group: string | null;
     shape: string;
     centerX: number;
     centerZ: number;

@@ -5,9 +5,9 @@ import {
   PLATFORM_SEPARATION,
   PUBLIC_INTERNET_BASE_DEPTH,
   PUBLIC_INTERNET_BASE_WIDTH,
-  PUBLIC_INTERNET_GROUP,
   publicInternetFootprint,
 } from "@/lib/infrastructure-styles";
+import { isInternetService } from "@/lib/internet";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type PackableService = Omit<InfrastructureService, "x" | "y"> & {
@@ -18,7 +18,8 @@ export type PackableService = Omit<InfrastructureService, "x" | "y"> & {
 export type GroupPlatform = {
   /** Pad id from scan (for nested `parent` links). */
   id?: string;
-  group: string;
+  /** Cluster label; `null` for the ungrouped public-internet hub. */
+  group: string | null;
   /** Containing platform pad id when nested. */
   parent?: string;
   centerX: number;
@@ -103,7 +104,8 @@ function publicInternetPlatform(
   centerZ = 0,
 ): GroupPlatform {
   return {
-    group: PUBLIC_INTERNET_GROUP,
+    id: "internet",
+    group: null,
     shape: "cloud",
     centerX,
     centerZ,
@@ -150,6 +152,7 @@ export function packServicesByGroup(
 
   const byGroup = new Map<string, typeof normalized>();
   for (const service of normalized) {
+    if (service.group == null || isInternetService(service)) continue;
     const list = byGroup.get(service.group) ?? [];
     list.push(service);
     byGroup.set(service.group, list);

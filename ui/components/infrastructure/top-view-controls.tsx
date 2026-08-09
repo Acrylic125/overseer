@@ -13,6 +13,7 @@ const MIN_HEIGHT = 6;
 const MAX_HEIGHT = 120;
 const CLICK_MOVE_TOLERANCE = 5;
 const TOP_DOWN_EULER = new THREE.Euler(-Math.PI / 2, 0, 0, "YXZ");
+const TOP_DOWN_QUAT = new THREE.Quaternion().setFromEuler(TOP_DOWN_EULER);
 
 type TopViewControlsProps = {
   onPick?: (clientX: number, clientY: number) => boolean;
@@ -34,17 +35,13 @@ export function TopViewControls({ onPick }: TopViewControlsProps) {
     startY: 0,
     moved: false,
   });
-  // Accumulate pointer pan on the event thread; apply once per frame.
+  // Accumulate pointer pan / zoom on the event thread; apply once per frame.
   const panDelta = useRef({ x: 0, z: 0 });
+  const zoomFactor = useRef(1);
   const onPickRef = useRef(onPick);
   onPickRef.current = onPick;
 
   const _direction = useRef(new THREE.Vector3());
-
-  useEffect(() => {
-    camera.up.set(0, 1, 0);
-    camera.quaternion.setFromEuler(TOP_DOWN_EULER);
-  }, [camera]);
 
   useEffect(() => {
     const el = gl.domElement;
@@ -128,12 +125,7 @@ export function TopViewControls({ onPick }: TopViewControlsProps) {
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      const factor = Math.exp(event.deltaY * ZOOM_SPEED * 0.01);
-      camera.position.y = THREE.MathUtils.clamp(
-        camera.position.y * factor,
-        MIN_HEIGHT,
-        MAX_HEIGHT,
-      );
+      zoomFactor.current *= Math.exp(event.deltaY * ZOOM_SPEED * 0.01);
     };
 
     const onContextMenu = (event: Event) => {
@@ -164,7 +156,12 @@ export function TopViewControls({ onPick }: TopViewControlsProps) {
   }, [camera, gl]);
 
   useFrame((_, delta) => {
-    const dt = Math.min(delta, 1 / 20);
+    const dt = Math.min(delta, 1 / 60);
+
+    // Keep orientation locked without snapping on mount (mount snap fought
+    // the view-mode transition).
+    camera.up.set(0, 1, 0);
+    camera.quaternion.copy(TOP_DOWN_QUAT);
 
     const pan = panDelta.current;
     if (pan.x !== 0 || pan.z !== 0) {
@@ -172,6 +169,15 @@ export function TopViewControls({ onPick }: TopViewControlsProps) {
       camera.position.z += pan.z;
       pan.x = 0;
       pan.z = 0;
+    }
+
+    if (zoomFactor.current !== 1) {
+      camera.position.y = THREE.MathUtils.clamp(
+        camera.position.y * zoomFactor.current,
+        MIN_HEIGHT,
+        MAX_HEIGHT,
+      );
+      zoomFactor.current = 1;
     }
 
     const pressed = keys.current;

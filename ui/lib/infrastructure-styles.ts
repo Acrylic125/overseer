@@ -55,6 +55,7 @@ export const PLATFORM_SEPARATION = 4;
  */
 export const PUBLIC_INTERNET_BASE_WIDTH = 4;
 export const PUBLIC_INTERNET_BASE_DEPTH = 2;
+/** @deprecated Prefer service id `internet`; kept for older pads. */
 export const PUBLIC_INTERNET_GROUP = "public-internet";
 
 /** Cloud platform width×depth in cells for a given service-platform count. */

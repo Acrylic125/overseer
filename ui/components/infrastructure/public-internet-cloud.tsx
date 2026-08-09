@@ -9,14 +9,23 @@ import {
   PUBLIC_INTERNET_BASE_DEPTH,
   PUBLIC_INTERNET_BASE_WIDTH,
 } from "@/lib/infrastructure-styles";
+import { INTERNET_ID } from "@/lib/internet";
 import {
   loadPlatformGradient,
+  loadShapeBorderGeometry,
   loadShapeGeometry,
 } from "@/lib/platform-assets";
+import { BORDER_HEX, SQUIRCLE_BORDER } from "@/lib/platform-mesh";
 
-export const PUBLIC_INTERNET_ID = "public-internet";
+export const PUBLIC_INTERNET_ID = INTERNET_ID;
 /** `scan/assets/shapes/cloud.svg` mesh name in `/assets.glb`. */
 export const PUBLIC_INTERNET_SHAPE = "cloud";
+
+/**
+ * Lift the cloud + label above connector lines (y = 0) so paths pass underneath
+ * instead of z-fighting through the silhouette.
+ */
+const CLOUD_Y = 0.06;
 
 /** Lie flat on XZ (facing +Y). Parent group owns this so troika can't reset it. */
 const FLAT_ON_GROUND: [number, number, number] = [-Math.PI / 2, 0, 0];
@@ -36,8 +45,7 @@ type PublicInternetCloudProps = {
 
 /**
  * Public Internet hub — `cloud` shape from scan assets with the shared
- * platform gradient. Uniform scale preserves the SVG aspect ratio and fits
- * inside the reserved width×depth footprint.
+ * platform gradient and a rim matching {@link SQUIRCLE_BORDER} (same as pads).
  */
 export function PublicInternetCloud({
   centerX = 0,
@@ -48,20 +56,26 @@ export function PublicInternetCloud({
   label = "Public Internet",
 }: PublicInternetCloudProps) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
+  const [borderGeometry, setBorderGeometry] =
+    useState<THREE.BufferGeometry | null>(null);
   const [gradient, setGradient] = useState<THREE.Texture | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([loadShapeGeometry(shape), loadPlatformGradient()]).then(
-      ([geo, texture]) => {
-        if (cancelled) {
-          geo.dispose();
-          return;
-        }
-        setGeometry(geo);
-        setGradient(texture);
-      },
-    );
+    void Promise.all([
+      loadShapeGeometry(shape),
+      loadShapeBorderGeometry(shape),
+      loadPlatformGradient(),
+    ]).then(([geo, border, texture]) => {
+      if (cancelled) {
+        geo.dispose();
+        border?.dispose();
+        return;
+      }
+      setGeometry(geo);
+      setBorderGeometry(border);
+      setGradient(texture);
+    });
     return () => {
       cancelled = true;
     };
@@ -73,15 +87,32 @@ export function PublicInternetCloud({
     };
   }, [geometry]);
 
+  useEffect(() => {
+    return () => {
+      borderGeometry?.dispose();
+    };
+  }, [borderGeometry]);
+
   const material = useMemo(() => {
     if (!gradient) return null;
     return new THREE.MeshBasicMaterial({
       map: gradient,
       toneMapped: false,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
       depthWrite: true,
     });
   }, [gradient]);
+
+  const borderMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(BORDER_HEX),
+        toneMapped: false,
+        side: THREE.FrontSide,
+        depthWrite: true,
+      }),
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -89,32 +120,63 @@ export function PublicInternetCloud({
     };
   }, [material]);
 
-  const box = useMemo(() => {
-    if (!geometry) return null;
-    geometry.computeBoundingBox();
-    const bounds = geometry.boundingBox;
-    if (!bounds) return null;
-    // Bake/export may center the mesh — snap the top face to y = 0.
-    if (Math.abs(bounds.max.y) > 1e-6) {
-      geometry.translate(0, -bounds.max.y, 0);
-      geometry.computeBoundingBox();
-    }
-    return geometry.boundingBox;
-  }, [geometry]);
+  useEffect(() => {
+    return () => {
+      borderMaterial.dispose();
+    };
+  }, [borderMaterial]);
 
-  // Unit bake: longer side = 1. Scale uniformly so the silhouette isn't squished.
-  const baseW = box ? Math.max(box.max.x - box.min.x, 0.01) : 1;
-  const baseD = box ? Math.max(box.max.z - box.min.z, 0.01) : 0.49;
-  const scale = Math.min(width / baseW, depth / baseD);
-  const fontSize = Math.max(TITLE_FONT, 0.28 * scale);
+  const fitBox = useMemo(() => {
+    const source = borderGeometry ?? geometry;
+    if (!source) return null;
+    source.computeBoundingBox();
+    const bounds = source.boundingBox;
+    if (!bounds) return null;
+    if (Math.abs(bounds.max.y) > 1e-6) {
+      source.translate(0, -bounds.max.y, 0);
+      source.computeBoundingBox();
+    }
+    // Keep the fill top aligned with the rim after the shared snap.
+    if (geometry && geometry !== source) {
+      geometry.computeBoundingBox();
+      const bodyBounds = geometry.boundingBox;
+      if (bodyBounds && Math.abs(bodyBounds.max.y) > 1e-6) {
+        geometry.translate(0, -bodyBounds.max.y, 0);
+        geometry.computeBoundingBox();
+      }
+    }
+    return source.boundingBox;
+  }, [geometry, borderGeometry]);
+
+  // Unit bake: longer side = 1. Outer scale fills the footprint; fill shrinks by
+  // SQUIRCLE_BORDER on each side so the rim matches platform pads in world units.
+  const baseW = fitBox ? Math.max(fitBox.max.x - fitBox.min.x, 0.01) : 1;
+  const baseD = fitBox ? Math.max(fitBox.max.z - fitBox.min.z, 0.01) : 0.49;
+  const outerScale = Math.min(width / baseW, depth / baseD);
+  const innerScale = Math.max(outerScale - 2 * SQUIRCLE_BORDER, outerScale * 0.5);
+  const fontSize = Math.max(TITLE_FONT, 0.28 * outerScale);
 
   if (!geometry || !material) return null;
 
-  return (
-    <group position={[centerX, 0, centerZ]}>
-      <mesh geometry={geometry} material={material} scale={[scale, 1, scale]} />
+  const rimGeometry = borderGeometry ?? geometry;
 
-      <group position={[0, 0.001, 0]} rotation={FLAT_ON_GROUND}>
+  return (
+    <group position={[centerX, CLOUD_Y, centerZ]}>
+      {/* Solid underlay rim — full silhouette, larger scale. */}
+      <mesh
+        geometry={rimGeometry}
+        material={borderMaterial}
+        scale={[outerScale, 1, outerScale]}
+      />
+      {/* Gradient fill — inset by SQUIRCLE_BORDER; sit above so it isn't buried. */}
+      <mesh
+        geometry={geometry}
+        material={material}
+        scale={[innerScale, 1, innerScale]}
+        position={[0, 0.001, 0]}
+      />
+
+      <group position={[0, 0.02, 0]} rotation={FLAT_ON_GROUND}>
         <Text
           fontSize={fontSize}
           color="#F8FAFC"

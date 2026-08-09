@@ -21,7 +21,7 @@ export type LayoutResult = {
     depth: number;
   }[];
   publicInternet: {
-    group: string;
+    group: string | null;
     shape?: string;
     centerX: number;
     centerZ: number;

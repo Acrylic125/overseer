@@ -7,6 +7,7 @@ import {
 } from "@/lib/infrastructure-db";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { SceneBake } from "@/lib/infrastructure-schema";
+import { INTERNET_ID } from "@/lib/internet";
 import { layoutFromDb } from "@/lib/layout-from-db";
 import { layoutServices } from "@/lib/providers/cloudflare/layout";
 import { resolveServiceType } from "@/lib/service-types";
@@ -55,8 +56,8 @@ export type InfrastructureService = {
   width: number;
   /** Footprint depth in grid cells (default 1). */
   depth: number;
-  /** Blocks with the same group are packed together. */
-  group: string;
+  /** Blocks with the same group are packed together. `null` = ungrouped hub. */
+  group: string | null;
   /** Service IDs this service can access */
   connections: string[];
   /** @deprecated Prefer `category`. */
@@ -135,8 +136,10 @@ export const infrastructureRouter = router({
       const db = await loadInfrastructureDb();
 
       const services = input?.namespace
-        ? db.services.filter((service) =>
-            service.id.startsWith(`${input.namespace}:`),
+        ? db.services.filter(
+            (service) =>
+              service.id === INTERNET_ID ||
+              service.id.startsWith(`${input.namespace}:`),
           )
         : db.services;
 

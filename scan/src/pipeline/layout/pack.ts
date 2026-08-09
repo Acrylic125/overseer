@@ -3,6 +3,13 @@ import {
   iconAabb,
   type LayoutAabb,
 } from "./connectors.js";
+import {
+  createInternetService,
+  INTERNET_ID,
+  INTERNET_LABEL,
+  INTERNET_SHAPE,
+  isInternetService,
+} from "../../internet.js";
 import type {
   Connector,
   Pad,
@@ -48,9 +55,6 @@ export const MAX_GROUP_DEPTH = 3;
 /** Matches UI public-internet footprint (cloud.svg ≈ 2:1). */
 const PUBLIC_INTERNET_BASE_WIDTH = 4;
 const PUBLIC_INTERNET_BASE_DEPTH = 2;
-const PUBLIC_INTERNET_GROUP = "public-internet";
-const PUBLIC_INTERNET_SHAPE = "cloud";
-const PUBLIC_INTERNET_LABEL = "Public Internet";
 /** Edge gap between the cloud hub and the nearest service platform. */
 const PUBLIC_INTERNET_GAP = 4;
 
@@ -162,6 +166,8 @@ function ensureGroupNode(
 function buildGroupForest(services: ScannedService[]): Map<string, GroupNode> {
   const roots = new Map<string, GroupNode>();
   for (const service of services) {
+    // Ungrouped hubs (public internet) are placed separately.
+    if (service.group == null) continue;
     const segments = splitGroupPath(service.group);
     const path = (segments.length > 0 ? segments : ["default"]).join(GROUP_SEP);
     const node = ensureGroupNode(
@@ -597,6 +603,10 @@ function emitNestedPack(
  * Clusters are keyed by `service.group`. Nested groups use `/` paths
  * (`root`, `root/mid`, `root/mid/leaf` — max {@link MAX_GROUP_DEPTH} segments)
  * and emit pad `parent` links.
+ *
+ * Public internet (`id: "internet"`, `group: null` by default) is placed as a
+ * cloud shape hub and as a service AABB so connectors / picking treat it like
+ * any other service.
  */
 export async function layoutServices(
   services: ScannedService[],
@@ -608,7 +618,17 @@ export async function layoutServices(
   const platformGap = options.platformGap ?? PLATFORM_GAP;
   const iconSize: Size = [iconW, iconH];
 
-  const forest = buildGroupForest(services);
+  const internet =
+    services.find(isInternetService) ?? createInternetService();
+  const packable = services.filter((service) => {
+    if (isInternetService(service)) {
+      // Grouped internet packs with its cluster; ungrouped is the cloud hub.
+      return service.group != null;
+    }
+    return true;
+  });
+
+  const forest = buildGroupForest(packable);
   const rootPacks = [...forest.values()]
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((node) => packGroupNode(node, iconW, iconH, iconGap));
@@ -626,24 +646,48 @@ export async function layoutServices(
     services: [],
   }));
   const packed = packPlatforms(rootClusters, platformGap);
-  const cloud = publicInternetFootprint(packed.placed.length);
+  const hubInternet = internet.group == null ? internet : null;
+  const cloud = publicInternetFootprint(Math.max(1, packed.placed.length));
 
-  const serviceOffsetX = cloud.width / 2 + PUBLIC_INTERNET_GAP;
+  const serviceOffsetX = hubInternet
+    ? cloud.width / 2 + PUBLIC_INTERNET_GAP
+    : 0;
   const serviceOffsetY = -packed.totalHeight / 2;
 
   const pads: Pad[] = [];
   const placedServices: PlacedService[] = [];
   const boxes: LayoutAabb[] = [];
 
-  pads.push({
-    type: "shape",
-    id: PUBLIC_INTERNET_GROUP,
-    shape: PUBLIC_INTERNET_SHAPE,
-    group: PUBLIC_INTERNET_GROUP,
-    label: PUBLIC_INTERNET_LABEL,
-    pos: roundPos([-cloud.width / 2, -cloud.depth / 2, PLATFORM_Z]),
-    size: [cloud.width, cloud.depth],
-  });
+  if (hubInternet) {
+    const cloudPos = roundPos([-cloud.width / 2, -cloud.depth / 2, PLATFORM_Z]);
+    const cloudSize: Size = [cloud.width, cloud.depth];
+
+    pads.push({
+      type: "shape",
+      id: INTERNET_ID,
+      shape: INTERNET_SHAPE,
+      group: hubInternet.group,
+      label: INTERNET_LABEL,
+      pos: cloudPos,
+      size: cloudSize,
+    });
+
+    placedServices.push({
+      ...hubInternet,
+      pos: cloudPos,
+      size: cloudSize,
+    });
+
+    boxes.push(
+      iconAabb(
+        INTERNET_ID,
+        cloudPos[0],
+        cloudPos[1],
+        cloud.width,
+        cloud.depth,
+      ),
+    );
+  }
 
   for (let i = 0; i < packed.placed.length; i += 1) {
     const placement = packed.placed[i]!;
@@ -664,9 +708,14 @@ export async function layoutServices(
     );
   }
 
+  const graphServices = [
+    ...packable,
+    ...(hubInternet ? [hubInternet] : []),
+  ];
+
   const paths = await buildAllConnectorPaths(
     boxes,
-    services.map((service) => ({
+    graphServices.map((service) => ({
       id: service.id,
       connections: service.connections,
     })),
@@ -685,8 +734,11 @@ export async function layoutServices(
     pads,
     connectors,
     totalWidth: roundCoord(
-      cloud.width / 2 + PUBLIC_INTERNET_GAP + packed.totalWidth,
+      (hubInternet ? cloud.width / 2 + PUBLIC_INTERNET_GAP : 0) +
+        packed.totalWidth,
     ),
-    totalHeight: roundCoord(Math.max(cloud.depth, packed.totalHeight)),
+    totalHeight: roundCoord(
+      Math.max(hubInternet ? cloud.depth : 0, packed.totalHeight),
+    ),
   };
 }

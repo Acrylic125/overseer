@@ -23,7 +23,7 @@ import {
   createPlatformGeometries,
   GRADIENT_FROM_HEX,
 } from "./platform-mesh.js";
-import { createShapeMesh } from "./shapes.js";
+import { createShapeMeshes } from "./shapes.js";
 
 let shimsReady = false;
 
@@ -141,7 +141,8 @@ async function loadShapeMeshes(): Promise<{
   for (const file of svgFiles) {
     const name = path.basename(file, path.extname(file));
     const svgText = await readFile(path.join(assetsShapesDir, file), "utf8");
-    meshes.push(createShapeMesh(svgText, name));
+    const { body, border } = createShapeMeshes(svgText, name);
+    meshes.push(body, border);
     texturedNames.push(name);
   }
   return { meshes, texturedNames };

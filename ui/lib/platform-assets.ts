@@ -79,3 +79,16 @@ export async function loadShapeGeometry(
   }
   return geometry.clone();
 }
+
+/**
+ * Load the border frame for a silhouette (`{shape}-border` in `/assets.glb`).
+ * Returns null when the bake has no border mesh yet.
+ */
+export async function loadShapeBorderGeometry(
+  shape: string,
+): Promise<THREE.BufferGeometry | null> {
+  const geometries = await loadAssetsGlb();
+  const geometry = geometries.get(`${shape}-border`);
+  if (!geometry) return null;
+  return geometry.clone();
+}

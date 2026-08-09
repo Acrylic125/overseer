@@ -1,5 +1,13 @@
 import { iconServiceForCfKind } from "./icons.js";
+import {
+  ensureInternetLinks,
+  INTERNET_ID,
+  isInternetService,
+} from "./internet.js";
 import type { ScannedService } from "./schema.js";
+
+/** Cap hub fan-in so mock connector routing stays responsive. */
+const MAX_MOCK_INTERNET_LINKS = 64;
 
 const SERVICE_COUNT = 10000;
 /** Rough target for distinct group paths that can hold services. */
@@ -302,5 +310,16 @@ export function createMockServices(seed = 42): ScannedService[] {
     source.connections = [...targets];
   }
 
-  return services;
+  // Public internet is a service resource; open workers link to it.
+  let internetLinks = 0;
+  return ensureInternetLinks(services).map((service) => {
+    if (isInternetService(service)) return service;
+    if (!service.connections.includes(INTERNET_ID)) return service;
+    internetLinks += 1;
+    if (internetLinks <= MAX_MOCK_INTERNET_LINKS) return service;
+    return {
+      ...service,
+      connections: service.connections.filter((id) => id !== INTERNET_ID),
+    };
+  });
 }

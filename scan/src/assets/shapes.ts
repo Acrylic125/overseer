@@ -6,12 +6,15 @@ import {
 } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 import {
+  BORDER_HEX,
   GRADIENT_FROM_HEX,
   SQUIRCLE_DEPTH,
 } from "./platform-mesh.js";
 
 /** Low curve tessellation — shapes stay readable at instance scale. */
 const CURVE_SEGMENTS = 8;
+
+const BORDER_COLOR = new THREE.Color(BORDER_HEX);
 
 function shouldSkipPath(pathItem: THREE.ShapePath): boolean {
   const style = pathItem.userData?.style as { fill?: string } | undefined;
@@ -55,45 +58,49 @@ function mapXyUvs(geometry: THREE.BufferGeometry): void {
   geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
 }
 
-/**
- * Convert one SVG into a unit mesh on the XZ ground plane with UVs for the
- * shared platform gradient. Longer side normalizes to 1 (aspect preserved).
- * Caller must install DOM / FileReader shims first.
- */
-export function createShapeMesh(svgText: string, name: string): THREE.Mesh {
-  const loader = new SVGLoader();
-  const data = loader.parse(svgText);
-  const parts: THREE.BufferGeometry[] = [];
+function bakeSolidColor(geometry: THREE.BufferGeometry, hex: THREE.Color) {
+  const pos = geometry.getAttribute("position");
+  if (!pos) return;
+  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    colors[i * 3] = hex.r;
+    colors[i * 3 + 1] = hex.g;
+    colors[i * 3 + 2] = hex.b;
+  }
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+}
 
-  for (const svgPath of data.paths) {
-    if (shouldSkipPath(svgPath)) continue;
-    const shapes = svgPath.toShapes();
-    for (const shape of shapes) {
-      const geometry = new THREE.ExtrudeGeometry(shape, {
+function extrudeShapes(shapes: THREE.Shape[]): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const shape of shapes) {
+    parts.push(
+      new THREE.ExtrudeGeometry(shape, {
         depth: SQUIRCLE_DEPTH,
         bevelEnabled: false,
         curveSegments: CURVE_SEGMENTS,
         steps: 1,
-      });
-      parts.push(geometry);
-    }
+      }),
+    );
   }
-
-  if (parts.length === 0) {
-    throw new Error(`SVG shape "${name}" produced no geometry`);
-  }
-
   const merged = mergeGeometries(parts, false);
   for (const part of parts) part.dispose();
   if (!merged) {
-    throw new Error(`Failed to merge geometries for shape "${name}"`);
+    throw new Error("Failed to merge extruded shape geometries");
   }
+  return merged;
+}
 
-  merged.deleteAttribute("normal");
+/**
+ * Center, unit-normalize (longer side = 1), UV, and lay onto XZ (top at y = 0).
+ */
+function finalizeGroundGeometry(
+  geometry: THREE.BufferGeometry,
+): THREE.BufferGeometry {
+  geometry.deleteAttribute("normal");
 
   // SVG Y grows downward; flip so the silhouette reads upright in XY.
-  merged.scale(1, -1, 1);
-  const index = merged.getIndex();
+  geometry.scale(1, -1, 1);
+  const index = geometry.getIndex();
   if (index) {
     for (let i = 0; i < index.count; i += 3) {
       const a = index.getX(i);
@@ -102,52 +109,99 @@ export function createShapeMesh(svgText: string, name: string): THREE.Mesh {
     }
     index.needsUpdate = true;
   } else {
-    const pos = merged.getAttribute("position");
+    const pos = geometry.getAttribute("position");
     for (let i = 0; i < pos.count; i += 3) {
       swapVertexAttribute(pos, i, i + 2);
     }
     pos.needsUpdate = true;
   }
 
-  merged.computeBoundingBox();
-  const box = merged.boundingBox;
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
   if (!box) {
-    merged.dispose();
-    throw new Error(`Shape "${name}" has no bounding box`);
+    geometry.dispose();
+    throw new Error("Shape geometry has no bounding box");
   }
 
   const center = new THREE.Vector3();
   box.getCenter(center);
-  merged.translate(-center.x, -center.y, -center.z);
+  geometry.translate(-center.x, -center.y, -center.z);
 
   const width = box.max.x - box.min.x;
   const height = box.max.y - box.min.y;
   const span = Math.max(width, height) || 1;
-  merged.scale(1 / span, 1 / span, 1);
+  geometry.scale(1 / span, 1 / span, 1);
 
-  // UVs in XY before laying flat on the ground.
-  mapXyUvs(merged);
+  mapXyUvs(geometry);
 
   // Extrude +Z → +Y; top face at y = 0.
-  merged.rotateX(-Math.PI / 2);
-  merged.translate(0, -SQUIRCLE_DEPTH, 0);
+  geometry.rotateX(-Math.PI / 2);
+  geometry.translate(0, -SQUIRCLE_DEPTH, 0);
 
-  const welded = mergeVertices(merged);
-  merged.dispose();
+  const welded = mergeVertices(geometry);
+  geometry.dispose();
   welded.deleteAttribute("normal");
-  welded.deleteAttribute("color");
   welded.computeBoundingBox();
   welded.computeBoundingSphere();
+  return welded;
+}
 
-  // Placeholder solid — gradient PNG is injected after export (no canvas).
-  const material = new THREE.MeshBasicMaterial({
+export type ShapeMeshes = {
+  body: THREE.Mesh;
+  /** Same silhouette as body; tinted for runtime rim (scaled separately). */
+  border: THREE.Mesh;
+};
+
+/**
+ * Convert one SVG into a unit silhouette on the XZ ground plane.
+ *
+ * Body + border share the full outline — the UI scales the fill down by
+ * {@link SQUIRCLE_BORDER} world units so the rim matches platform pads.
+ */
+export function createShapeMeshes(svgText: string, name: string): ShapeMeshes {
+  const loader = new SVGLoader();
+  const data = loader.parse(svgText);
+  const shapes: THREE.Shape[] = [];
+
+  for (const svgPath of data.paths) {
+    if (shouldSkipPath(svgPath)) continue;
+    shapes.push(...svgPath.toShapes());
+  }
+
+  if (shapes.length === 0) {
+    throw new Error(`SVG shape "${name}" produced no geometry`);
+  }
+
+  let bodyGeo = extrudeShapes(shapes);
+  bodyGeo = finalizeGroundGeometry(bodyGeo);
+
+  const borderGeo = bodyGeo.clone();
+  borderGeo.deleteAttribute("uv");
+  borderGeo.deleteAttribute("color");
+  bakeSolidColor(borderGeo, BORDER_COLOR);
+
+  const bodyMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color(GRADIENT_FROM_HEX),
     toneMapped: false,
     side: THREE.FrontSide,
     depthWrite: true,
   });
+  const borderMat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    toneMapped: false,
+    side: THREE.FrontSide,
+    depthWrite: true,
+  });
 
-  const mesh = new THREE.Mesh(welded, material);
-  mesh.name = name;
-  return mesh;
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.name = name;
+  const border = new THREE.Mesh(borderGeo, borderMat);
+  border.name = `${name}-border`;
+
+  return { body, border };
+}
+
+/** @deprecated Prefer {@link createShapeMeshes}. */
+export function createShapeMesh(svgText: string, name: string): THREE.Mesh {
+  return createShapeMeshes(svgText, name).body;
 }

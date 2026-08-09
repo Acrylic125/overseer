@@ -1,5 +1,6 @@
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
+import { INTERNET_ID } from "@/lib/internet";
 import {
   PUBLIC_INTERNET_BASE_DEPTH,
   PUBLIC_INTERNET_BASE_WIDTH,
@@ -165,7 +166,11 @@ export function layoutFromDb(
   }
 
   const placedIds = new Set(placed.map((service) => service.id));
-  const placedGroups = new Set(placed.map((service) => service.group));
+  const placedGroups = new Set(
+    placed
+      .map((service) => service.group)
+      .filter((group): group is string => group != null),
+  );
 
   const platforms = pads
     .filter(
@@ -207,17 +212,20 @@ export function layoutFromDb(
   const cloudShape = pads.find(
     (pad): pad is Extract<Pad, { type: "shape" }> =>
       pad.type === "shape" &&
-      pad.shape === "cloud" &&
-      pad.group === PUBLIC_INTERNET_GROUP,
+      (pad.id === INTERNET_ID ||
+        pad.group === PUBLIC_INTERNET_GROUP ||
+        pad.shape === "cloud"),
   );
+
+  const internetService = placed.find((service) => service.id === INTERNET_ID);
 
   const publicInternet: PackLayoutResult["publicInternet"] = cloudShape
     ? (() => {
         const [w, h] = resolveSize(cloudShape.size);
         const [x, y] = cloudShape.pos;
         return {
-          id: cloudShape.id,
-          group: cloudShape.group,
+          id: cloudShape.id || INTERNET_ID,
+          group: cloudShape.group ?? null,
           shape: cloudShape.shape,
           centerX: x + w / 2,
           centerZ: y + h / 2,
@@ -225,15 +233,25 @@ export function layoutFromDb(
           depth: h,
         };
       })()
-    : {
-        id: PUBLIC_INTERNET_GROUP,
-        group: PUBLIC_INTERNET_GROUP,
-        shape: "cloud",
-        centerX: 0,
-        centerZ: 0,
-        width: PUBLIC_INTERNET_BASE_WIDTH,
-        depth: PUBLIC_INTERNET_BASE_DEPTH,
-      };
+    : internetService
+      ? {
+          id: INTERNET_ID,
+          group: internetService.group,
+          shape: "cloud",
+          centerX: internetService.x + internetService.width / 2,
+          centerZ: internetService.y + internetService.depth / 2,
+          width: internetService.width,
+          depth: internetService.depth,
+        }
+      : {
+          id: INTERNET_ID,
+          group: null,
+          shape: "cloud",
+          centerX: 0,
+          centerZ: 0,
+          width: PUBLIC_INTERNET_BASE_WIDTH,
+          depth: PUBLIC_INTERNET_BASE_DEPTH,
+        };
 
   const scene = deriveScene(platforms, placed, connectorPaths, publicInternet);
 
