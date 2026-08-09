@@ -22,6 +22,7 @@
     "@gltf-transform/extensions": "^4.2.1",
     "@gltf-transform/functions": "^4.2.1",
     "@inquirer/prompts": "^8.3.2",
+    "@vercel/sdk": "^1.28.16",
     "cloudflare": "^7.0.0",
     "dotenv": "^17.4.2",
     "linkedom": "^0.18.12",

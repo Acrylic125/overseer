@@ -10,8 +10,8 @@ export type ScanOutcome = {
  * Provider-specific scanner.
  *
  * Implementations should follow:
- *   // 1. Scan and Transform
- *   // 2. Group
+ *   1. Scan and Transform
+ *   2. Group
  */
 export interface ServiceScanner {
   scan(): Promise<ScanOutcome>;

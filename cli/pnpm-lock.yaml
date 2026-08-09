@@ -20,6 +20,9 @@ importers:
       '@inquirer/prompts':
         specifier: ^8.3.2
         version: 8.5.2(@types/node@26.1.2)
+      '@vercel/sdk':
+        specifier: ^1.28.16
+        version: 1.28.16
       cloudflare:
         specifier: ^7.0.0
         version: 7.0.0
@@ -643,6 +646,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@vercel/sdk@1.28.16':
+    resolution: {integrity: sha512-TeA7iVaLRRYnGtKIC7oCiR9ParEeHFVHeqaHNaRzkAxkA2preQttzME8G8poOxew79Kp9dx0pUS5OR9CAY7aRw==}
+
   boolbase@2.0.0:
     resolution: {integrity: sha512-DkVaaQHymRhpYEYo9x1oo7Q7B0Y6KJUsjm3c9eTyFDby4MHLBTwZ6ZDWBel5zrYxj1WsZgC5oLpiz+93MluXeA==}
     engines: {node: '>=20.19.0'}
@@ -1261,6 +1267,10 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
+
+  '@vercel/sdk@1.28.16':
+    dependencies:
+      zod: 4.4.3
 
   boolbase@2.0.0: {}
 
