@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Package root (`scan/`). */
+/** Package root (`cli/`). */
 export const scanRoot = path.resolve(__dirname, "..");
 /** Monorepo root. */
 export const repoRoot = path.resolve(scanRoot, "..");
@@ -11,7 +11,7 @@ export const repoRoot = path.resolve(scanRoot, "..");
 export const envPath = path.join(scanRoot, ".env");
 export const uiEnvPath = path.join(repoRoot, "ui", ".env");
 
-/** SVG sources live under `scan/assets/` (inputs, not generated). */
+/** SVG sources live under `cli/assets/` (inputs, not generated). */
 export const assetsRoot = path.join(scanRoot, "assets");
 export const assetsIconsDir = path.join(assetsRoot, "icons");
 export const assetsShapesDir = path.join(assetsRoot, "shapes");

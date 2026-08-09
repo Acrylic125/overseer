@@ -119,8 +119,8 @@ function publicInternetHub(
 }
 
 /**
- * Fallback for older scans that only set the networking bool — new scans already
- * include `internet` in `connections`.
+ * Derive an edge to the public-internet hub from `bool:Is Open To Internet`.
+ * Scan output does not store `"internet"` in `connections`.
  */
 function withPublicInternetLink(
   service: InfrastructureService,

@@ -92,7 +92,8 @@ export const scannedServiceBaseSchema = z.object({
   id: z.string().min(1),
   group: serviceGroupSchema,
   name: z.string().min(1),
-  connections: z.array(z.string()),
+  /** Omitted in JSON when empty; defaults to `[]` when read. */
+  connections: z.array(z.string()).default([]),
   sourceType: z.string().min(1),
   service: z.string().min(1),
 });

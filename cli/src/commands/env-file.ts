@@ -1,5 +1,7 @@
 import { access, constants as fsConstants, readFile, writeFile } from "node:fs/promises";
 
+import { redactSensitiveValue } from "../utils.js";
+
 export type PendingEnvChange = {
   key: string;
   value: string;
@@ -71,13 +73,6 @@ export function applyPendingChanges(
   return nextLines;
 }
 
-function maskSecret(value: string): string {
-  if (value.length <= 6) {
-    return `${value.slice(0, Math.min(3, value.length))}*********`;
-  }
-  return `${value.slice(0, 3)}*********${value.slice(-3)}`;
-}
-
 /** Mask secret-looking env values for terminal display. */
 export function maskEnvLine(line: string): string {
   const trimmed = line.trim();
@@ -91,7 +86,7 @@ export function maskEnvLine(line: string): string {
   if (!/(API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY)$/i.test(key)) {
     return line;
   }
-  return `${key}=${maskSecret(value)}`;
+  return `${key}=${redactSensitiveValue(value)}`;
 }
 
 type DiffOp =

@@ -11,18 +11,25 @@ import {
 import { envPath, repoRoot } from "../paths.js";
 
 const CF_TOKEN_URL = "https://dash.cloudflare.com/profile/api-tokens";
+const VERCEL_TOKEN_URL = "https://vercel.com/account/tokens";
 const NAMESPACE_RE = /^[a-zA-Z0-9_]+$/;
 
-type ServiceType = "cf";
+type ServiceType = "cf" | "vercel";
 
 function envKeyFor(service: ServiceType, namespace: string): string {
   switch (service) {
     case "cf":
       return `PROVIDER_CF_${namespace}_API_KEY`;
+    case "vercel":
+      return `PROVIDER_VERCEL_${namespace}_API_KEY`;
   }
 }
 
-/** Interactive provider setup — writes API tokens into `scan/.env`. */
+function teamEnvKeyFor(namespace: string): string {
+  return `PROVIDER_VERCEL_${namespace}_TEAM_ID`;
+}
+
+/** Interactive provider setup — writes API tokens into `cli/.env`. */
 export async function runInit(): Promise<void> {
   const pending: PendingEnvChange[] = [];
 
@@ -34,6 +41,11 @@ export async function runInit(): Promise<void> {
           name: "Cloudflare",
           value: "cf" as const,
           description: "Workers, KV, D1, R2, Queues, Vectorize",
+        },
+        {
+          name: "Vercel",
+          value: "vercel" as const,
+          description: "Projects, domains, and environment variables",
         },
         {
           name: "Done",
@@ -82,6 +94,52 @@ export async function runInit(): Promise<void> {
       if (idx >= 0) pending[idx] = change;
       else pending.push(change);
       console.log(`Queued ${change.key}\n`);
+    }
+
+    if (service === "vercel") {
+      const key = envKeyFor("vercel", namespace.trim());
+      const teamKey = teamEnvKeyFor(namespace.trim());
+
+      console.log("\nCreate a Vercel API token at:");
+      console.log(`  ${VERCEL_TOKEN_URL}`);
+      console.log("\nGrant read access to projects, domains, and env vars.");
+      console.log(`\nStored as ${key}`);
+      console.log(`Optional team id stored as ${teamKey}\n`);
+
+      const token = await input({
+        message: "Paste the API token",
+        validate: (value) =>
+          value.trim() ? true : "Token is required (Ctrl+C to cancel)",
+      });
+
+      const teamId = await input({
+        message: "Team id (optional, leave blank for personal account)",
+      });
+
+      const change: PendingEnvChange = {
+        key,
+        value: token.trim(),
+        service: "vercel",
+        namespace: namespace.trim(),
+      };
+      const idx = pending.findIndex((p) => p.key === change.key);
+      if (idx >= 0) pending[idx] = change;
+      else pending.push(change);
+      console.log(`Queued ${change.key}`);
+
+      if (teamId.trim()) {
+        const teamChange: PendingEnvChange = {
+          key: teamKey,
+          value: teamId.trim(),
+          service: "vercel",
+          namespace: namespace.trim(),
+        };
+        const teamIdx = pending.findIndex((p) => p.key === teamChange.key);
+        if (teamIdx >= 0) pending[teamIdx] = teamChange;
+        else pending.push(teamChange);
+        console.log(`Queued ${teamChange.key}`);
+      }
+      console.log();
     }
   }
 

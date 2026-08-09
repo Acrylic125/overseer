@@ -10,6 +10,7 @@ import {
 import {
   infrastructureDbSchema,
   type InfrastructureDb,
+  type PlacedService,
 } from "../schema.js";
 
 export type WriteDbInput = {
@@ -18,6 +19,18 @@ export type WriteDbInput = {
   /** Artifact directory (`_generated` or `--dir`). */
   outDir: string;
 };
+
+/** Drop empty `connections` so the wire JSON stays sparse. */
+function forWire(db: InfrastructureDb): InfrastructureDb {
+  return {
+    ...db,
+    services: db.services.map((service) => {
+      if (service.connections.length > 0) return service;
+      const { connections: _omit, ...rest } = service;
+      return rest as PlacedService;
+    }),
+  };
+}
 
 /**
  * Step 4 — Validate and write `infrastructure.json` into the artifact dir.
@@ -40,7 +53,11 @@ export async function writeInfrastructureDb(
   });
 
   await mkdir(input.outDir, { recursive: true });
-  await writeFile(outPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
+  await writeFile(
+    outPath,
+    `${JSON.stringify(forWire(db), null, 2)}\n`,
+    "utf8",
+  );
 
   for (const warning of db.warnings) {
     log.warn(warning);

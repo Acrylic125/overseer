@@ -4,7 +4,6 @@ import { INTERNET_ID } from "@/lib/internet";
 import {
   PUBLIC_INTERNET_BASE_DEPTH,
   PUBLIC_INTERNET_BASE_WIDTH,
-  PUBLIC_INTERNET_GROUP,
 } from "@/lib/infrastructure-styles";
 import type {
   Connector,
@@ -212,9 +211,7 @@ export function layoutFromDb(
   const cloudShape = pads.find(
     (pad): pad is Extract<Pad, { type: "shape" }> =>
       pad.type === "shape" &&
-      (pad.id === INTERNET_ID ||
-        pad.group === PUBLIC_INTERNET_GROUP ||
-        pad.shape === "cloud"),
+      (pad.id === INTERNET_ID || pad.shape === "cloud"),
   );
 
   const internetService = placed.find((service) => service.id === INTERNET_ID);

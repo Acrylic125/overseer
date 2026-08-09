@@ -1,8 +1,3 @@
-import type {
-  InfrastructureCategory,
-  InfrastructureSpecies,
-} from "@/server/routers/infrastructure";
-
 /** World units per grid cell — matches default 1×1 block footprint. */
 export const CELL_SIZE = 1;
 
@@ -55,8 +50,6 @@ export const PLATFORM_SEPARATION = 4;
  */
 export const PUBLIC_INTERNET_BASE_WIDTH = 4;
 export const PUBLIC_INTERNET_BASE_DEPTH = 2;
-/** @deprecated Prefer service id `internet`; kept for older pads. */
-export const PUBLIC_INTERNET_GROUP = "public-internet";
 
 /** Cloud platform width×depth in cells for a given service-platform count. */
 export function publicInternetFootprint(platformCount: number) {
@@ -79,31 +72,3 @@ export const MATERIAL_ROUGHNESS = 0.28;
 export const GRID_MAJOR_EVERY = 4;
 /** World-space extent of the infinite-feeling floor grid. */
 export const GRID_EXTENT = 120;
-
-export const SPECIES_STYLE: Record<
-  InfrastructureSpecies,
-  { accent: string; label: string }
-> = {
-  database: { accent: SCENE.edge, label: "Database" },
-  api_gateway: { accent: SCENE.edge, label: "API Gateway" },
-  microservice: { accent: SCENE.edge, label: "Microservice" },
-  queue: { accent: SCENE.edge, label: "Queue" },
-  cdn_edge: { accent: SCENE.edge, label: "CDN / Edge" },
-  load_balancer: { accent: SCENE.edge, label: "Load Balancer" },
-  object_storage: { accent: SCENE.edge, label: "Object Storage" },
-};
-
-export function speciesToCategory(
-  species: InfrastructureSpecies,
-): InfrastructureCategory {
-  switch (species) {
-    case "database":
-      return "database";
-    case "object_storage":
-      return "storage";
-    case "queue":
-      return "integration";
-    default:
-      return "compute";
-  }
-}

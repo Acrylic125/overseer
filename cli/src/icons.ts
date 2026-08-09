@@ -1,5 +1,5 @@
 /**
- * Mesh / SVG basenames under `scan/assets/icons/` (no path, no extension).
+ * Mesh / SVG basenames under `cli/assets/icons/` (no path, no extension).
  * These are the wire-format `service` values written into infrastructure.json.
  */
 export const DEFAULT_ICON_SERVICE = "all-unknown";
@@ -10,9 +10,20 @@ const CF_ICON_BY_KIND: Record<string, string> = {
   KV: "cf-worker-kv",
   D1: "cf-d1",
   R2: "r2",
+  Vectorize: "cf-vectorize",
+};
+
+/** Vercel product kind → icon basename. */
+const VERCEL_ICON_BY_KIND: Record<string, string> = {
+  Project: "vercel",
 };
 
 /** Resolve a Cloudflare kind to an assets.glb mesh name. */
 export function iconServiceForCfKind(kind: string): string {
   return CF_ICON_BY_KIND[kind] ?? DEFAULT_ICON_SERVICE;
+}
+
+/** Resolve a Vercel kind to an assets.glb mesh name. */
+export function iconServiceForVercelKind(kind: string): string {
+  return VERCEL_ICON_BY_KIND[kind] ?? DEFAULT_ICON_SERVICE;
 }

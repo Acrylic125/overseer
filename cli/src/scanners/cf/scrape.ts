@@ -1,9 +1,18 @@
 import Cloudflare from "cloudflare";
 
 import { log as cli } from "../../cli/log.js";
-import { iconServiceForCfKind } from "../../icons.js";
 import type { CloudflareProvider } from "../../providers.js";
-import type { ScannedService, ServiceFields } from "../../schema.js";
+import type {
+  ScrapedCfD1,
+  ScrapedCfKv,
+  ScrapedCfQueue,
+  ScrapedCfR2,
+  ScrapedCfVectorize,
+  ScrapedCfWorker,
+  ScrapedEnvVar,
+  ScrapedResource,
+  ScrapeContext,
+} from "../types.js";
 import {
   assertTokenUsable,
   BINDING_CONCURRENCY,
@@ -22,19 +31,6 @@ import {
   settled,
   withTimeout,
 } from "./client.js";
-
-type CfServiceKind =
-  | "Worker"
-  | "KV"
-  | "D1"
-  | "R2"
-  | "Queue"
-  | "Vectorize";
-
-type RawService = ScannedService & {
-  kind: CfServiceKind;
-  lookupKeys: string[];
-};
 
 function formatCorsEntries(
   rules: Array<{
@@ -124,8 +120,33 @@ function resolveBindingTarget(
   }
 }
 
+function extractEnvFromBinding(
+  binding: { type: string } & Record<string, unknown>,
+): ScrapedEnvVar | null {
+  if (binding.type === "plain_text") {
+    const key = typeof binding.name === "string" ? binding.name : null;
+    if (!key) return null;
+    return {
+      key,
+      value: typeof binding.text === "string" ? binding.text : "",
+      type: "plain_text",
+    };
+  }
+  if (binding.type === "secret_text") {
+    const key = typeof binding.name === "string" ? binding.name : null;
+    if (!key) return null;
+    return {
+      key,
+      // Cloudflare does not return secret values on read.
+      value: typeof binding.text === "string" ? binding.text : "",
+      type: "secret_text",
+    };
+  }
+  return null;
+}
+
 type AccountFetchResult = {
-  services: RawService[];
+  resources: ScrapedResource[];
   warnings: string[];
 };
 
@@ -333,7 +354,7 @@ async function fetchAccountInfrastructure(
       namespace: ns,
     });
     return {
-      services: [],
+      resources: [],
       warnings: [
         formatAuthFailure(
           ns,
@@ -371,14 +392,14 @@ async function fetchAccountInfrastructure(
     duration: elapsed(accountStart),
   });
 
-  const services: RawService[] = [];
+  const resources: ScrapedResource[] = [];
 
-  function trackService(service: RawService) {
-    services.push(service);
+  function trackResource(resource: ScrapedResource) {
+    resources.push(resource);
     log("scanning service", {
-      service: service.service,
-      name: service.name,
-      id: service.id,
+      kind: resource.kind,
+      name: resource.name,
+      id: resource.id,
     });
   }
 
@@ -388,123 +409,81 @@ async function fetchAccountInfrastructure(
       (workersDevSubdomain
         ? `${name}.${workersDevSubdomain}.workers.dev`
         : "");
-    const fields: ServiceFields = {
-      networking: {
-        "bool:Is Open To Internet": Boolean(entryDomain),
-        ...(entryDomain ? { "link:Entry Domain": entryDomain } : {}),
-      },
-      observability: {
-        "link:View Logs": workerViewLogUrl(accountId, name),
-      },
-    };
-    trackService({
+    const domains = entryDomain ? [entryDomain] : [];
+    const worker: ScrapedCfWorker = {
+      kind: "cf-worker",
       id: serviceId(ns, accountId, "worker", name),
-      sourceType: "cf",
-      service: iconServiceForCfKind("Worker"),
-      kind: "Worker",
       name,
       group: ns,
+      domains,
+      envs: [],
       connections: [],
-      fields,
-      lookupKeys: [name],
-    });
+      logUrl: workerViewLogUrl(accountId, name),
+    };
+    trackResource(worker);
   }
 
   for (const kv of kvNamespaces) {
-    trackService({
+    const resource: ScrapedCfKv = {
+      kind: "cf-kv",
       id: serviceId(ns, accountId, "kv", kv.id),
-      sourceType: "cf",
-      service: iconServiceForCfKind("KV"),
-      kind: "KV",
       name: kv.title,
       group: ns,
-      connections: [],
-      fields: {
-        networking: {
-          "bool:Is Open To Internet": false,
-        },
-      },
-      lookupKeys: [kv.id, kv.title],
-    });
+      namespaceId: kv.id,
+    };
+    trackResource(resource);
   }
 
   for (const db of d1Databases) {
     if (!db.uuid || !db.name) continue;
-    trackService({
+    const resource: ScrapedCfD1 = {
+      kind: "cf-d1",
       id: serviceId(ns, accountId, "d1", db.uuid),
-      sourceType: "cf",
-      service: iconServiceForCfKind("D1"),
-      kind: "D1",
       name: db.name,
       group: ns,
-      connections: [],
-      fields: {
-        networking: {
-          "bool:Is Open To Internet": false,
-        },
-      },
-      lookupKeys: [db.uuid, db.name],
-    });
+      databaseId: db.uuid,
+    };
+    trackResource(resource);
   }
 
   for (const bucket of r2Response.buckets ?? []) {
     if (!bucket.name) continue;
-    trackService({
+    const resource: ScrapedCfR2 = {
+      kind: "cf-r2",
       id: serviceId(ns, accountId, "r2", bucket.name),
-      sourceType: "cf",
-      service: iconServiceForCfKind("R2"),
-      kind: "R2",
       name: bucket.name,
       group: ns,
-      connections: [],
-      fields: {
-        networking: {
-          "bool:Is Open To Internet": false,
-          "link:S3 API URL": r2S3ApiUrl(accountId, bucket.name),
-        },
-      },
-      lookupKeys: [bucket.name],
-    });
+      domains: [],
+      openToInternet: false,
+      s3ApiUrl: r2S3ApiUrl(accountId, bucket.name),
+      cors: [],
+    };
+    trackResource(resource);
   }
 
   for (const index of vectorizeIndexes) {
     if (!index.name) continue;
-    trackService({
+    const resource: ScrapedCfVectorize = {
+      kind: "cf-vectorize",
       id: serviceId(ns, accountId, "vectorize", index.name),
-      sourceType: "cf",
-      service: iconServiceForCfKind("Vectorize"),
-      kind: "Vectorize",
       name: index.name,
       group: ns,
-      connections: [],
-      fields: {
-        networking: {
-          "bool:Is Open To Internet": false,
-        },
-      },
-      lookupKeys: [index.name],
-    });
+    };
+    trackResource(resource);
   }
 
   for (const queue of queues) {
     const name = queue.queue_name;
     const id = queue.queue_id ?? name;
     if (!name || !id) continue;
-    trackService({
+    const resource: ScrapedCfQueue = {
+      kind: "cf-queue",
       id: serviceId(ns, accountId, "queue", id),
-      sourceType: "cf",
-      service: iconServiceForCfKind("Queue"),
-      kind: "Queue",
       name,
       group: ns,
-      connections: [],
-      fields: {
-        networking: {
-          "bool:Is Open To Internet": false,
-        },
-      },
-      lookupKeys: [name, id],
-    });
+      queueId: id,
+    };
+    trackResource(resource);
   }
 
   const byKvId = new Map<string, string>();
@@ -514,18 +493,27 @@ async function fetchAccountInfrastructure(
   const byQueueName = new Map<string, string>();
   const byWorkerName = new Map<string, string>();
 
-  for (const service of services) {
-    if (service.kind === "Worker")
-      byWorkerName.set(service.name, service.id);
-    else if (service.kind === "KV")
-      byKvId.set(service.lookupKeys[0]!, service.id);
-    else if (service.kind === "D1")
-      byD1Id.set(service.lookupKeys[0]!, service.id);
-    else if (service.kind === "R2") byR2Name.set(service.name, service.id);
-    else if (service.kind === "Vectorize")
-      byVectorizeName.set(service.name, service.id);
-    else if (service.kind === "Queue")
-      byQueueName.set(service.name, service.id);
+  for (const resource of resources) {
+    switch (resource.kind) {
+      case "cf-worker":
+        byWorkerName.set(resource.name, resource.id);
+        break;
+      case "cf-kv":
+        byKvId.set(resource.namespaceId, resource.id);
+        break;
+      case "cf-d1":
+        byD1Id.set(resource.databaseId, resource.id);
+        break;
+      case "cf-r2":
+        byR2Name.set(resource.name, resource.id);
+        break;
+      case "cf-vectorize":
+        byVectorizeName.set(resource.name, resource.id);
+        break;
+      case "cf-queue":
+        byQueueName.set(resource.name, resource.id);
+        break;
+    }
   }
 
   const indexes = {
@@ -537,16 +525,17 @@ async function fetchAccountInfrastructure(
     byWorkerName,
   };
 
-  const r2Services = services.filter((service) => service.kind === "R2");
-  if (r2Services.length > 0) {
+  const r2Resources = resources.filter(
+    (resource): resource is ScrapedCfR2 => resource.kind === "cf-r2",
+  );
+  if (r2Resources.length > 0) {
     const r2NetStart = Date.now();
     log("fetching r2 networking", {
-      buckets: r2Services.length,
+      buckets: r2Resources.length,
       concurrency: BINDING_CONCURRENCY,
     });
-    await mapPool(r2Services, BINDING_CONCURRENCY, async (bucket) => {
+    await mapPool(r2Resources, BINDING_CONCURRENCY, async (bucket) => {
       const start = Date.now();
-      const account = { account_id: accountId };
 
       const [managedResult, customResult, corsResult] = await Promise.all([
         settled(
@@ -570,7 +559,6 @@ async function fetchAccountInfrastructure(
         settled(
           withTimeout(
             client.r2.buckets.cors.get(bucket.name, account).catch((error) => {
-              // No CORS configured is a normal bucket state, not a scan failure.
               if (isMissingR2CorsConfig(error)) return { rules: [] };
               throw error;
             }),
@@ -598,24 +586,15 @@ async function fetchAccountInfrastructure(
         })),
       );
 
-      const networking = {
-        ...(bucket.fields.networking ?? {}),
-        "bool:Is Open To Internet": managedEnabled || enabledCustomDomain,
-        ...(customDomains.length > 0
-          ? { "link:Custom Domains": customDomains }
-          : {}),
-        ...(corsEntries.length > 0 ? { cors: corsEntries } : {}),
-      };
-      bucket.fields = {
-        ...bucket.fields,
-        networking,
-      };
+      bucket.domains = customDomains;
+      bucket.openToInternet = managedEnabled || enabledCustomDomain;
+      bucket.cors = corsEntries;
 
       log("r2 networking resolved", {
         bucket: bucket.name,
         customDomains: customDomains.length,
         corsRules: corsEntries.length,
-        isOpenToInternet: managedEnabled || enabledCustomDomain,
+        isOpenToInternet: bucket.openToInternet,
         duration: elapsed(start),
         ...(managedResult.error ? { managedError: managedResult.error } : {}),
         ...(customResult.error ? { customError: customResult.error } : {}),
@@ -625,8 +604,8 @@ async function fetchAccountInfrastructure(
     cli.step(`Resolving R2 networking (${elapsed(r2NetStart)})`);
   }
 
-  const workerServices = services.filter(
-    (service) => service.kind === "Worker",
+  const workerResources = resources.filter(
+    (resource): resource is ScrapedCfWorker => resource.kind === "cf-worker",
   );
   const bindingsStart = Date.now();
   let bindingsOk = 0;
@@ -634,11 +613,11 @@ async function fetchAccountInfrastructure(
   let bindingsLinked = 0;
 
   log("fetching worker bindings", {
-    workers: workerServices.length,
+    workers: workerResources.length,
     concurrency: BINDING_CONCURRENCY,
   });
 
-  await mapPool(workerServices, BINDING_CONCURRENCY, async (worker) => {
+  await mapPool(workerResources, BINDING_CONCURRENCY, async (worker) => {
     const start = Date.now();
     const settingsResult = await settled(
       withTimeout(
@@ -665,19 +644,26 @@ async function fetchAccountInfrastructure(
     }
 
     const targets = new Set<string>();
+    const envs: ScrapedEnvVar[] = [];
     for (const binding of settings.bindings) {
-      const target = resolveBindingTarget(
-        binding as unknown as { type: string } & Record<string, unknown>,
-        indexes,
-      );
+      const record = binding as unknown as {
+        type: string;
+      } & Record<string, unknown>;
+
+      const env = extractEnvFromBinding(record);
+      if (env) envs.push(env);
+
+      const target = resolveBindingTarget(record, indexes);
       if (target && target !== worker.id) targets.add(target);
     }
+    worker.envs = envs;
     worker.connections = [...targets];
     bindingsOk += 1;
     bindingsLinked += targets.size;
     log("bindings resolved", {
       worker: worker.name,
       bindingCount: settings.bindings.length,
+      envs: envs.length,
       connections: targets.size,
       duration: elapsed(start),
     });
@@ -692,7 +678,7 @@ async function fetchAccountInfrastructure(
     duration: elapsed(bindingsStart),
   });
 
-  return { services, warnings };
+  return { resources, warnings };
 }
 
 async function fetchProviderInfrastructure(
@@ -725,7 +711,7 @@ async function fetchProviderInfrastructure(
       warning: tokenCheck.error,
     });
     cli.failStep("Token unusable");
-    return { services: [], warnings: [tokenCheck.error] };
+    return { resources: [], warnings: [tokenCheck.error] };
   }
 
   log("using account", {
@@ -742,15 +728,15 @@ async function fetchProviderInfrastructure(
     );
     log("provider done", {
       namespace: provider.namespace,
-      services: result.services.length,
+      resources: result.resources.length,
       duration: elapsed(start),
     });
-    cli.step(`${result.services.length} services found (${elapsed(start)})`);
+    cli.step(`${result.resources.length} resources found (${elapsed(start)})`);
     return result;
   } catch (error) {
     if (isAuthFailure(error) || isRateLimited(error)) {
       return {
-        services: [],
+        resources: [],
         warnings: [formatAuthFailure(provider.namespace, error)],
       };
     }
@@ -758,32 +744,27 @@ async function fetchProviderInfrastructure(
   }
 }
 
-export type ScrapeResult = {
-  services: ScannedService[];
-  warnings: string[];
-};
-
 export async function scrapeCloudflare(
   providers: CloudflareProvider[],
-): Promise<ScrapeResult> {
+): Promise<ScrapeContext> {
   const start = Date.now();
   const showNamespace = providers.length > 1;
   log("scrape start", { providers: providers.map((p) => p.namespace) });
 
   if (providers.length === 0) {
     return {
-      services: [],
+      resources: [],
       warnings: ["No Cloudflare providers configured (PROVIDER_CF_*_API_KEY)"],
     };
   }
 
-  const services: RawService[] = [];
+  const resources: ScrapedResource[] = [];
   const warnings: string[] = [];
 
   for (const provider of providers) {
     try {
       const result = await fetchProviderInfrastructure(provider, showNamespace);
-      services.push(...result.services);
+      resources.push(...result.resources);
       warnings.push(...result.warnings);
     } catch (reason) {
       const error =
@@ -798,15 +779,11 @@ export async function scrapeCloudflare(
     }
   }
 
-  const cleaned: ScannedService[] = services.map(
-    ({ kind: _kind, lookupKeys: _lookupKeys, ...rest }) => rest,
-  );
-
   log("scrape complete", {
-    services: cleaned.length,
+    resources: resources.length,
     warnings: warnings.length,
     duration: elapsed(start),
   });
 
-  return { services: cleaned, warnings };
+  return { resources, warnings };
 }

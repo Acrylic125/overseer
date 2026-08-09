@@ -10,7 +10,7 @@ import { precomputeAssets } from "./pipeline/precompute.js";
 function printUsage(): void {
   console.log(`Usage:
   pnpm cli                      Interactive menu
-  pnpm cli init                 Configure providers in scan/.env
+  pnpm cli init                 Configure providers in cli/.env
   pnpm cli scan [--dir <path>]  Full pipeline → <dir>/…
   pnpm cli scan --skip-assets [--dir <path>]
   pnpm cli assets [--dir <path>]  Bake assets.glb (+ gradient PNG)
@@ -55,7 +55,7 @@ async function runInteractive(): Promise<void> {
         {
           name: "init",
           value: "init" as const,
-          description: "Configure providers in scan/.env",
+          description: "Configure providers in cli/.env",
         },
         {
           name: "scan",

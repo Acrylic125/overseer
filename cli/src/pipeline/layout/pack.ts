@@ -4,6 +4,7 @@ import {
   type LayoutAabb,
 } from "./connectors.js";
 import {
+  connectionsForLayout,
   createInternetService,
   INTERNET_ID,
   INTERNET_LABEL,
@@ -717,7 +718,8 @@ export async function layoutServices(
     boxes,
     graphServices.map((service) => ({
       id: service.id,
-      connections: service.connections,
+      // Internet edges come from `bool:Is Open To Internet`, not stored connections.
+      connections: connectionsForLayout(service),
     })),
   );
 

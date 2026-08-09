@@ -1,11 +1,17 @@
 "use client";
 
 import { CheckIcon, CopyIcon, ExternalLinkIcon, XIcon } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { parseFieldKey, type FieldType } from "@/lib/infrastructure-schema";
+import { Tabs, TabsList, TabsPanel, TabsTrigger } from "@/components/ui/tabs";
+import {
+  parseFieldKey,
+  type CategoryFields,
+  type FieldType,
+  type ServiceFields,
+} from "@/lib/infrastructure-schema";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 type ServiceDetailSheetProps = {
@@ -13,9 +19,67 @@ type ServiceDetailSheetProps = {
   onOpenChange: (open: boolean) => void;
 };
 
+const ENV_CATEGORY_PREFIX = "environment:";
+
+type EnvTab = {
+  /** Tab value / target slug, e.g. `production`. */
+  target: string;
+  /** Fields for this deploy target. */
+  fields: CategoryFields;
+};
+
 function formatCategoryTitle(name: string) {
   if (!name) return name;
   return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function formatEnvTabLabel(target: string) {
+  const known: Record<string, string> = {
+    production: "Production",
+    preview: "Preview",
+    development: "Development",
+    shared: "Shared",
+  };
+  if (known[target]) return known[target]!;
+  return target
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+/**
+ * Collect `environment`, `environment:production`, … into ordered tabs.
+ * Legacy flat `environment` maps to a Shared tab.
+ */
+function collectEnvTabs(fields: ServiceFields): EnvTab[] {
+  const tabs: EnvTab[] = [];
+  const order = ["production", "preview", "development", "shared"];
+
+  for (const [category, categoryFields] of Object.entries(fields)) {
+    if (category === "environment") {
+      tabs.push({ target: "shared", fields: categoryFields });
+      continue;
+    }
+    if (!category.startsWith(ENV_CATEGORY_PREFIX)) continue;
+    const target = category.slice(ENV_CATEGORY_PREFIX.length) || "shared";
+    tabs.push({ target, fields: categoryFields });
+  }
+
+  return tabs.sort((a, b) => {
+    const ai = order.indexOf(a.target);
+    const bi = order.indexOf(b.target);
+    const aRank = ai === -1 ? order.length : ai;
+    const bRank = bi === -1 ? order.length : bi;
+    if (aRank !== bRank) return aRank - bRank;
+    return a.target.localeCompare(b.target);
+  });
+}
+
+function isEnvironmentCategory(category: string) {
+  return (
+    category === "environment" || category.startsWith(ENV_CATEGORY_PREFIX)
+  );
 }
 
 function hrefForLink(value: string) {
@@ -95,8 +159,8 @@ function ScalarStringValue({
   value: string;
 }) {
   return (
-    <div className="group relative min-w-0">
-      <span className="block break-all font-mono text-xs text-foreground">
+    <div className="group relative min-w-0 w-full">
+      <span className="block wrap-break-word break-all whitespace-normal font-mono text-xs text-foreground">
         {value}
       </span>
       <FieldActions type={type} value={value} />
@@ -125,40 +189,57 @@ function FieldRow({
 
   if (isArray) {
     return (
-      <div className="flex flex-col gap-1.5 py-2">
-        <span className="text-muted-foreground">{name}</span>
-        {value.length === 0 ? (
-          <span className="text-muted-foreground">None</span>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {value.map((item, index) => (
-              <li key={`${name}-${index}`}>
-                {type === "bool" ? (
-                  <BoolValue value={item as boolean} />
-                ) : (
-                  <ScalarStringValue
-                    type={type}
-                    value={String(item)}
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+      <div className="grid grid-cols-2 gap-3 py-2">
+        <span className="min-w-0 max-w-full wrap-break-word whitespace-normal text-muted-foreground">
+          {name}
+        </span>
+        <div className="min-w-0 max-w-full">
+          {value.length === 0 ? (
+            <span className="text-muted-foreground">None</span>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {value.map((item, index) => (
+                <li key={`${name}-${index}`}>
+                  {type === "bool" ? (
+                    <BoolValue value={item as boolean} />
+                  ) : (
+                    <ScalarStringValue
+                      type={type}
+                      value={String(item)}
+                    />
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex items-start justify-between gap-3 py-2">
-      <span className="shrink-0 text-muted-foreground">{name}</span>
-      <div className="min-w-0">
+    <div className="grid grid-cols-2 gap-3 py-2">
+      <span className="min-w-0 max-w-full wrap-break-word whitespace-normal text-muted-foreground">
+        {name}
+      </span>
+      <div className="min-w-0 max-w-full">
         {type === "bool" ? (
           <BoolValue value={value as boolean} />
         ) : (
           <ScalarStringValue type={type} value={String(value)} />
         )}
       </div>
+    </div>
+  );
+}
+
+function FieldList({ fields }: { fields: CategoryFields }) {
+  return (
+    <div>
+      {Object.entries(fields).map(([key, value]) => {
+        const { type, name } = parseFieldKey(key);
+        return <FieldRow key={key} type={type} name={name} value={value} />;
+      })}
     </div>
   );
 }
@@ -180,6 +261,56 @@ function DetailSection({
   );
 }
 
+function EnvironmentSection({ tabs }: { tabs: EnvTab[] }) {
+  const defaultTab = tabs[0]?.target ?? "shared";
+  const [value, setValue] = useState(defaultTab);
+
+  // When the selected service changes, tabs remount via key on the parent.
+  const active = tabs.some((tab) => tab.target === value)
+    ? value
+    : defaultTab;
+
+  return (
+    <section className="px-4">
+      <h3 className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        Environment
+      </h3>
+      <Tabs
+        value={active}
+        onValueChange={(next) => {
+          if (typeof next === "string") setValue(next);
+        }}
+        className="flex w-full flex-col gap-3"
+      >
+        <TabsList className="flex h-9 w-full shrink-0 items-stretch justify-stretch gap-0.5">
+          {tabs.map((tab) => (
+            <TabsTrigger
+              key={tab.target}
+              value={tab.target}
+              className="h-auto min-h-0 min-w-0 flex-1 px-2 py-1.5 text-xs"
+            >
+              {formatEnvTabLabel(tab.target)}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {tabs.map((tab) => (
+          <TabsPanel
+            key={tab.target}
+            value={tab.target}
+            className="w-full outline-none"
+          >
+            {Object.keys(tab.fields).length === 0 ? (
+              <p className="py-2 text-muted-foreground">No variables.</p>
+            ) : (
+              <FieldList fields={tab.fields} />
+            )}
+          </TabsPanel>
+        ))}
+      </Tabs>
+    </section>
+  );
+}
+
 /**
  * Side sheet for the selected service.
  * Rendered as a fixed panel (not Base UI Dialog) so canvas picks don't
@@ -191,7 +322,36 @@ export function ServiceDetailSheet({
 }: ServiceDetailSheetProps) {
   if (!service) return null;
 
-  const categories = Object.entries(service.fields);
+  return (
+    <ServiceDetailSheetBody
+      key={service.id}
+      service={service}
+      onOpenChange={onOpenChange}
+    />
+  );
+}
+
+function ServiceDetailSheetBody({
+  service,
+  onOpenChange,
+}: {
+  service: InfrastructureService;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const envTabs = useMemo(
+    () => collectEnvTabs(service.fields),
+    [service.fields],
+  );
+
+  const otherCategories = useMemo(
+    () =>
+      Object.entries(service.fields).filter(
+        ([category]) => !isEnvironmentCategory(category),
+      ),
+    [service.fields],
+  );
+
+  const hasContent = otherCategories.length > 0 || envTabs.length > 0;
 
   return (
     <aside
@@ -223,22 +383,22 @@ export function ServiceDetailSheet({
       </header>
 
       <div className="flex flex-col gap-6 overflow-y-auto py-4">
-        {categories.length === 0 ? (
+        {!hasContent ? (
           <p className="px-4 text-muted-foreground">No details available.</p>
         ) : (
-          categories.map(([category, fields]) => (
-            <DetailSection
-              key={category}
-              title={formatCategoryTitle(category)}
-            >
-              {Object.entries(fields).map(([key, value]) => {
-                const { type, name } = parseFieldKey(key);
-                return (
-                  <FieldRow key={key} type={type} name={name} value={value} />
-                );
-              })}
-            </DetailSection>
-          ))
+          <>
+            {envTabs.length > 0 ? (
+              <EnvironmentSection tabs={envTabs} />
+            ) : null}
+            {otherCategories.map(([category, fields]) => (
+              <DetailSection
+                key={category}
+                title={formatCategoryTitle(category)}
+              >
+                <FieldList fields={fields} />
+              </DetailSection>
+            ))}
+          </>
         )}
       </div>
     </aside>

@@ -1,12 +1,12 @@
 import { iconServiceForCfKind } from "./icons.js";
 import {
-  ensureInternetLinks,
-  INTERNET_ID,
+  ensureInternetHub,
   isInternetService,
+  isOpenToInternet,
 } from "./internet.js";
 import type { ScannedService } from "./schema.js";
 
-/** Cap hub fan-in so mock connector routing stays responsive. */
+/** Cap open-to-internet workers so mock connector routing stays responsive. */
 const MAX_MOCK_INTERNET_LINKS = 64;
 
 const SERVICE_COUNT = 10000;
@@ -292,6 +292,7 @@ export function createMockServices(seed = 42): ScannedService[] {
   // Prefer connections inside the same group path (including A↔A, B↔B).
   const byGroup = new Map<string, ScannedService[]>();
   for (const service of services) {
+    if (service.group == null) continue;
     const list = byGroup.get(service.group) ?? [];
     list.push(service);
     byGroup.set(service.group, list);
@@ -300,7 +301,9 @@ export function createMockServices(seed = 42): ScannedService[] {
   for (let i = 0; i < SERVICE_COUNT; i += 1) {
     const degree = Math.floor(rand() * 3);
     const source = services[i]!;
-    const pool = byGroup.get(source.group) ?? services;
+    const pool =
+      (source.group != null ? byGroup.get(source.group) : undefined) ??
+      services;
     const targets = new Set<string>();
     for (let d = 0; d < degree; d += 1) {
       const target = pick(rand, pool);
@@ -310,16 +313,22 @@ export function createMockServices(seed = 42): ScannedService[] {
     source.connections = [...targets];
   }
 
-  // Public internet is a service resource; open workers link to it.
+  // Cap how many workers advertise open-to-internet (layout derives hub edges).
   let internetLinks = 0;
-  return ensureInternetLinks(services).map((service) => {
+  return ensureInternetHub(services).map((service) => {
     if (isInternetService(service)) return service;
-    if (!service.connections.includes(INTERNET_ID)) return service;
+    if (!isOpenToInternet(service.fields)) return service;
     internetLinks += 1;
     if (internetLinks <= MAX_MOCK_INTERNET_LINKS) return service;
     return {
       ...service,
-      connections: service.connections.filter((id) => id !== INTERNET_ID),
+      fields: {
+        ...service.fields,
+        networking: {
+          ...(service.fields.networking ?? {}),
+          "bool:Is Open To Internet": false,
+        },
+      },
     };
   });
 }

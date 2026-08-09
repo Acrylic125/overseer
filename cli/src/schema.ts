@@ -96,8 +96,8 @@ export function resolveSize(size?: Size | null): Size {
 /**
  * Shared identity / graph fields on every scanned service.
  *
- * `service` is the icon basename from `scan/assets/icons/` (e.g. `cf-worker`,
- * `r2`) — not a path. Unresolvable icons should use `all-unknown`.
+ * `service` is the icon basename from `cli/assets/icons/` (e.g. `cf-worker`,
+ * `vercel`, `r2`) — not a path. Unresolvable icons should use `all-unknown`.
  */
 /** Cluster path, or `null` for ungrouped hubs (e.g. public internet). */
 export const serviceGroupSchema = z.union([z.string().min(1), z.null()]);
@@ -106,7 +106,8 @@ export const scannedServiceBaseSchema = z.object({
   id: z.string().min(1),
   group: serviceGroupSchema,
   name: z.string().min(1),
-  connections: z.array(z.string()),
+  /** Omitted in JSON when empty; defaults to `[]` when read. */
+  connections: z.array(z.string()).default([]),
   sourceType: z.string().min(1),
   service: z.string().min(1),
 });
@@ -149,7 +150,7 @@ export const padSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("shape"),
     id: z.string().min(1),
-    /** Mesh basename under `scan/assets/shapes/` (no path / extension). */
+    /** Mesh basename under `cli/assets/shapes/` (no path / extension). */
     shape: z.string().min(1),
     /** Optional cluster label; `null`/omitted for standalone hubs. */
     group: serviceGroupSchema.optional(),

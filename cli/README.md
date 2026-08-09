@@ -1,13 +1,16 @@
-# Overseer scan
+# Overseer CLI
 
 Unified CLI for provider setup, asset baking, and the infrastructure pipeline.
+
+Providers: Cloudflare (`PROVIDER_CF_<ns>_API_KEY`) and Vercel
+(`PROVIDER_VERCEL_<ns>_API_KEY`, optional `PROVIDER_VERCEL_<ns>_TEAM_ID`).
 
 ## Pipeline
 
 `scan` runs four steps end-to-end:
 
 1. **Precompute** — bake icons, platform, and shapes into `assets.glb`
-2. **Service scan** — pull live provider resources
+2. **Service scan** — per provider `scrape()` → `transform(ctx)` (grouping + fields), then cross-provider finalize (env→domain links + internet hub). Internet connectors are derived at layout from `bool:Is Open To Internet`.
 3. **Layout** — pack platforms, icons, connectors
 4. **Output** — write `infrastructure.json` (v2)
 
@@ -68,7 +71,7 @@ pnpm assets --dir ../ui/public
 pnpm mock --dir ../ui/public
 ```
 
-Verbose Cloudflare API logs:
+Verbose provider API logs:
 
 ```bash
 OVERSEER_DEBUG=1 pnpm scan
