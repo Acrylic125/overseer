@@ -79,6 +79,8 @@ export type ScrapedAzureEntraSecret = {
 
 export type ScrapedAzureEntra = ScrapedBase & {
   kind: "azure-entra";
+  /** Entra object ID (`id` in Graph). */
+  objectId: string;
   applicationId: string;
   directoryId: string;
   /** Redirect URIs from web / spa / publicClient. */
@@ -110,12 +112,8 @@ export type ScanOutcome = {
 };
 
 /**
- * Provider scanner facade. New providers implement this in their scrape file:
- *   1. `probe(provider)` — token check; `null` if scannable, else a reason
- *   2. `scrape()` — emit {@link ScrapedResource} rows
- *   3. `transform(ctx)` — map resources → {@link ScannedService}
- *
- * Cross-provider env→domain links run later via `finalizeScan`.
+ * Provider scanner facade. Each provider implements probe, scrape, and transform
+ * in its own module. Entra client-ID linking lives in azure/transform.ts.
  */
 export interface ServiceScanner {
   scrape(): Promise<ScrapeContext>;

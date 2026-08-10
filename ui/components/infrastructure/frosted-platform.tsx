@@ -1,7 +1,8 @@
 "use client";
 
 import { Text } from "@react-three/drei";
-import { useEffect, useMemo, useState } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
 import { cssToThreeColor } from "@/lib/css-color";
@@ -9,6 +10,7 @@ import {
   CELL_SIZE,
   GRID_EXTENT,
   GRID_MAJOR_EVERY,
+  SCENE,
 } from "@/lib/infrastructure-styles";
 import { loadPlatformGradient } from "@/lib/platform-assets";
 import { createPlatformGeometries } from "@/lib/platform-mesh";
@@ -66,8 +68,11 @@ function buildGridLines(
   };
 }
 
-/** Floor grid spanning the whole scene (independent of platforms). */
+/** Floor grid that follows the camera — reads infinite while panning. */
 export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const { camera } = useThree();
+
   const { minor, major } = useMemo(
     () => buildGridLines(extent, GRID_MAJOR_EVERY),
     [extent],
@@ -85,11 +90,19 @@ export function WorldGrid({ extent = GRID_EXTENT }: { extent?: number }) {
     return geo;
   }, [major]);
 
-  const minorColor = useMemo(() => cssToThreeColor("#2A3344"), []);
-  const majorColor = useMemo(() => cssToThreeColor("#3B4556"), []);
+  const minorColor = useMemo(() => cssToThreeColor(SCENE.gridMinor), []);
+  const majorColor = useMemo(() => cssToThreeColor(SCENE.gridMajor), []);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    // Snap to cell boundaries so lines stay stable as the camera moves.
+    group.position.x = Math.floor(camera.position.x / CELL_SIZE) * CELL_SIZE;
+    group.position.z = Math.floor(camera.position.z / CELL_SIZE) * CELL_SIZE;
+  });
 
   return (
-    <group position={[0, -0.04, 0]}>
+    <group ref={groupRef} position={[0, -0.04, 0]}>
       <lineSegments geometry={minorGeo}>
         <lineBasicMaterial
           color={minorColor}

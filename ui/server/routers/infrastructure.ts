@@ -1,15 +1,8 @@
 import { z } from "zod";
 
-import {
-  loadInfrastructureDb,
-  type PlacedService,
-  type ServiceFields,
-} from "@/lib/infrastructure-db";
+import { loadInfrastructureDb, type Resource, type ServiceFields } from "@/lib/infrastructure-db";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
-import type { SceneBake } from "@/lib/infrastructure-schema";
-import { INTERNET_ID } from "@/lib/internet";
-import { layoutFromDb } from "@/lib/layout-from-db";
-import { layoutServices } from "@/lib/providers/cloudflare/layout";
+import { layoutFromDb, type CameraFrame } from "@/lib/layout-from-db";
 import { resolveServiceType } from "@/lib/service-types";
 import { publicProcedure, router } from "@/server/trpc";
 
@@ -20,7 +13,7 @@ export type InfrastructureCategory =
   | "database"
   | "integration";
 
-/** @deprecated Prefer `category` for silhouette. Kept for Cloudflare transformer compatibility. */
+/** @deprecated Prefer `category` for silhouette. */
 export type InfrastructureSpecies =
   | "database"
   | "api_gateway"
@@ -56,8 +49,7 @@ export type InfrastructureService = {
   width: number;
   /** Footprint depth in grid cells (default 1). */
   depth: number;
-  /** Blocks with the same group are packed together. `null` = ungrouped hub. */
-  group: string | null;
+  group: string;
   /** Service IDs this service can access */
   connections: string[];
   /** @deprecated Prefer `category`. */
@@ -98,28 +90,28 @@ function zoneForCategory(category: InfrastructureCategory): InfrastructureZone {
   }
 }
 
-/** Map wire-format scan rows into layout/render fields the 3D UI expects. */
-function enrichScannedService(
-  scanned: PlacedService,
+/** Map wire-format resources into layout/render fields the 3D UI expects. */
+function enrichResource(
+  resource: Resource,
+  connections: string[],
 ): Omit<InfrastructureService, "x" | "y" | "width" | "depth"> {
-  // `service` is an assets.glb mesh basename; unknown → all-unknown.
-  const meta = resolveServiceType(scanned.service);
+  const meta = resolveServiceType(resource.service);
   const category = meta.type;
   const species = speciesForCategory(category);
 
   return {
-    id: scanned.id,
+    id: resource.id,
     type: meta.icon,
-    name: scanned.name,
-    group: scanned.group,
-    connections: scanned.connections,
+    name: resource.name,
+    group: resource.group,
+    connections,
     species,
     category,
     health: "healthy",
     zone: zoneForCategory(category),
     metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
     color: "#111827",
-    fields: scanned.fields,
+    fields: resource.fields,
   };
 }
 
@@ -135,65 +127,49 @@ export const infrastructureRouter = router({
     .query(async ({ input }) => {
       const db = await loadInfrastructureDb();
 
-      const services = input?.namespace
-        ? db.services.filter(
-            (service) =>
-              service.id === INTERNET_ID ||
-              service.id.startsWith(`${input.namespace}:`),
-          )
-        : db.services;
+      const scopedDb = input?.namespace
+        ? {
+            ...db,
+            resources: db.resources.filter((resource) =>
+              resource.id.startsWith(`${input.namespace}:`),
+            ),
+            connectors: db.connectors.filter(
+              (connector) =>
+                connector.nodes[0].startsWith(`${input.namespace}:`) ||
+                connector.nodes[1].startsWith(`${input.namespace}:`) ||
+                connector.nodes[0] === "internet" ||
+                connector.nodes[1] === "internet",
+            ),
+          }
+        : db;
 
-      const fromScan = layoutFromDb(
-        services,
-        db.pads,
-        db.connectors,
-        enrichScannedService,
-      );
-
-      if (fromScan) {
-        const scene = fromScan.scene;
+      const fromScan = layoutFromDb(scopedDb, enrichResource);
+      if (!fromScan) {
         return {
-          services: fromScan.services,
-          edges: [] as {
-            source: string;
-            target: string;
-            path: { x: number; y: number }[];
-          }[],
-          warnings: db.warnings,
-          centerGuide: scene.centerGuide,
-          platforms: fromScan.platforms,
-          publicInternet: fromScan.publicInternet,
-          bounds: fromScan.bounds,
-          connectorPaths: fromScan.connectorPaths,
-          camera: scene.camera,
-          connectorSegments: scene.connectorSegments,
-          connectorJoints: scene.connectorJoints,
-          scannedAt: db.scannedAt,
+          services: [] as InfrastructureService[],
+          platforms: [],
+          publicInternet: {
+            id: "internet",
+            group: null,
+            shape: "cloud",
+            centerX: 0,
+            centerZ: 0,
+            width: 4,
+            depth: 2,
+          },
+          bounds: { centerX: 0, centerZ: 0, width: 4, depth: 2 },
+          connectorPaths: [] as ConnectorPath[],
+          camera: null as CameraFrame | null,
         };
       }
 
-      // Fallback when the DB has no placed services — client rebuilds layout.
-      const laidOut = layoutServices(
-        services.map((service) => ({
-          ...enrichScannedService(service),
-          width: 1,
-          depth: 1,
-        })),
-      );
-
       return {
-        services: laidOut.services,
-        edges: laidOut.edges,
-        warnings: db.warnings,
-        centerGuide: laidOut.centerGuide,
-        platforms: laidOut.platforms,
-        publicInternet: laidOut.publicInternet,
-        bounds: laidOut.bounds,
-        connectorPaths: null as ConnectorPath[] | null,
-        camera: null as SceneBake["camera"] | null,
-        connectorSegments: null as SceneBake["connectorSegments"] | null,
-        connectorJoints: null as SceneBake["connectorJoints"] | null,
-        scannedAt: db.scannedAt,
+        services: fromScan.services,
+        platforms: fromScan.platforms,
+        publicInternet: fromScan.publicInternet,
+        bounds: fromScan.bounds,
+        connectorPaths: fromScan.connectorPaths,
+        camera: fromScan.camera,
       };
     }),
 });

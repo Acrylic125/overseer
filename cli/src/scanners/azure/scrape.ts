@@ -1,7 +1,7 @@
 import { log as cli } from "../../cli/log.js";
 import type { AzureProvider } from "../../providers.js";
 import type { ScannedService } from "../../schema.js";
-import { resourceToService } from "../transform.js";
+import { transformAzure } from "./transform.js";
 import type {
   ScrapedAzureEntra,
   ScrapedAzureEntraSecret,
@@ -170,7 +170,9 @@ async function listApplications(
   while (url && pages < maxPages) {
     pages += 1;
     const label = `applications.list:${namespace}:page:${pages}`;
-    const result = await settled(
+    const result: Awaited<
+      ReturnType<typeof settled<GraphListResponse<GraphApplication> | null>>
+    > = await settled(
       fetchJson<GraphListResponse<GraphApplication>>(
         url,
         {
@@ -274,6 +276,7 @@ async function fetchProviderEntra(
       id: serviceId(provider.namespace, app.id),
       name,
       group: provider.namespace,
+      objectId: app.id,
       applicationId: app.appId,
       directoryId: provider.tenantId,
       redirectUris: parseRedirectUris(app),
@@ -348,16 +351,13 @@ export async function scrapeAzure(
 export class AzureScanner implements ServiceScanner {
   constructor(private readonly providers: AzureProvider[]) {}
 
-  /** `null` if scannable; otherwise a human-readable reason. */
-  static probe(provider: AzureProvider): Promise<string | null> {
-    return probeAzureProvider(provider);
-  }
+  static probe = probeAzureProvider;
 
   scrape(): Promise<ScrapeContext> {
     return scrapeAzure(this.providers);
   }
 
   transform(ctx: ScrapeContext): ScannedService[] {
-    return ctx.resources.map(resourceToService);
+    return transformAzure(ctx);
   }
 }

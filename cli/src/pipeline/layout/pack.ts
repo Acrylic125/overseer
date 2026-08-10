@@ -6,20 +6,22 @@ import {
 import {
   connectionsForLayout,
   createInternetService,
+  domainConnectorLabel,
   INTERNET_ID,
-  INTERNET_LABEL,
-  INTERNET_SHAPE,
   isInternetService,
+  isOpenToInternet,
+  linkInternetDomains,
+  networkingDomains,
 } from "../../internet.js";
 import type {
   Connector,
-  Pad,
-  PlacedService,
+  Group,
   Pos,
+  Resource,
   ScannedService,
   Size,
 } from "../../schema.js";
-import { roundCoord, roundPos } from "../../schema.js";
+import { roundCoord, roundPos, toWireGroup, toWireResource } from "../../schema.js";
 
 /** Default icon cell size (matches unit-sized GLB glyphs). */
 const ICON_W = 1;
@@ -106,8 +108,15 @@ type PackGridResult = {
 };
 
 export type LayoutResult = {
-  services: PlacedService[];
-  pads: Pad[];
+  resources: Resource[];
+  groups: Group[];
+  static: {
+    publicInternet: {
+      id: "internet";
+      pos: Pos;
+      size?: Size;
+    };
+  };
   connectors: Connector[];
   totalWidth: number;
   totalHeight: number;
@@ -532,37 +541,32 @@ function emitNestedPack(
   pack: NestedPack,
   absX: number,
   absY: number,
-  parentId: string | undefined,
   iconW: number,
   iconH: number,
   iconSize: Size,
-  pads: Pad[],
-  placedServices: PlacedService[],
+  groups: Group[],
+  resources: Resource[],
   boxes: LayoutAabb[],
 ): void {
-  const platformId = `platform:${pack.path}`;
   const z = roundCoord(PLATFORM_Z + nestDepth(pack.path) * NEST_Z_STEP);
 
-  pads.push({
-    type: "platform",
-    id: platformId,
-    group: pack.path,
-    ...(parentId ? { parent: parentId } : {}),
-    pos: roundPos([absX, absY, z]),
-    size: [pack.platformW, pack.platformH],
-  });
+  groups.push(
+    toWireGroup(pack.path, roundPos([absX, absY, z]), [
+      pack.platformW,
+      pack.platformH,
+    ]),
+  );
 
   for (const child of pack.children) {
     emitNestedPack(
       child.pack,
       absX + child.x,
       absY + child.y,
-      platformId,
       iconW,
       iconH,
       iconSize,
-      pads,
-      placedServices,
+      groups,
+      resources,
       boxes,
     );
   }
@@ -581,11 +585,14 @@ function emitNestedPack(
     const absoluteY = contentOriginY + item.y;
     const pos: Pos = roundPos([absoluteX, absoluteY, ICON_Z]);
 
-    placedServices.push({
-      ...service,
-      pos,
-      ...(iconW === 1 && iconH === 1 ? {} : { size: iconSize }),
-    });
+    resources.push(
+      toWireResource({
+        ...service,
+        group: service.group!,
+        pos,
+        ...(iconW === 1 && iconH === 1 ? {} : { size: iconSize }),
+      }),
+    );
 
     boxes.push(
       iconAabb(
@@ -605,9 +612,8 @@ function emitNestedPack(
  * (`root`, `root/mid`, `root/mid/leaf` — max {@link MAX_GROUP_DEPTH} segments)
  * and emit pad `parent` links.
  *
- * Public internet (`id: "internet"`, `group: null` by default) is placed as a
- * cloud shape hub and as a service AABB so connectors / picking treat it like
- * any other service.
+ * Public internet (`id: "internet"`) is placed in `static.publicInternet` and
+ * included in connector routing as an AABB hub.
  */
 export async function layoutServices(
   services: ScannedService[],
@@ -618,6 +624,16 @@ export async function layoutServices(
   const iconGap = options.iconGap ?? ICON_GAP;
   const platformGap = options.platformGap ?? PLATFORM_GAP;
   const iconSize: Size = [iconW, iconH];
+
+  const domainsByServiceId = new Map<string, string[]>();
+  for (const service of services) {
+    if (isInternetService(service)) continue;
+    const domains = networkingDomains(service.fields);
+    if (domains.length > 0) {
+      domainsByServiceId.set(service.id, domains);
+    }
+  }
+  linkInternetDomains(services, domainsByServiceId);
 
   const internet =
     services.find(isInternetService) ?? createInternetService();
@@ -655,29 +671,28 @@ export async function layoutServices(
     : 0;
   const serviceOffsetY = -packed.totalHeight / 2;
 
-  const pads: Pad[] = [];
-  const placedServices: PlacedService[] = [];
+  const groups: Group[] = [];
+  const resources: Resource[] = [];
   const boxes: LayoutAabb[] = [];
+  let publicInternet: LayoutResult["static"]["publicInternet"] = {
+    id: INTERNET_ID,
+    pos: roundPos([
+      -PUBLIC_INTERNET_BASE_WIDTH / 2,
+      -PUBLIC_INTERNET_BASE_DEPTH / 2,
+      PLATFORM_Z,
+    ]),
+    size: [PUBLIC_INTERNET_BASE_WIDTH, PUBLIC_INTERNET_BASE_DEPTH],
+  };
 
   if (hubInternet) {
     const cloudPos = roundPos([-cloud.width / 2, -cloud.depth / 2, PLATFORM_Z]);
     const cloudSize: Size = [cloud.width, cloud.depth];
 
-    pads.push({
-      type: "shape",
+    publicInternet = {
       id: INTERNET_ID,
-      shape: INTERNET_SHAPE,
-      group: hubInternet.group,
-      label: INTERNET_LABEL,
       pos: cloudPos,
       size: cloudSize,
-    });
-
-    placedServices.push({
-      ...hubInternet,
-      pos: cloudPos,
-      size: cloudSize,
-    });
+    };
 
     boxes.push(
       iconAabb(
@@ -699,12 +714,11 @@ export async function layoutServices(
       root,
       absX,
       absY,
-      undefined,
       iconW,
       iconH,
       iconSize,
-      pads,
-      placedServices,
+      groups,
+      resources,
       boxes,
     );
   }
@@ -723,23 +737,58 @@ export async function layoutServices(
     })),
   );
 
+  const serviceById = new Map(graphServices.map((service) => [service.id, service]));
+
+  const connectorLabels = (sourceId: string, targetId: string) => {
+    const forward = serviceById.get(sourceId)?.connectionMeta?.[targetId];
+    if (forward) {
+      return {
+        from: forward.from ?? null,
+        to: forward.to ?? null,
+        variant: forward.variant,
+      };
+    }
+
+    const reverse = serviceById.get(targetId)?.connectionMeta?.[sourceId];
+    if (reverse) {
+      return {
+        from: reverse.to ?? null,
+        to: reverse.from ?? null,
+        variant: reverse.variant,
+      };
+    }
+
+    const involvesInternet =
+      sourceId === INTERNET_ID || targetId === INTERNET_ID;
+    if (involvesInternet) {
+      const peerId = sourceId === INTERNET_ID ? targetId : sourceId;
+      const peer = serviceById.get(peerId);
+      if (peer && isOpenToInternet(peer.fields)) {
+        const label = domainConnectorLabel(networkingDomains(peer.fields));
+        if (label) {
+          return { from: label, to: label, variant: "default" as const };
+        }
+      }
+    }
+
+    return { from: null, to: null, variant: undefined };
+  };
+
   const connectors: Connector[] = paths.map((path) => {
-    const source = graphServices.find((service) => service.id === path.sourceId);
-    const meta = source?.connectionMeta?.[path.targetId];
+    const labels = connectorLabels(path.sourceId, path.targetId);
     return {
-      from: path.sourceId,
-      to: path.targetId,
-      path: path.points.map(
-        (p): Pos => roundPos([p.x, p.y, CONNECTOR_Z]),
-      ),
-      variant: meta?.variant ?? "default",
-      ...(meta?.text ? { text: meta.text } : {}),
+      nodes: [path.sourceId, path.targetId],
+      from: labels.from,
+      to: labels.to,
+      ...(labels.variant === "warning" ? { variant: "warning" as const } : {}),
+      path: path.points.map((p): Pos => roundPos([p.x, p.y, CONNECTOR_Z])),
     };
   });
 
   return {
-    services: placedServices,
-    pads,
+    resources,
+    groups,
+    static: { publicInternet },
     connectors,
     totalWidth: roundCoord(
       (hubInternet ? cloud.width / 2 + PUBLIC_INTERNET_GAP : 0) +

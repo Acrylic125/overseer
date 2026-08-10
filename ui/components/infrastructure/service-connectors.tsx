@@ -10,7 +10,6 @@ import {
   buildAllConnectorPaths,
   type ConnectorPath,
 } from "@/lib/graph/connector-paths";
-import type { SceneBake } from "@/lib/infrastructure-schema";
 import { SCENE } from "@/lib/infrastructure-styles";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
@@ -128,6 +127,19 @@ type LabelInstance = {
   key: string;
 };
 
+function connectorLabelForPath(
+  path: ConnectorPath,
+  serviceId: string,
+): [string, string] | null {
+  if (serviceId === path.sourceId) return path.from ?? path.to ?? null;
+  if (serviceId === path.targetId) return path.to ?? path.from ?? null;
+  return null;
+}
+
+function formatConnectorLabel(label: [string, string]): string {
+  return `${label[0]}: ${label[1]}`;
+}
+
 function collectFromPaths(paths: ConnectorPath[]) {
   const segments: SegmentInstance[] = [];
   const joints: JointInstance[] = [];
@@ -180,38 +192,6 @@ function collectFromPaths(paths: ConnectorPath[]) {
   }
 
   return { segments, joints, labels };
-}
-
-function collectFromBake(
-  segments: SceneBake["connectorSegments"],
-  joints: SceneBake["connectorJoints"],
-  paths: ConnectorPath[],
-) {
-  const mappedSegments: SegmentInstance[] = segments.map((s) => ({
-    ...s,
-    variant: s.variant === "warning" ? "warning" : "default",
-  }));
-  const mappedJoints: JointInstance[] = joints.map((j) => ({
-    ...j,
-    variant: j.variant === "warning" ? "warning" : "default",
-  }));
-  const labels: LabelInstance[] = [];
-  for (const path of paths) {
-    if (!path.text || path.points.length === 0) continue;
-    const mid = path.points[Math.floor(path.points.length / 2)]!;
-    labels.push({
-      x: mid.x,
-      z: mid.z,
-      text: path.text,
-      warning: path.variant === "warning",
-      key: path.id,
-    });
-  }
-  return {
-    segments: mappedSegments,
-    joints: mappedJoints,
-    labels,
-  };
 }
 
 function linkedTo(
@@ -322,35 +302,20 @@ export function ServiceConnectors({
   selectedServiceId = null,
   /** When provided (from scan layout), skip client-side re-routing. */
   precomputedPaths = null,
-  /** Dense bake from scan — preferred over deriving segments from paths. */
-  precomputedSegments = null,
-  precomputedJoints = null,
 }: {
   services: InfrastructureService[];
   selectedServiceId?: string | null;
   precomputedPaths?: ConnectorPath[] | null;
-  precomputedSegments?: SceneBake["connectorSegments"] | null;
-  precomputedJoints?: SceneBake["connectorJoints"] | null;
 }) {
   const signature = useMemo(() => servicesSignature(services), [services]);
   const servicesRef = useRef(services);
   servicesRef.current = services;
 
-  const hasBakedInstances =
-    precomputedSegments != null && precomputedJoints != null;
-
   const [paths, setPaths] = useState<ConnectorPath[]>(
     () => precomputedPaths ?? [],
   );
 
-  // Prefer scan-authored paths; otherwise build routes off the critical path.
-  // Skip entirely when segment instances are already baked.
   useEffect(() => {
-    if (hasBakedInstances) {
-      if (precomputedPaths != null) setPaths(precomputedPaths);
-      return;
-    }
-
     if (precomputedPaths != null) {
       setPaths(precomputedPaths);
       return;
@@ -365,24 +330,9 @@ export function ServiceConnectors({
       cancelled = true;
       cancel();
     };
-  }, [signature, precomputedPaths, hasBakedInstances]);
+  }, [signature, precomputedPaths]);
 
-  const geometry = useMemo(() => {
-    if (hasBakedInstances) {
-      return collectFromBake(
-        precomputedSegments!,
-        precomputedJoints!,
-        paths.length > 0 ? paths : (precomputedPaths ?? []),
-      );
-    }
-    return collectFromPaths(paths);
-  }, [
-    hasBakedInstances,
-    precomputedSegments,
-    precomputedJoints,
-    paths,
-    precomputedPaths,
-  ]);
+  const geometry = useMemo(() => collectFromPaths(paths), [paths]);
 
   const meshes = useMemo(() => {
     const split = (items: { variant: ConnectorVariant }[]) => ({
@@ -448,12 +398,26 @@ export function ServiceConnectors({
 
   const focusLabels = useMemo(() => {
     if (!selectedServiceId) return [] as LabelInstance[];
-    return geometry.labels.filter((label) => {
-      const path = paths.find((p) => p.id === label.key);
-      if (!path) return false;
-      return linkedTo(path, selectedServiceId);
-    });
-  }, [geometry.labels, paths, selectedServiceId]);
+
+    const labels: LabelInstance[] = [];
+    for (const path of paths) {
+      const pts = path.points;
+      if (pts.length === 0) continue;
+
+      const label = connectorLabelForPath(path, selectedServiceId);
+      if (!label) continue;
+
+      const mid = pts[Math.floor(pts.length / 2)]!;
+      labels.push({
+        x: mid.x,
+        z: mid.z,
+        text: formatConnectorLabel(label),
+        warning: path.variant === "warning",
+        key: path.id,
+      });
+    }
+    return labels;
+  }, [paths, selectedServiceId]);
 
   useLayoutEffect(
     () => () => {

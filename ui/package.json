@@ -20,7 +20,6 @@
     "@trpc/tanstack-react-query": "^11.18.0",
     "class-variance-authority": "^0.7.1",
     "client-only": "^0.0.1",
-    "cloudflare": "^7.0.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.28.0",
     "next": "16.2.12",

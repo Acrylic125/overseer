@@ -3,7 +3,7 @@ import Cloudflare from "cloudflare";
 import { log as cli } from "../../cli/log.js";
 import type { CloudflareProvider } from "../../providers.js";
 import type { ScannedService } from "../../schema.js";
-import { resourceToService } from "../transform.js";
+import { transformCf } from "./transform.js";
 import type {
   ScrapedCfD1,
   ScrapedCfKv,
@@ -396,9 +396,37 @@ async function fetchAccountInfrastructure(
   });
 
   const resources: ScrapedResource[] = [];
+  const indexes = {
+    byKvId: new Map<string, string>(),
+    byD1Id: new Map<string, string>(),
+    byR2Name: new Map<string, string>(),
+    byVectorizeName: new Map<string, string>(),
+    byQueueName: new Map<string, string>(),
+    byWorkerName: new Map<string, string>(),
+  };
 
   function trackResource(resource: ScrapedResource) {
     resources.push(resource);
+    switch (resource.kind) {
+      case "cf-worker":
+        indexes.byWorkerName.set(resource.name, resource.id);
+        break;
+      case "cf-kv":
+        indexes.byKvId.set(resource.namespaceId, resource.id);
+        break;
+      case "cf-d1":
+        indexes.byD1Id.set(resource.databaseId, resource.id);
+        break;
+      case "cf-r2":
+        indexes.byR2Name.set(resource.name, resource.id);
+        break;
+      case "cf-vectorize":
+        indexes.byVectorizeName.set(resource.name, resource.id);
+        break;
+      case "cf-queue":
+        indexes.byQueueName.set(resource.name, resource.id);
+        break;
+    }
     log("scanning service", {
       kind: resource.kind,
       name: resource.name,
@@ -409,9 +437,7 @@ async function fetchAccountInfrastructure(
   for (const name of workerList.names) {
     const entryDomain =
       workerDomains.get(name) ??
-      (workersDevSubdomain
-        ? `${name}.${workersDevSubdomain}.workers.dev`
-        : "");
+      (workersDevSubdomain ? `${name}.${workersDevSubdomain}.workers.dev` : "");
     const domains = entryDomain ? [entryDomain] : [];
     const worker: ScrapedCfWorker = {
       kind: "cf-worker",
@@ -488,45 +514,6 @@ async function fetchAccountInfrastructure(
     };
     trackResource(resource);
   }
-
-  const byKvId = new Map<string, string>();
-  const byD1Id = new Map<string, string>();
-  const byR2Name = new Map<string, string>();
-  const byVectorizeName = new Map<string, string>();
-  const byQueueName = new Map<string, string>();
-  const byWorkerName = new Map<string, string>();
-
-  for (const resource of resources) {
-    switch (resource.kind) {
-      case "cf-worker":
-        byWorkerName.set(resource.name, resource.id);
-        break;
-      case "cf-kv":
-        byKvId.set(resource.namespaceId, resource.id);
-        break;
-      case "cf-d1":
-        byD1Id.set(resource.databaseId, resource.id);
-        break;
-      case "cf-r2":
-        byR2Name.set(resource.name, resource.id);
-        break;
-      case "cf-vectorize":
-        byVectorizeName.set(resource.name, resource.id);
-        break;
-      case "cf-queue":
-        byQueueName.set(resource.name, resource.id);
-        break;
-    }
-  }
-
-  const indexes = {
-    byKvId,
-    byD1Id,
-    byR2Name,
-    byVectorizeName,
-    byQueueName,
-    byWorkerName,
-  };
 
   const r2Resources = resources.filter(
     (resource): resource is ScrapedCfR2 => resource.kind === "cf-r2",
@@ -822,16 +809,13 @@ export async function scrapeCloudflare(
 export class CloudflareScanner implements ServiceScanner {
   constructor(private readonly providers: CloudflareProvider[]) {}
 
-  /** `null` if scannable; otherwise a human-readable reason. */
-  static probe(provider: CloudflareProvider): Promise<string | null> {
-    return probeCloudflareProvider(provider);
-  }
+  static probe = probeCloudflareProvider;
 
   scrape(): Promise<ScrapeContext> {
     return scrapeCloudflare(this.providers);
   }
 
   transform(ctx: ScrapeContext): ScannedService[] {
-    return ctx.resources.map(resourceToService);
+    return transformCf(ctx);
   }
 }

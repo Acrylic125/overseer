@@ -1,6 +1,6 @@
 import type { ScannedService } from "../../schema.js";
 import { elapsed, log } from "../../cli/log.js";
-import { layoutServices, type LayoutResult } from "./pack.js";
+import { layoutServices, type LayoutResult, GROUP_SEP } from "./pack.js";
 
 export type { LayoutResult } from "./pack.js";
 export { layoutServices } from "./pack.js";
@@ -19,15 +19,15 @@ export async function runLayout(
   const layout = await layoutServices(services);
   const duration = elapsed(start);
 
-  const platforms = layout.pads.filter((p) => p.type === "platform").length;
-  const nested = layout.pads.filter(
-    (p) => p.type === "platform" && p.parent,
+  const platforms = layout.groups.length;
+  const nested = layout.groups.filter((group) =>
+    group.group.includes(GROUP_SEP),
   ).length;
 
   log.step(
-    `${platforms} platforms` +
+    `${platforms} groups` +
       (nested ? ` (${nested} nested)` : "") +
-      ` · ${layout.services.length} services · ${layout.connectors.length} connectors` +
+      ` · ${layout.resources.length} resources · ${layout.connectors.length} connectors` +
       ` (${duration})`,
   );
 

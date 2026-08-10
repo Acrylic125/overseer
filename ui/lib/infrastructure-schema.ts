@@ -79,147 +79,54 @@ export function resolveSize(size?: Size | null): Size {
   return size ?? DEFAULT_SIZE;
 }
 
-/**
- * Shared identity / graph fields on every scanned service.
- *
- * `service` is the icon basename from `scan/assets/icons/` (e.g. `cf-worker`,
- * `r2`) — not a path. Unresolvable icons should use `all-unknown`.
- */
-/** Cluster path, or `null` for ungrouped hubs (e.g. public internet). */
-export const serviceGroupSchema = z.union([z.string().min(1), z.null()]);
-
-export const scannedServiceBaseSchema = z.object({
+export const resourceSchema = z.object({
   id: z.string().min(1),
-  group: serviceGroupSchema,
+  group: z.string().min(1),
   name: z.string().min(1),
-  /** Omitted in JSON when empty; defaults to `[]` when read. */
-  connections: z.array(z.string()).default([]),
-  connectionMeta: z
-    .record(
-      z.string(),
-      z.object({
-        variant: z.enum(["default", "warning"]).default("default"),
-        text: z.string().min(1).optional(),
-      }),
-    )
-    .optional(),
   sourceType: z.string().min(1),
   service: z.string().min(1),
-});
-
-export const scannedServiceSchema = scannedServiceBaseSchema.extend({
   fields: z.record(z.string(), categoryFieldsSchema),
-});
-
-/** Service with layout placement. `size` omitted → `[1, 1]`. */
-export const placedServiceSchema = scannedServiceSchema.extend({
   pos: posSchema,
   size: sizeSchema.optional(),
 });
 
-/**
- * Platforms and silhouettes. Nest via `parent` (pad id of the containing
- * platform). Root pads omit `parent`. Positions are world-absolute.
- */
-export const padSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("platform"),
-    id: z.string().min(1),
-    group: z.string().min(1),
-    parent: z.string().min(1).optional(),
-    pos: posSchema,
-    size: sizeSchema.optional(),
-  }),
-  z.object({
-    type: z.literal("shape"),
-    id: z.string().min(1),
-    shape: z.string().min(1),
-    /** Optional cluster label; `null`/omitted for standalone hubs. */
-    group: serviceGroupSchema.optional(),
-    parent: z.string().min(1).optional(),
-    label: z.string().optional(),
-    pos: posSchema,
-    size: sizeSchema.optional(),
-  }),
-]);
+export const groupSchema = z.object({
+  group: z.string().min(1),
+  pos: posSchema,
+  size: sizeSchema.optional(),
+});
 
-export const connectorVariantSchema = z.enum(["default", "warning"]);
-export type ConnectorVariant = z.infer<typeof connectorVariantSchema>;
+export const publicInternetSchema = z.object({
+  id: z.literal("internet"),
+  pos: posSchema,
+  size: sizeSchema.optional(),
+});
+
+export const staticSchema = z.object({
+  publicInternet: publicInternetSchema,
+});
 
 export const connectorSchema = z.object({
-  from: z.string().min(1),
-  to: z.string().min(1),
+  nodes: z.tuple([z.string().min(1), z.string().min(1)]),
+  from: z.tuple([z.string(), z.string()]).nullable().optional(),
+  to: z.tuple([z.string(), z.string()]).nullable().optional(),
+  variant: z.enum(["default", "warning"]).optional(),
   path: z.array(posSchema).min(2),
-  variant: connectorVariantSchema.default("default"),
-  text: z.string().min(1).optional(),
 });
 
 export const infrastructureDbSchema = z.object({
-  version: z.literal(2),
-  scannedAt: z.string().datetime({ offset: true }),
-  services: z.array(placedServiceSchema),
-  pads: z.array(padSchema),
+  resources: z.array(resourceSchema),
+  groups: z.array(groupSchema),
+  static: staticSchema,
   connectors: z.array(connectorSchema),
-  warnings: z.array(z.string()),
 });
 
 export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;
-export type ScannedService = z.infer<typeof scannedServiceSchema>;
-export type PlacedService = z.infer<typeof placedServiceSchema>;
-export type Pad = z.infer<typeof padSchema>;
+export type Resource = z.infer<typeof resourceSchema>;
+export type Group = z.infer<typeof groupSchema>;
 export type Connector = z.infer<typeof connectorSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
-
-/**
- * Dense 3D scene bake derived at load time (not stored in the DB).
- * World XZ ground plane (scan layout y → world z).
- */
-export type SceneBake = {
-  bounds: {
-    minX: number;
-    maxX: number;
-    minZ: number;
-    maxZ: number;
-    centerX: number;
-    centerZ: number;
-    width: number;
-    depth: number;
-  };
-  camera: {
-    position: [number, number, number];
-    span: number;
-    far: number;
-  };
-  centerGuide: { x: number; y: number; radius: number };
-  publicInternet: {
-    group: string | null;
-    shape: string;
-    centerX: number;
-    centerZ: number;
-    width: number;
-    depth: number;
-  };
-  connectorSegments: Array<{
-    midX: number;
-    midZ: number;
-    length: number;
-    dx: number;
-    dz: number;
-    sourceId: string;
-    targetId: string;
-    variant?: "default" | "warning";
-    text?: string;
-  }>;
-  connectorJoints: Array<{
-    x: number;
-    z: number;
-    sourceId: string;
-    targetId: string;
-    variant?: "default" | "warning";
-    text?: string;
-  }>;
-};
 
 const OPEN_TO_INTERNET_KEY = "bool:Is Open To Internet";
 

@@ -35,14 +35,7 @@ export function InfrastructureView() {
   if (data.services.length === 0) {
     return (
       <div className="text-muted-foreground flex h-svh flex-col items-center justify-center gap-2 px-6 text-center text-sm">
-        <p>No infrastructure found in this Cloudflare account.</p>
-        {data.warnings.length > 0 ? (
-          <ul className="text-destructive/90 mt-2 max-w-lg list-disc space-y-1 pl-5 text-left text-xs">
-            {data.warnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        ) : null}
+        <p>No infrastructure found. Run a scan to populate the layout.</p>
       </div>
     );
   }
@@ -56,14 +49,7 @@ export function InfrastructureView() {
         bounds={data.bounds}
         connectorPaths={data.connectorPaths}
         cameraFrame={data.camera}
-        connectorSegments={data.connectorSegments}
-        connectorJoints={data.connectorJoints}
       />
-      {data.warnings[0] ? (
-        <p className="pointer-events-none absolute top-4 right-4 z-10 max-w-sm rounded-md bg-black/45 px-3 py-2 font-mono text-[11px] text-white/70 backdrop-blur-sm">
-          {data.warnings[0]}
-        </p>
-      ) : null}
     </div>
   );
 }

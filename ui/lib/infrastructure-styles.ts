@@ -74,5 +74,8 @@ export function publicInternetFootprint(platformCount: number) {
 export const BLOCK_GAP = 1.5;
 export const MATERIAL_ROUGHNESS = 0.28;
 export const GRID_MAJOR_EVERY = 4;
-/** World-space extent of the infinite-feeling floor grid. */
-export const GRID_EXTENT = 120;
+/**
+ * Floor grid patch size (world units). The grid recenters on the camera each
+ * frame, so this only needs to cover the visible frustum at max zoom-out.
+ */
+export const GRID_EXTENT = 256;

@@ -57,7 +57,7 @@ function collectEnvTabs(fields: ServiceFields): EnvTab[] {
   const order = ["production", "preview", "development", "shared"];
 
   for (const [category, categoryFields] of Object.entries(fields)) {
-    if (category === "environment") {
+    if (category === "environment" || category === "Environment Variables") {
       tabs.push({ target: "shared", fields: categoryFields });
       continue;
     }
@@ -78,7 +78,9 @@ function collectEnvTabs(fields: ServiceFields): EnvTab[] {
 
 function isEnvironmentCategory(category: string) {
   return (
-    category === "environment" || category.startsWith(ENV_CATEGORY_PREFIX)
+    category === "environment" ||
+    category === "Environment Variables" ||
+    category.startsWith(ENV_CATEGORY_PREFIX)
   );
 }
 
@@ -127,7 +129,11 @@ function GoButton({ value }: { value: string }) {
       className="shrink-0"
       nativeButton={false}
       render={
-        <a href={hrefForLink(value)} target="_blank" rel="noopener noreferrer" />
+        <a
+          href={hrefForLink(value)}
+          target="_blank"
+          rel="noopener noreferrer"
+        />
       }
     >
       <ExternalLinkIcon />
@@ -203,10 +209,7 @@ function FieldRow({
                   {type === "bool" ? (
                     <BoolValue value={item as boolean} />
                   ) : (
-                    <ScalarStringValue
-                      type={type}
-                      value={String(item)}
-                    />
+                    <ScalarStringValue type={type} value={String(item)} />
                   )}
                 </li>
               ))}
@@ -266,9 +269,7 @@ function EnvironmentSection({ tabs }: { tabs: EnvTab[] }) {
   const [value, setValue] = useState(defaultTab);
 
   // When the selected service changes, tabs remount via key on the parent.
-  const active = tabs.some((tab) => tab.target === value)
-    ? value
-    : defaultTab;
+  const active = tabs.some((tab) => tab.target === value) ? value : defaultTab;
 
   return (
     <section className="px-4">
@@ -387,9 +388,7 @@ function ServiceDetailSheetBody({
           <p className="px-4 text-muted-foreground">No details available.</p>
         ) : (
           <>
-            {envTabs.length > 0 ? (
-              <EnvironmentSection tabs={envTabs} />
-            ) : null}
+            {envTabs.length > 0 ? <EnvironmentSection tabs={envTabs} /> : null}
             {otherCategories.map(([category, fields]) => (
               <DetailSection
                 key={category}

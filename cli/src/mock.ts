@@ -220,7 +220,7 @@ function buildService(
         fields: {
           networking: {
             "bool:Is Open To Internet": true,
-            "link:Entry Domain": `${base.name}.example.workers.dev`,
+            "link:Domains": [`${base.name}.example.workers.dev`],
           },
           observability: {
             "link:View Logs": `https://dash.cloudflare.com/mock/workers/services/view/${encodeURIComponent(base.name)}/production/observability/events`,

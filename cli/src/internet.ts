@@ -1,4 +1,5 @@
-import type { ScannedService, ServiceFields } from "./schema.js";
+import type { ConnectorMeta, ScannedService, ServiceFields } from "./schema.js";
+import { parseEnvUrl } from "./utils.js";
 
 /** Stable id for the public-internet hub service. */
 export const INTERNET_ID = "internet";
@@ -62,4 +63,74 @@ export function connectionsForLayout(service: ScannedService): string[] {
   if (!isOpenToInternet(service.fields)) return service.connections;
   if (service.connections.includes(INTERNET_ID)) return service.connections;
   return [...service.connections, INTERNET_ID];
+}
+
+function hostFromDomain(domain: string): string | null {
+  const url = parseEnvUrl(domain.includes("://") ? domain : `https://${domain}`);
+  return url?.hostname.toLowerCase() ?? null;
+}
+
+/** First public hostname label for connector text, or null. */
+export function domainConnectorLabel(
+  domains: string[],
+): [string, string] | null {
+  for (const domain of domains) {
+    const host = hostFromDomain(domain);
+    if (host) return ["domain", host];
+  }
+  return null;
+}
+
+function domainsFromNetworking(fields: ServiceFields): string[] {
+  const networking = fields.networking;
+  if (!networking) return [];
+
+  const domains: string[] = [];
+  const raw = networking["link:Domains"];
+  if (Array.isArray(raw)) {
+    domains.push(...raw.filter((d): d is string => typeof d === "string"));
+  } else if (typeof raw === "string" && raw) {
+    domains.push(raw);
+  }
+
+  const entry = networking["link:Entry Domain"];
+  if (typeof entry === "string" && entry) {
+    domains.push(entry);
+  }
+
+  return domains;
+}
+
+/** Domains from networking fields (`link:Domains`, `link:Entry Domain`). */
+export function networkingDomains(fields: ServiceFields): string[] {
+  return domainsFromNetworking(fields);
+}
+
+/**
+ * Label public-internet edges using scraped domains (before env redaction).
+ * Stores meta on the service; layout derives the edge via `connectionsForLayout`.
+ */
+export function linkInternetDomains(
+  services: ScannedService[],
+  domainsByServiceId: Map<string, string[]>,
+): void {
+  for (const service of services) {
+    if (isInternetService(service) || !isOpenToInternet(service.fields)) continue;
+
+    const scraped = domainsByServiceId.get(service.id) ?? [];
+    const label = domainConnectorLabel(
+      scraped.length > 0 ? scraped : domainsFromNetworking(service.fields),
+    );
+    if (!label) continue;
+
+    const meta: ConnectorMeta = {
+      variant: "default",
+      from: label,
+      to: label,
+    };
+    service.connectionMeta = {
+      ...(service.connectionMeta ?? {}),
+      [INTERNET_ID]: meta,
+    };
+  }
 }

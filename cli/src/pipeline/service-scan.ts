@@ -1,6 +1,10 @@
 import { config as loadEnv } from "dotenv";
 
 import { log } from "../cli/log.js";
+import {
+  ensureInternetHub,
+  linkInternetDomains,
+} from "../internet.js";
 import { envPath } from "../paths.js";
 import {
   transformProviders,
@@ -9,12 +13,26 @@ import {
   type Provider,
   type VercelProvider,
 } from "../providers.js";
-import type { ScannedService } from "../schema.js";
+import type { ConnectorMeta, ScannedService } from "../schema.js";
+import { linkEntraByEnvValues } from "../scanners/azure/transform.js";
 import { AzureScanner } from "../scanners/azure/scrape.js";
+import {
+  applyCfEnvFields,
+  transformCf,
+} from "../scanners/cf/transform.js";
 import { CloudflareScanner } from "../scanners/cf/scrape.js";
-import { finalizeScan } from "../scanners/transform.js";
-import type { ScrapeContext, ScanOutcome } from "../scanners/types.js";
+import type {
+  ScrapedCfWorker,
+  ScrapedResource,
+  ScrapedVercelProject,
+  ScanOutcome,
+} from "../scanners/types.js";
+import {
+  applyVercelEnvFields,
+  transformVercel,
+} from "../scanners/vercel/transform.js";
 import { VercelScanner } from "../scanners/vercel/scrape.js";
+import { envValueForLinking, parseEnvUrl, urlsFromEnvValue } from "../utils.js";
 
 /** Load provider tokens from `cli/.env` (no tip / inject noise). */
 export function loadScanEnv(): void {
@@ -66,9 +84,153 @@ async function probeEnvironments(providers: Provider[]): Promise<EnvEntry[]> {
   return entries;
 }
 
+function hostFromDomain(domain: string): string | null {
+  const url = parseEnvUrl(domain.includes("://") ? domain : `https://${domain}`);
+  return url?.hostname.toLowerCase() ?? null;
+}
+
+function resourceDomains(resource: ScrapedResource): string[] {
+  switch (resource.kind) {
+    case "cf-worker":
+    case "cf-r2":
+    case "vercel-project":
+      return resource.domains;
+    default:
+      return [];
+  }
+}
+
+function resourceEnvs(resource: ScrapedResource) {
+  switch (resource.kind) {
+    case "cf-worker":
+    case "vercel-project":
+      return resource.envs;
+    default:
+      return [];
+  }
+}
+
+function addConnection(
+  service: ScannedService,
+  targetId: string,
+  meta?: ConnectorMeta,
+): void {
+  if (!service.connections.includes(targetId)) {
+    service.connections.push(targetId);
+  }
+  if (!meta) return;
+
+  const prev = service.connectionMeta?.[targetId];
+  if (prev?.variant === "warning" && meta.variant !== "warning") return;
+
+  service.connectionMeta = {
+    ...(service.connectionMeta ?? {}),
+    [targetId]: meta,
+  };
+}
+
+function corsAllowsOrigin(cors: string[], origin: string): boolean {
+  const normalized = origin.toLowerCase();
+  for (const entry of cors) {
+    const parts = entry.trim().split(/\s+/);
+    const allowed = parts[parts.length - 1]?.toLowerCase();
+    if (!allowed) continue;
+    if (allowed === "*") return true;
+    if (allowed === normalized) return true;
+    if (allowed.startsWith("*.") && normalized.endsWith(allowed.slice(1))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resourceById(resources: ScrapedResource[]): Map<string, ScrapedResource> {
+  return new Map(resources.map((resource) => [resource.id, resource]));
+}
+
+function domainsByServiceId(
+  resources: ScrapedResource[],
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const resource of resources) {
+    const domains = resourceDomains(resource);
+    if (resource.kind === "cf-r2") {
+      domains.push(resource.s3ApiUrl);
+    }
+    if (domains.length > 0) {
+      map.set(resource.id, domains);
+    }
+  }
+  return map;
+}
+
+/** Link services when a raw env value references another service's domain. */
+function linkEnvToDomains(
+  services: ScannedService[],
+  resources: ScrapedResource[],
+): void {
+  const byResourceId = resourceById(resources);
+  const ownersByHost = new Map<string, Set<string>>();
+
+  for (const [serviceId, domains] of domainsByServiceId(resources)) {
+    for (const domain of domains) {
+      const host = hostFromDomain(domain);
+      if (!host) continue;
+      const owners = ownersByHost.get(host) ?? new Set<string>();
+      owners.add(serviceId);
+      ownersByHost.set(host, owners);
+    }
+  }
+
+  const byId = new Map(services.map((service) => [service.id, service]));
+
+  for (const resource of resources) {
+    const service = byId.get(resource.id);
+    if (!service) continue;
+
+    for (const env of resourceEnvs(resource)) {
+      const value = envValueForLinking(env);
+      if (!value) continue;
+      for (const url of urlsFromEnvValue(value)) {
+        const host = url.hostname.toLowerCase();
+        const owners = ownersByHost.get(host);
+        if (!owners) continue;
+        for (const ownerId of owners) {
+          if (ownerId === resource.id) continue;
+          const owner = byResourceId.get(ownerId);
+          const label: [string, string] = ["domain", host];
+
+          if (owner?.kind === "cf-r2") {
+            const origin = `${url.protocol}//${url.host}`;
+            const allowed = corsAllowsOrigin(owner.cors, origin);
+            if (allowed) {
+              addConnection(service, ownerId, {
+                variant: "default",
+                from: label,
+                to: label,
+              });
+            } else {
+              addConnection(service, ownerId, {
+                variant: "warning",
+                from: label,
+                to: ["CORS", "origin not allowed"],
+              });
+            }
+          } else {
+            addConnection(service, ownerId, {
+              variant: "default",
+              from: label,
+              to: label,
+            });
+          }
+        }
+      }
+    }
+  }
+}
+
 /**
- * Step 2 — scrape each provider, map resources → services,
- * then finalize with cross-provider env→domain links and the internet hub.
+ * Step 2 — scrape, link on raw env values, then redact env fields for output.
  */
 export async function runServiceScan(): Promise<ScanOutcome> {
   loadScanEnv();
@@ -111,7 +273,7 @@ export async function runServiceScan(): Promise<ScanOutcome> {
     .map((entry) => entry.provider)
     .filter((p): p is AzureProvider => p.provider === "azure");
 
-  const resources: ScrapeContext["resources"] = [];
+  const resources: ScrapedResource[] = [];
   const services: ScannedService[] = [];
 
   if (cfProviders.length > 0) {
@@ -119,7 +281,7 @@ export async function runServiceScan(): Promise<ScanOutcome> {
     const ctx = await scanner.scrape();
     resources.push(...ctx.resources);
     warnings.push(...ctx.warnings);
-    services.push(...scanner.transform(ctx));
+    services.push(...transformCf(ctx));
   }
 
   if (vercelProviders.length > 0) {
@@ -127,7 +289,7 @@ export async function runServiceScan(): Promise<ScanOutcome> {
     const ctx = await scanner.scrape();
     resources.push(...ctx.resources);
     warnings.push(...ctx.warnings);
-    services.push(...scanner.transform(ctx));
+    services.push(...transformVercel(ctx));
   }
 
   if (azureProviders.length > 0) {
@@ -139,7 +301,25 @@ export async function runServiceScan(): Promise<ScanOutcome> {
   }
 
   log.section("Finalize");
-  log.step(`${services.length} services · linking env → domains`);
+  log.step(`${services.length} services · linking env values`);
 
-  return finalizeScan(services, resources, warnings);
+  // Link on raw scrape data before env redaction.
+  linkEnvToDomains(services, resources);
+  linkEntraByEnvValues(services, resources);
+  linkInternetDomains(services, domainsByServiceId(resources));
+
+  const cfWorkers = resources.filter(
+    (resource): resource is ScrapedCfWorker => resource.kind === "cf-worker",
+  );
+  const vercelProjects = resources.filter(
+    (resource): resource is ScrapedVercelProject =>
+      resource.kind === "vercel-project",
+  );
+  applyCfEnvFields(services, cfWorkers);
+  applyVercelEnvFields(services, vercelProjects);
+
+  return {
+    services: ensureInternetHub(services),
+    warnings: [...warnings],
+  };
 }

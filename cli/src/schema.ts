@@ -93,114 +93,113 @@ export function resolveSize(size?: Size | null): Size {
   return size ?? DEFAULT_SIZE;
 }
 
-/**
- * Shared identity / graph fields on every scanned service.
- *
- * `service` is the icon basename from `cli/assets/icons/` (e.g. `cf-worker`,
- * `vercel`, `r2`) — not a path. Unresolvable icons should use `all-unknown`.
- */
+export function omitDefaultSize(size?: Size | null): Size | undefined {
+  if (!size || (size[0] === 1 && size[1] === 1)) return undefined;
+  return size;
+}
+
 /** Cluster path, or `null` for ungrouped hubs (e.g. public internet). */
 export const serviceGroupSchema = z.union([z.string().min(1), z.null()]);
 
-export const scannedServiceBaseSchema = z.object({
+/** Connector endpoint label: `[kind, detail]` shown when that service is focused. */
+export const connectorLabelSchema = z.tuple([z.string(), z.string()]);
+
+/** Scan-time graph metadata on a service (not written to infrastructure.json). */
+export const connectorMetaSchema = z.object({
+  variant: z.enum(["default", "warning"]).default("default"),
+  from: connectorLabelSchema.nullable().optional(),
+  to: connectorLabelSchema.nullable().optional(),
+});
+
+/** Scanned service before layout (internal pipeline only). */
+export const scannedServiceSchema = z.object({
   id: z.string().min(1),
   group: serviceGroupSchema,
   name: z.string().min(1),
-  /** Omitted in JSON when empty; defaults to `[]` when read. */
   connections: z.array(z.string()).default([]),
-  /**
-   * Optional per-target edge metadata (keyed by connected service id).
-   * Used when building connectors (variant / label text).
-   */
-  connectionMeta: z
-    .record(
-      z.string(),
-      z.object({
-        variant: z.enum(["default", "warning"]).default("default"),
-        text: z.string().min(1).optional(),
-      }),
-    )
-    .optional(),
+  connectionMeta: z.record(z.string(), connectorMetaSchema).optional(),
   sourceType: z.string().min(1),
   service: z.string().min(1),
-});
-
-/** Scanned service before layout (no positions yet). */
-export const scannedServiceSchema = scannedServiceBaseSchema.extend({
   fields: z.record(z.string(), categoryFieldsSchema),
 });
 
-/** Service with layout placement. `size` omitted → `[1, 1]`. */
-export const placedServiceSchema = scannedServiceSchema.extend({
+export const resourceSchema = z.object({
+  id: z.string().min(1),
+  group: z.string().min(1),
+  name: z.string().min(1),
+  sourceType: z.string().min(1),
+  service: z.string().min(1),
+  fields: z.record(z.string(), categoryFieldsSchema),
   pos: posSchema,
   size: sizeSchema.optional(),
 });
 
-/**
- * Platforms and silhouettes. Nest via `parent` (pad id of the containing
- * platform). Root pads omit `parent`. Positions are world-absolute.
- *
- * Example — platform inside a platform:
- * ```
- * { type: "platform", id: "org", group: "acme", pos: [0,0,0], size: [40, 30] }
- * { type: "platform", id: "api", group: "api", parent: "org", pos: [2,2,0], size: [12, 8] }
- * ```
- *
- * `size` omitted → `[1, 1]` (layout always sets explicit sizes for pads).
- */
-export const padSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("platform"),
-    /** Stable id — children reference this via `parent`. */
-    id: z.string().min(1),
-    /** Cluster / group label shown on the platform. */
-    group: z.string().min(1),
-    /** Containing platform pad id, when nested. */
-    parent: z.string().min(1).optional(),
-    pos: posSchema,
-    size: sizeSchema.optional(),
-  }),
-  z.object({
-    type: z.literal("shape"),
-    id: z.string().min(1),
-    /** Mesh basename under `cli/assets/shapes/` (no path / extension). */
-    shape: z.string().min(1),
-    /** Optional cluster label; `null`/omitted for standalone hubs. */
-    group: serviceGroupSchema.optional(),
-    parent: z.string().min(1).optional(),
-    /** Optional label drawn on the shape (e.g. "Public Internet"). */
-    label: z.string().optional(),
-    pos: posSchema,
-    size: sizeSchema.optional(),
-  }),
-]);
+export const groupSchema = z.object({
+  group: z.string().min(1),
+  pos: posSchema,
+  size: sizeSchema.optional(),
+});
 
-export const connectorVariantSchema = z.enum(["default", "warning"]);
-export type ConnectorVariant = z.infer<typeof connectorVariantSchema>;
+export const publicInternetSchema = z.object({
+  id: z.literal("internet"),
+  pos: posSchema,
+  size: sizeSchema.optional(),
+});
+
+export const staticSchema = z.object({
+  publicInternet: publicInternetSchema,
+});
 
 export const connectorSchema = z.object({
-  from: z.string().min(1),
-  to: z.string().min(1),
+  nodes: z.tuple([z.string().min(1), z.string().min(1)]),
+  from: connectorLabelSchema.nullable().optional(),
+  to: connectorLabelSchema.nullable().optional(),
+  variant: z.enum(["default", "warning"]).optional(),
   path: z.array(posSchema).min(2),
-  /** Visual / severity variant. Omitted → default. */
-  variant: connectorVariantSchema.default("default"),
-  /** Shown in the UI only when an endpoint service is focused. */
-  text: z.string().min(1).optional(),
 });
 
 export const infrastructureDbSchema = z.object({
-  version: z.literal(2),
-  scannedAt: z.string().datetime({ offset: true }),
-  services: z.array(placedServiceSchema),
-  pads: z.array(padSchema),
+  resources: z.array(resourceSchema),
+  groups: z.array(groupSchema),
+  static: staticSchema,
   connectors: z.array(connectorSchema),
-  warnings: z.array(z.string()),
 });
 
+export type ConnectorLabel = z.infer<typeof connectorLabelSchema>;
+export type ConnectorMeta = z.infer<typeof connectorMetaSchema>;
 export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;
 export type ScannedService = z.infer<typeof scannedServiceSchema>;
-export type PlacedService = z.infer<typeof placedServiceSchema>;
-export type Pad = z.infer<typeof padSchema>;
+export type Resource = z.infer<typeof resourceSchema>;
+export type Group = z.infer<typeof groupSchema>;
 export type Connector = z.infer<typeof connectorSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
+
+export function toWireResource(
+  service: ScannedService & { pos: Pos; size?: Size },
+): Resource {
+  const size = omitDefaultSize(service.size);
+  return {
+    id: service.id,
+    group: service.group!,
+    name: service.name,
+    sourceType: service.sourceType,
+    service: service.service,
+    fields: service.fields,
+    pos: service.pos,
+    ...(size ? { size } : {}),
+  };
+}
+
+export function toWireGroup(
+  group: string,
+  pos: Pos,
+  size: Size,
+): Group {
+  const wireSize = omitDefaultSize(size);
+  return {
+    group,
+    pos,
+    ...(wireSize ? { size: wireSize } : {}),
+  };
+}

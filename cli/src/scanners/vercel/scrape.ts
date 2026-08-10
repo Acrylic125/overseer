@@ -3,10 +3,8 @@ import { Vercel } from "@vercel/sdk";
 import { log as cli } from "../../cli/log.js";
 import type { VercelProvider } from "../../providers.js";
 import type { ScannedService } from "../../schema.js";
-import { resourceToService } from "../transform.js";
 import type {
   ScrapedEnvVar,
-  ScrapedResource,
   ScrapedVercelProject,
   ScrapeContext,
   ServiceScanner,
@@ -24,16 +22,16 @@ import {
   settled,
   withTimeout,
 } from "./client.js";
+import { transformVercel } from "./transform.js";
 
 type ProjectRef = {
   id: string;
   name: string;
-  /** Env vars embedded on the project list payload (fallback). */
   listedEnvs: ScrapedEnvVar[];
 };
 
 type ProviderFetchResult = {
-  resources: ScrapedResource[];
+  resources: ScrapedVercelProject[];
   warnings: string[];
 };
 
@@ -41,32 +39,10 @@ function serviceId(namespace: string, projectId: string) {
   return `${namespace}:vercel:project:${projectId}`;
 }
 
-function teamParams(provider: VercelProvider): { teamId?: string } {
-  return provider.teamId ? { teamId: provider.teamId } : {};
-}
-
-function paginationNext(
-  pagination: { next?: number | string | null } | undefined,
-): string | null {
-  if (!pagination || pagination.next == null) return null;
-  return String(pagination.next);
-}
-
-function normalizeTargets(
-  target: string | string[] | undefined,
-): string[] | undefined {
-  if (target == null) return undefined;
-  if (typeof target === "string") return [target];
-  if (Array.isArray(target)) {
-    return target.filter((item): item is string => typeof item === "string");
-  }
-  return undefined;
-}
-
-function parseEnvRow(row: {
-  key?: unknown;
-  value?: unknown;
-  type?: unknown;
+function toEnvVar(row: {
+  key: string;
+  value?: string;
+  type: string;
   target?: string | string[];
   comment?: string;
   gitBranch?: string;
@@ -74,13 +50,18 @@ function parseEnvRow(row: {
   id?: string;
   visibility?: string;
   decrypted?: boolean;
-}): ScrapedEnvVar | null {
-  if (typeof row.key !== "string" || !row.key) return null;
+}): ScrapedEnvVar {
+  const target =
+    row.target == null
+      ? undefined
+      : Array.isArray(row.target)
+        ? row.target
+        : [row.target];
   return {
     key: row.key,
-    value: typeof row.value === "string" ? row.value : "",
-    type: typeof row.type === "string" ? row.type : "plain",
-    target: normalizeTargets(row.target),
+    value: row.value ?? "",
+    type: row.type,
+    target,
     comment: row.comment,
     gitBranch: row.gitBranch,
     system: row.system,
@@ -90,94 +71,88 @@ function parseEnvRow(row: {
   };
 }
 
-function extractEnvs(body: unknown): ScrapedEnvVar[] {
-  if (!body || typeof body !== "object") return [];
-
-  if ("key" in body && typeof (body as { key?: unknown }).key === "string") {
-    const env = parseEnvRow(body as Parameters<typeof parseEnvRow>[0]);
-    return env ? [env] : [];
-  }
-
-  const envs = (body as { envs?: unknown }).envs;
-  if (!Array.isArray(envs)) return [];
-
-  const result: ScrapedEnvVar[] = [];
-  for (const env of envs) {
-    if (!env || typeof env !== "object") continue;
-    const parsed = parseEnvRow(env as Parameters<typeof parseEnvRow>[0]);
-    if (parsed) result.push(parsed);
-  }
-  return result;
+function envKey(env: ScrapedEnvVar): string {
+  const targets = env.target?.slice().sort().join(",") ?? "";
+  return `${env.key}|${targets}`;
 }
 
-function extractProjects(body: unknown): {
-  projects: ProjectRef[];
-  next: string | null;
-} {
-  const toProject = (item: unknown): ProjectRef | null => {
-    if (!item || typeof item !== "object") return null;
-    const row = item as { id?: unknown; name?: unknown; env?: unknown };
-    if (typeof row.id !== "string" || typeof row.name !== "string") {
-      return null;
-    }
-    const listedEnvs = Array.isArray(row.env)
-      ? extractEnvs({ envs: row.env })
-      : [];
-    return { id: row.id, name: row.name, listedEnvs };
-  };
+function isPlainEnv(env: ScrapedEnvVar): boolean {
+  if (env.visibility === "secret") return false;
+  if (env.visibility === "config") return true;
+  const type = env.type.toLowerCase();
+  return type === "plain" || type === "plain_text";
+}
 
-  if (Array.isArray(body)) {
+function shouldDecryptEnv(env: ScrapedEnvVar): boolean {
+  return Boolean(env.id) && !isPlainEnv(env);
+}
+
+function mergeEnvEntry(
+  prev: ScrapedEnvVar | undefined,
+  next: ScrapedEnvVar,
+): ScrapedEnvVar {
+  if (!prev) return next;
+  return {
+    ...prev,
+    ...next,
+    id: next.id ?? prev.id,
+    type: next.type || prev.type,
+    visibility: next.visibility ?? prev.visibility,
+    value: next.value?.trim() ? next.value : (prev.value ?? ""),
+    decrypted: next.decrypted ?? prev.decrypted,
+    target: next.target ?? prev.target,
+    gitBranch: next.gitBranch ?? prev.gitBranch,
+    comment: next.comment ?? prev.comment,
+    system: next.system ?? prev.system,
+  };
+}
+
+function mergeEnvs(...sources: ScrapedEnvVar[][]): ScrapedEnvVar[] {
+  const byKey = new Map<string, ScrapedEnvVar>();
+  for (const source of sources) {
+    for (const env of source) {
+      const key = envKey(env);
+      byKey.set(key, mergeEnvEntry(byKey.get(key), env));
+    }
+  }
+  return [...byKey.values()];
+}
+
+function projectsFromPage(
+  page: Awaited<ReturnType<Vercel["projects"]["getProjects"]>> | null,
+): { projects: ProjectRef[]; next: string | null } {
+  if (!page) return { projects: [], next: null };
+
+  if (Array.isArray(page)) {
     return {
-      projects: body
-        .map(toProject)
-        .filter((project): project is ProjectRef => project != null),
+      projects: page.map((project) => ({
+        id: project.id,
+        name: project.name,
+        listedEnvs: (project.env ?? []).map((row) => toEnvVar(row)),
+      })),
       next: null,
     };
   }
 
-  if (!body || typeof body !== "object") {
-    return { projects: [], next: null };
-  }
-
-  const record = body as {
-    projects?: unknown;
-    pagination?: { next?: number | string | null };
-  };
-  const raw = Array.isArray(record.projects) ? record.projects : [];
   return {
-    projects: raw
-      .map(toProject)
-      .filter((project): project is ProjectRef => project != null),
-    next: paginationNext(record.pagination),
+    projects: page.projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      listedEnvs: (project.env ?? []).map((row) => toEnvVar(row)),
+    })),
+    next: page.pagination?.next == null ? null : String(page.pagination.next),
   };
 }
 
-function extractDomains(body: unknown): string[] {
-  if (!body || typeof body !== "object") return [];
-  const domains = (body as { domains?: unknown }).domains;
-  if (!Array.isArray(domains)) return [];
-
-  const names: string[] = [];
-  for (const domain of domains) {
-    if (!domain || typeof domain !== "object") continue;
-    const name = (domain as { name?: unknown }).name;
-    if (typeof name === "string" && name) names.push(name);
+function envsFromFilterResponse(
+  body: Awaited<ReturnType<Vercel["projects"]["filterProjectEnvs"]>> | null,
+): ScrapedEnvVar[] {
+  if (!body) return [];
+  if (Array.isArray(body)) return body.map((row) => toEnvVar(row));
+  if ("envs" in body && Array.isArray(body.envs)) {
+    return body.envs.map((row) => toEnvVar(row));
   }
-  return names;
-}
-
-function mergeEnvs(primary: ScrapedEnvVar[], fallback: ScrapedEnvVar[]) {
-  if (primary.length === 0) return fallback;
-  if (fallback.length === 0) return primary;
-
-  const byKey = new Map<string, ScrapedEnvVar>();
-  for (const env of fallback) {
-    byKey.set(`${env.key}|${env.target?.join(",") ?? ""}|${env.id ?? ""}`, env);
-  }
-  for (const env of primary) {
-    byKey.set(`${env.key}|${env.target?.join(",") ?? ""}|${env.id ?? ""}`, env);
-  }
-  return [...byKey.values()];
+  return [];
 }
 
 async function listAllProjects(
@@ -188,9 +163,8 @@ async function listAllProjects(
   const warnings: string[] = [];
   let from: string | undefined;
   let pages = 0;
-  const maxPages = 50;
 
-  while (pages < maxPages) {
+  while (pages < 50) {
     pages += 1;
     const label = from ? `projects.list page ${pages}` : "projects.list";
     const result = await settled(
@@ -198,7 +172,7 @@ async function listAllProjects(
         client.projects.getProjects({
           limit: "100",
           ...(from ? { from } : {}),
-          ...teamParams(provider),
+          ...(provider.teamId ? { teamId: provider.teamId } : {}),
         }),
         REQUEST_TIMEOUT_MS,
         label,
@@ -212,10 +186,10 @@ async function listAllProjects(
       break;
     }
 
-    const extracted = extractProjects(result.value);
-    projects.push(...extracted.projects);
-    if (!extracted.next) break;
-    from = extracted.next;
+    const page = projectsFromPage(result.value);
+    projects.push(...page.projects);
+    if (!page.next) break;
+    from = page.next;
   }
 
   return { projects, warnings };
@@ -228,19 +202,16 @@ async function listProjectDomains(
 ): Promise<{ domains: string[]; error: string | null }> {
   const domains: string[] = [];
   let until: number | undefined;
-  let pages = 0;
-  const maxPages = 20;
 
-  while (pages < maxPages) {
-    pages += 1;
-    const label = `domains:${project.name}:${pages}`;
+  for (let pages = 0; pages < 20; pages += 1) {
+    const label = `domains:${project.name}:${pages + 1}`;
     const result = await settled(
       withTimeout(
         client.projects.getProjectDomains({
           idOrName: project.id,
           limit: 100,
           ...(until != null ? { until } : {}),
-          ...teamParams(provider),
+          ...(provider.teamId ? { teamId: provider.teamId } : {}),
         }),
         REQUEST_TIMEOUT_MS,
         label,
@@ -249,18 +220,17 @@ async function listProjectDomains(
       label,
     );
 
-    if (result.error) {
-      return { domains, error: result.error };
+    if (result.error) return { domains, error: result.error };
+
+    const page = result.value;
+    if (!page) break;
+
+    for (const domain of page.domains) {
+      if (domain.name) domains.push(domain.name);
     }
 
-    domains.push(...extractDomains(result.value));
-
-    const pagination =
-      result.value && typeof result.value === "object"
-        ? (result.value as { pagination?: { next?: number | null } }).pagination
-        : undefined;
-    if (pagination?.next == null) break;
-    until = pagination.next;
+    if (page.pagination?.next == null) break;
+    until = page.pagination.next;
   }
 
   return { domains: [...new Set(domains)], error: null };
@@ -271,58 +241,73 @@ async function listProjectEnvs(
   provider: VercelProvider,
   project: ProjectRef,
 ): Promise<{ envs: ScrapedEnvVar[]; error: string | null }> {
-  const envs: ScrapedEnvVar[] = [];
-  let pages = 0;
-  const maxPages = 20;
-  // filterProjectEnvs pagination uses `until` via next timestamp on some shapes.
-  let until: number | undefined;
+  const result = await settled(
+    withTimeout(
+      client.projects.filterProjectEnvs({
+        idOrName: project.id,
+        decrypt: "true",
+        ...(provider.teamId ? { teamId: provider.teamId } : {}),
+      }),
+      REQUEST_TIMEOUT_MS,
+      `envs:${project.name}`,
+    ),
+    null,
+    `envs:${project.name}`,
+  );
 
-  while (pages < maxPages) {
-    pages += 1;
-    const label = `envs:${project.name}:${pages}`;
-    const result = await settled(
-      withTimeout(
-        client.projects.filterProjectEnvs({
-          idOrName: project.id,
-          decrypt: "true",
-          ...teamParams(provider),
-        }),
-        REQUEST_TIMEOUT_MS,
-        label,
-      ),
-      null,
-      label,
-    );
+  if (result.error) return { envs: [], error: result.error };
 
-    if (result.error) {
-      return { envs, error: result.error };
-    }
-
-    const pageEnvs = extractEnvs(result.value);
-    envs.push(...pageEnvs);
-
-    const pagination =
-      result.value && typeof result.value === "object"
-        ? (result.value as { pagination?: { next?: number | null } }).pagination
-        : undefined;
-
-    // Most env list responses are a single page; stop when no pagination next
-    // or when the page returned nothing new.
-    if (pagination?.next == null) break;
-    if (until === pagination.next) break;
-    until = pagination.next;
-    // SDK filterProjectEnvs request has no `until` today — break after first page
-    // if we can't advance. Keep loop for shapes that embed all envs once.
-    break;
-  }
-
-  return { envs, error: null };
+  return { envs: envsFromFilterResponse(result.value), error: null };
 }
 
-/**
- * List endpoint often returns encrypted blobs with `decrypted: false`.
- * Fetch each env by id to get the plaintext when the token allows it.
- */
+async function fetchDecryptedEnv(
+  client: Vercel,
+  provider: VercelProvider,
+  project: ProjectRef,
+  env: ScrapedEnvVar,
+): Promise<ScrapedEnvVar> {
+  if (!shouldDecryptEnv(env) || !env.id) return env;
+
+  const label = `env.decrypt:${project.name}:${env.key}`;
+  const result = await settled(
+    withTimeout(
+      client.projects.getProjectEnv({
+        idOrName: project.id,
+        id: env.id,
+        ...(provider.teamId ? { teamId: provider.teamId } : {}),
+      }),
+      REQUEST_TIMEOUT_MS,
+      label,
+    ),
+    null,
+    label,
+  );
+
+  const row = result.value;
+  if (!row || Array.isArray(row)) return env;
+
+  const value =
+    "value" in row && typeof row.value === "string" ? row.value : env.value;
+  const decrypted =
+    "value" in row && typeof row.value === "string"
+      ? true
+      : "decrypted" in row && typeof row.decrypted === "boolean"
+        ? row.decrypted
+        : env.decrypted;
+
+  return {
+    ...env,
+    value,
+    decrypted,
+    type:
+      "type" in row && typeof row.type === "string" ? row.type : env.type,
+    visibility:
+      "visibility" in row && typeof row.visibility === "string"
+        ? row.visibility
+        : env.visibility,
+  };
+}
+
 async function decryptEnvs(
   client: Vercel,
   provider: VercelProvider,
@@ -333,60 +318,12 @@ async function decryptEnvs(
   const jobs = envs.map((env, index) => ({ env, index }));
 
   await mapPool(jobs, PROJECT_CONCURRENCY, async ({ env, index }) => {
-    const needsDecrypt =
-      Boolean(env.id) &&
-      env.decrypted === false &&
-      env.type !== "sensitive" &&
-      env.type !== "secret";
-
-    if (!needsDecrypt || !env.id) {
-      out[index] = env;
-      return;
-    }
-
-    const label = `env.decrypt:${project.name}:${env.key}`;
-    const result = await settled(
-      withTimeout(
-        client.projects.getProjectEnv({
-          idOrName: project.id,
-          id: env.id,
-          ...teamParams(provider),
-        }),
-        REQUEST_TIMEOUT_MS,
-        label,
-      ),
-      null,
-      label,
-    );
-
-    if (!result.value || typeof result.value !== "object") {
-      out[index] = env;
-      return;
-    }
-
-    const decrypted = extractEnvs(result.value)[0];
-    if (!decrypted) {
-      const value = (result.value as { value?: unknown }).value;
-      if (typeof value === "string") {
-        out[index] = { ...env, value, decrypted: true };
-        return;
-      }
-      out[index] = env;
-      return;
-    }
-
-    out[index] = {
-      ...env,
-      ...decrypted,
-      key: env.key,
-      decrypted: decrypted.decrypted ?? true,
-    };
+    out[index] = await fetchDecryptedEnv(client, provider, project, env);
   });
 
   return out;
 }
 
-/** Returns null when the token can scan; otherwise a human-readable reason. */
 export async function probeVercelProvider(
   provider: VercelProvider,
 ): Promise<string | null> {
@@ -400,7 +337,7 @@ export async function probeVercelProvider(
     await withTimeout(
       client.projects.getProjects({
         limit: "1",
-        ...teamParams(provider),
+        ...(provider.teamId ? { teamId: provider.teamId } : {}),
       }),
       REQUEST_TIMEOUT_MS,
       `probe:${provider.namespace}`,
@@ -450,7 +387,7 @@ async function fetchProviderProjects(
 
   cli.step(`Found ${listed.projects.length} projects`);
 
-  const resources: ScrapedResource[] = [];
+  const resources: ScrapedVercelProject[] = [];
   const warnings = [...listed.warnings];
 
   await mapPool(listed.projects, PROJECT_CONCURRENCY, async (project) => {
@@ -477,22 +414,20 @@ async function fetchProviderProjects(
 
     const merged = mergeEnvs(envsResult.envs, project.listedEnvs);
     const envs = await decryptEnvs(client, provider, project, merged);
-    const domains = domainsResult.domains;
 
     resources.push({
       kind: "vercel-project",
       id: serviceId(provider.namespace, project.id),
       name: project.name,
       group: provider.namespace,
-      domains,
+      domains: domainsResult.domains,
       envs,
-    } satisfies ScrapedVercelProject);
+    });
 
     log("project scraped", {
       project: project.name,
-      domains: domains.length,
+      domains: domainsResult.domains.length,
       envs: envs.length,
-      listedEnvs: project.listedEnvs.length,
       duration: elapsed(projectStart),
     });
   });
@@ -518,13 +453,11 @@ export async function scrapeVercel(
   if (providers.length === 0) {
     return {
       resources: [],
-      warnings: [
-        "No Vercel providers configured (PROVIDER_VERCEL_*_API_KEY)",
-      ],
+      warnings: ["No Vercel providers configured (PROVIDER_VERCEL_*_API_KEY)"],
     };
   }
 
-  const resources: ScrapedResource[] = [];
+  const resources: ScrapedVercelProject[] = [];
   const warnings: string[] = [];
 
   for (const provider of providers) {
@@ -554,25 +487,16 @@ export async function scrapeVercel(
   return { resources, warnings };
 }
 
-/**
- * Vercel scanner facade.
- *
- * New providers mirror this in their scrape file:
- *   probe → scrape → transform
- */
 export class VercelScanner implements ServiceScanner {
   constructor(private readonly providers: VercelProvider[]) {}
 
-  /** `null` if scannable; otherwise a human-readable reason. */
-  static probe(provider: VercelProvider): Promise<string | null> {
-    return probeVercelProvider(provider);
-  }
+  static probe = probeVercelProvider;
 
   scrape(): Promise<ScrapeContext> {
     return scrapeVercel(this.providers);
   }
 
   transform(ctx: ScrapeContext): ScannedService[] {
-    return ctx.resources.map(resourceToService);
+    return transformVercel(ctx);
   }
 }
