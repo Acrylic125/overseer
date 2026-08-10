@@ -17,6 +17,7 @@ import { PublicInternetCloud } from "@/components/infrastructure/public-internet
 import { ServiceConnectors } from "@/components/infrastructure/service-connectors";
 import { InstancedServiceBlocks } from "@/components/infrastructure/instanced-service-blocks";
 import { TopViewControls } from "@/components/infrastructure/top-view-controls";
+import { useStreamedScene } from "@/components/infrastructure/use-streamed-scene";
 import { cssToThreeColor } from "@/lib/css-color";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import { pickServiceAt } from "@/lib/graph/pick-service";
@@ -93,10 +94,27 @@ export function InfrastructureScene({
     () => services.filter((service) => !isInternetService(service)),
     [services],
   );
-  const pickPool = useMemo(
-    () => [...renderServices, internetPickTarget(publicInternet)],
-    [renderServices, publicInternet],
-  );
+  const {
+    visibleRenderServices,
+    connectorServices,
+    visiblePlatforms,
+    showPublicInternet,
+    streamedConnectorPaths,
+  } = useStreamedScene({
+    services,
+    renderServices,
+    platforms,
+    publicInternet,
+    connectorPaths,
+    selectedServiceId,
+  });
+  const pickPool = useMemo(() => {
+    const pool = [...visibleRenderServices];
+    if (showPublicInternet) {
+      pool.push(internetPickTarget(publicInternet));
+    }
+    return pool;
+  }, [visibleRenderServices, showPublicInternet, publicInternet]);
   const [settledMode, setSettledMode] = useState<ViewMode | null>(null);
   const controlsActive = settledMode === viewMode;
   const fogRef = useRef<THREE.Fog>(null);
@@ -145,7 +163,7 @@ export function InfrastructureScene({
 
       <WorldGrid />
 
-      {platforms.map((platform) => (
+      {visiblePlatforms.map((platform) => (
         <FrostedPlatform
           key={platform.group ?? platform.id}
           group={platform.group ?? ""}
@@ -156,20 +174,22 @@ export function InfrastructureScene({
         />
       ))}
 
-      <PublicInternetCloud
-        centerX={publicInternet.centerX}
-        centerZ={publicInternet.centerZ}
-        width={publicInternet.width}
-        depth={publicInternet.depth}
-        shape={publicInternet.shape ?? "cloud"}
-      />
+      {showPublicInternet ? (
+        <PublicInternetCloud
+          centerX={publicInternet.centerX}
+          centerZ={publicInternet.centerZ}
+          width={publicInternet.width}
+          depth={publicInternet.depth}
+          shape={publicInternet.shape ?? "cloud"}
+        />
+      ) : null}
 
-      <InstancedServiceBlocks services={renderServices} />
+      <InstancedServiceBlocks services={visibleRenderServices} />
 
       <ServiceConnectors
-        services={services}
+        services={connectorServices}
         selectedServiceId={selectedServiceId}
-        precomputedPaths={connectorPaths}
+        precomputedPaths={streamedConnectorPaths}
       />
 
       <CameraModeSync

@@ -212,12 +212,6 @@ export function InfrastructureCanvas({
 
       <LookCrosshair visible={viewMode === "explore" && lookLocked} />
 
-      {selectedService ? (
-        <div className="pointer-events-none absolute top-16 left-1/2 z-10 -translate-x-1/2 rounded-md bg-black/55 px-3 py-1.5 font-mono text-[11px] text-[#8ec7ff] backdrop-blur-sm">
-          {selectedService.name}
-        </div>
-      ) : null}
-
       <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md bg-black/50 px-3 py-1.5 font-mono text-[11px] text-white/75 backdrop-blur-sm">
         {helpText}
       </div>

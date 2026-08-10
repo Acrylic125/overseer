@@ -154,8 +154,6 @@ export function layoutFromDb(
       targetId: connector.nodes[1],
       points: connector.path.map(([x, y]) => ({ x, z: y })),
       ...(connector.variant === "warning" ? { variant: "warning" as const } : {}),
-      from: connector.from ?? null,
-      to: connector.to ?? null,
     }));
 
   const [w, h] = resolveSize(db.static.publicInternet.size);

@@ -108,8 +108,6 @@ export const staticSchema = z.object({
 
 export const connectorSchema = z.object({
   nodes: z.tuple([z.string().min(1), z.string().min(1)]),
-  from: z.tuple([z.string(), z.string()]).nullable().optional(),
-  to: z.tuple([z.string(), z.string()]).nullable().optional(),
   variant: z.enum(["default", "warning"]).optional(),
   path: z.array(posSchema).min(2),
 });

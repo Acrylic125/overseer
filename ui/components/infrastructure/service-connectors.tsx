@@ -1,6 +1,5 @@
 "use client";
 
-import { Html } from "@react-three/drei";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
@@ -107,7 +106,6 @@ type SegmentInstance = {
   sourceId?: string;
   targetId?: string;
   variant: ConnectorVariant;
-  text?: string;
 };
 
 type JointInstance = {
@@ -116,34 +114,11 @@ type JointInstance = {
   sourceId?: string;
   targetId?: string;
   variant: ConnectorVariant;
-  text?: string;
 };
-
-type LabelInstance = {
-  x: number;
-  z: number;
-  text: string;
-  warning: boolean;
-  key: string;
-};
-
-function connectorLabelForPath(
-  path: ConnectorPath,
-  serviceId: string,
-): [string, string] | null {
-  if (serviceId === path.sourceId) return path.from ?? path.to ?? null;
-  if (serviceId === path.targetId) return path.to ?? path.from ?? null;
-  return null;
-}
-
-function formatConnectorLabel(label: [string, string]): string {
-  return `${label[0]}: ${label[1]}`;
-}
 
 function collectFromPaths(paths: ConnectorPath[]) {
   const segments: SegmentInstance[] = [];
   const joints: JointInstance[] = [];
-  const labels: LabelInstance[] = [];
 
   for (const path of paths) {
     const variant: ConnectorVariant =
@@ -165,7 +140,6 @@ function collectFromPaths(paths: ConnectorPath[]) {
         sourceId: path.sourceId,
         targetId: path.targetId,
         variant,
-        ...(path.text ? { text: path.text } : {}),
       });
     }
     for (let i = 1; i < pts.length - 1; i += 1) {
@@ -176,22 +150,11 @@ function collectFromPaths(paths: ConnectorPath[]) {
         sourceId: path.sourceId,
         targetId: path.targetId,
         variant,
-        ...(path.text ? { text: path.text } : {}),
-      });
-    }
-    if (path.text && pts.length > 0) {
-      const mid = pts[Math.floor(pts.length / 2)]!;
-      labels.push({
-        x: mid.x,
-        z: mid.z,
-        text: path.text,
-        warning: variant === "warning",
-        key: path.id,
       });
     }
   }
 
-  return { segments, joints, labels };
+  return { segments, joints };
 }
 
 function linkedTo(
@@ -396,29 +359,6 @@ export function ServiceConnectors({
     };
   }, [geometry, selectedServiceId]);
 
-  const focusLabels = useMemo(() => {
-    if (!selectedServiceId) return [] as LabelInstance[];
-
-    const labels: LabelInstance[] = [];
-    for (const path of paths) {
-      const pts = path.points;
-      if (pts.length === 0) continue;
-
-      const label = connectorLabelForPath(path, selectedServiceId);
-      if (!label) continue;
-
-      const mid = pts[Math.floor(pts.length / 2)]!;
-      labels.push({
-        x: mid.x,
-        z: mid.z,
-        text: formatConnectorLabel(label),
-        warning: path.variant === "warning",
-        key: path.id,
-      });
-    }
-    return labels;
-  }, [paths, selectedServiceId]);
-
   useLayoutEffect(
     () => () => {
       for (const bundle of [meshes.idle, meshes.focused]) {
@@ -439,25 +379,6 @@ export function ServiceConnectors({
       {active.defaultJoint ? <primitive object={active.defaultJoint} /> : null}
       {active.warningSeg ? <primitive object={active.warningSeg} /> : null}
       {active.warningJoint ? <primitive object={active.warningJoint} /> : null}
-      {focusLabels.map((label) => (
-        <Html
-          key={label.key}
-          position={[label.x, 0.35, label.z]}
-          center
-          distanceFactor={18}
-          style={{ pointerEvents: "none" }}
-        >
-          <div
-            className={
-              label.warning
-                ? "rounded-md border border-red-500/50 bg-red-950/90 px-2 py-1 text-[11px] font-medium whitespace-nowrap text-red-100 shadow-lg"
-                : "rounded-md border border-sky-400/40 bg-slate-950/90 px-2 py-1 text-[11px] font-medium whitespace-nowrap text-sky-100 shadow-lg"
-            }
-          >
-            {label.text}
-          </div>
-        </Html>
-      ))}
     </group>
   );
 }

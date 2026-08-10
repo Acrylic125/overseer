@@ -36,10 +36,6 @@ export type ConnectorPath = {
   targetId: string;
   points: { x: number; z: number }[];
   variant?: "default" | "warning";
-  from?: [string, string] | null;
-  to?: [string, string] | null;
-  /** @deprecated Prefer `from` / `to` endpoint labels. */
-  text?: string;
 };
 
 export type SegmentObstacle = {

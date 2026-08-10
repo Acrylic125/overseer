@@ -9,7 +9,6 @@ export function InfrastructureView() {
   const trpc = useTRPC();
   const { data, isPending, isError, error } = useQuery(
     trpc.infrastructure.list.queryOptions(undefined, {
-      // Auth lockouts (CF 10502) get worse with automatic retries.
       retry: false,
       refetchOnWindowFocus: false,
       staleTime: 60_000,

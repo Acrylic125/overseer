@@ -1,3 +1,4 @@
+import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import { serviceWorldCenter } from "@/lib/graph/pack-layout";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
@@ -8,9 +9,28 @@ export const RENDER_HALF = RENDER_WINDOW / 2;
 /** Quantize focus so React state only updates when the window meaningfully moves. */
 export const STREAM_CELL = 8;
 
-type SpatialIndex = {
+export type SpatialIndex = {
   cellSize: number;
   cells: Map<string, InfrastructureService[]>;
+};
+
+export type StreamFocus = {
+  focusX: number;
+  focusZ: number;
+};
+
+export type StreamWindow = {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+};
+
+export type WorldFootprint = {
+  centerX: number;
+  centerZ: number;
+  width: number;
+  depth: number;
 };
 
 function cellKey(cx: number, cz: number) {
@@ -69,11 +89,98 @@ export function queryServicesInWindow(
   return out;
 }
 
-export function windowAround(focusX: number, focusZ: number, half = RENDER_HALF) {
+export function windowAround(
+  focusX: number,
+  focusZ: number,
+  half = RENDER_HALF,
+): StreamWindow {
   return {
     minX: focusX - half,
     maxX: focusX + half,
     minZ: focusZ - half,
     maxZ: focusZ + half,
   };
+}
+
+/** Snap camera focus to stream cells so React only re-renders on meaningful pan. */
+export function quantizeFocus(
+  x: number,
+  z: number,
+  cellSize = STREAM_CELL,
+): StreamFocus {
+  return {
+    focusX: Math.floor(x / cellSize) * cellSize + cellSize / 2,
+    focusZ: Math.floor(z / cellSize) * cellSize + cellSize / 2,
+  };
+}
+
+export function streamServicesInWindow(
+  index: SpatialIndex,
+  focusX: number,
+  focusZ: number,
+  half = RENDER_HALF,
+): InfrastructureService[] {
+  const { minX, maxX, minZ, maxZ } = windowAround(focusX, focusZ, half);
+  return queryServicesInWindow(index, minX, minZ, maxX, maxZ);
+}
+
+/** True when a world XZ footprint overlaps the stream window. */
+export function footprintInWindow(
+  footprint: WorldFootprint,
+  window: StreamWindow,
+): boolean {
+  const halfW = footprint.width / 2;
+  const halfD = footprint.depth / 2;
+  const minX = footprint.centerX - halfW;
+  const maxX = footprint.centerX + halfW;
+  const minZ = footprint.centerZ - halfD;
+  const maxZ = footprint.centerZ + halfD;
+  return (
+    maxX >= window.minX &&
+    minX <= window.maxX &&
+    maxZ >= window.minZ &&
+    minZ <= window.maxZ
+  );
+}
+
+/** Keep selected service and its direct neighbors visible for connector highlights. */
+export function expandWithLinkedServices(
+  visible: InfrastructureService[],
+  all: InfrastructureService[],
+  selectedId: string | null,
+): InfrastructureService[] {
+  if (!selectedId) return visible;
+
+  const byId = new Map(all.map((service) => [service.id, service]));
+  const visibleIds = new Set(visible.map((service) => service.id));
+  const out = [...visible];
+
+  const ensure = (id: string) => {
+    if (visibleIds.has(id)) return;
+    const service = byId.get(id);
+    if (!service) return;
+    visibleIds.add(id);
+    out.push(service);
+  };
+
+  ensure(selectedId);
+  const selected = byId.get(selectedId);
+  if (!selected) return out;
+
+  for (const id of selected.connections) ensure(id);
+  for (const service of all) {
+    if (service.connections.includes(selectedId)) ensure(service.id);
+  }
+
+  return out;
+}
+
+export function filterConnectorPaths(
+  paths: ConnectorPath[],
+  allowedIds: Set<string>,
+): ConnectorPath[] {
+  return paths.filter(
+    (path) =>
+      allowedIds.has(path.sourceId) && allowedIds.has(path.targetId),
+  );
 }

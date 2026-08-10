@@ -21,13 +21,18 @@ import type {
   ScannedService,
   Size,
 } from "../../schema.js";
-import { roundCoord, roundPos, toWireGroup, toWireResource } from "../../schema.js";
+import {
+  roundCoord,
+  roundPos,
+  toWireGroup,
+  toWireResource,
+} from "../../schema.js";
 
 /** Default icon cell size (matches unit-sized GLB glyphs). */
 const ICON_W = 1;
 const ICON_H = 1;
 /** Gap between icons inside a cluster. */
-const ICON_GAP = 1.5;
+const ICON_GAP = 2;
 /** Edge-to-edge gap between platforms. */
 const PLATFORM_GAP = 2;
 
@@ -199,7 +204,10 @@ function shelfPackRects(
     return { placed: [], width: 0, height: 0 };
   }
 
-  const area = items.reduce((sum, item) => sum + (item.w + gap) * (item.h + gap), 0);
+  const area = items.reduce(
+    (sum, item) => sum + (item.w + gap) * (item.h + gap),
+    0,
+  );
   const targetW = Math.max(
     ...items.map((item) => item.w),
     Math.ceil(Math.sqrt(area)),
@@ -336,10 +344,7 @@ function packCluster(
   w: number,
   h: number,
   G: number,
-): Omit<
-  ClusterLayout,
-  "name" | "services" | "platformW" | "platformH"
-> {
+): Omit<ClusterLayout, "name" | "services" | "platformW" | "platformH"> {
   if (n <= 0) {
     return { cols: 0, rows: 0, W: 0, H: 0, items: [] };
   }
@@ -635,8 +640,7 @@ export async function layoutServices(
   }
   linkInternetDomains(services, domainsByServiceId);
 
-  const internet =
-    services.find(isInternetService) ?? createInternetService();
+  const internet = services.find(isInternetService) ?? createInternetService();
   const packable = services.filter((service) => {
     if (isInternetService(service)) {
       // Grouped internet packs with its cluster; ungrouped is the cloud hub.
@@ -695,13 +699,7 @@ export async function layoutServices(
     };
 
     boxes.push(
-      iconAabb(
-        INTERNET_ID,
-        cloudPos[0],
-        cloudPos[1],
-        cloud.width,
-        cloud.depth,
-      ),
+      iconAabb(INTERNET_ID, cloudPos[0], cloudPos[1], cloud.width, cloud.depth),
     );
   }
 
@@ -723,10 +721,7 @@ export async function layoutServices(
     );
   }
 
-  const graphServices = [
-    ...packable,
-    ...(hubInternet ? [hubInternet] : []),
-  ];
+  const graphServices = [...packable, ...(hubInternet ? [hubInternet] : [])];
 
   const paths = await buildAllConnectorPaths(
     boxes,
@@ -737,7 +732,9 @@ export async function layoutServices(
     })),
   );
 
-  const serviceById = new Map(graphServices.map((service) => [service.id, service]));
+  const serviceById = new Map(
+    graphServices.map((service) => [service.id, service]),
+  );
 
   const connectorLabels = (sourceId: string, targetId: string) => {
     const forward = serviceById.get(sourceId)?.connectionMeta?.[targetId];
