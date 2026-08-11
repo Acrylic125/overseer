@@ -16,7 +16,7 @@ import type { InfrastructureService } from "@/server/routers/infrastructure";
 const CONNECTOR_THICKNESS = 0.008;
 const CONNECTOR_Y = 0;
 const JOINT_RADIUS = CONNECTOR_SIZE * 0.7;
-const HIGHLIGHT_SCALE = 1.55;
+const OVERLAY_WIDTH_SCALE = 2;
 
 type ConnectorVariant = "default" | "warning";
 
@@ -24,6 +24,8 @@ let connectorMaterial: THREE.MeshBasicMaterial | null = null;
 let highlightMaterial: THREE.MeshBasicMaterial | null = null;
 let warningMaterial: THREE.MeshBasicMaterial | null = null;
 let warningHighlightMaterial: THREE.MeshBasicMaterial | null = null;
+let connectorOverlayMaterial: THREE.MeshBasicMaterial | null = null;
+let warningOverlayMaterial: THREE.MeshBasicMaterial | null = null;
 let segmentGeometry: THREE.BoxGeometry | null = null;
 let jointGeometry: THREE.CylinderGeometry | null = null;
 
@@ -70,6 +72,30 @@ function getWarningHighlightMaterial() {
     SCENE.connectorWarningHighlight,
   );
   return warningHighlightMaterial;
+}
+
+function getOverlayMaterial(variant: ConnectorVariant) {
+  const css =
+    variant === "warning"
+      ? SCENE.connectorWarning
+      : SCENE.connectorHighlight;
+  let existing =
+    variant === "warning" ? warningOverlayMaterial : connectorOverlayMaterial;
+  const color = cssToThreeColor(css);
+  if (!existing) {
+    existing = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.5,
+      toneMapped: false,
+      depthWrite: false,
+    });
+    if (variant === "warning") warningOverlayMaterial = existing;
+    else connectorOverlayMaterial = existing;
+    return existing;
+  }
+  existing.color.copy(color);
+  return existing;
 }
 
 /** Unit-length flat ribbon in XZ (width × thickness × length-1). */
@@ -169,6 +195,8 @@ function buildMeshes(
   joints: JointInstance[],
   material: THREE.Material,
   scale = 1,
+  y = CONNECTOR_Y,
+  renderOrder = 0,
 ) {
   const zAxis = new THREE.Vector3(0, 0, 1);
   const dir = new THREE.Vector3();
@@ -189,7 +217,7 @@ function buildMeshes(
       const s = segments[i]!;
       dir.set(s.dx, 0, s.dz);
       quat.setFromUnitVectors(zAxis, dir);
-      dummy.position.set(s.midX, CONNECTOR_Y, s.midZ);
+      dummy.position.set(s.midX, y, s.midZ);
       // Scale X (width) + Y (thickness) uniformly; Z stretches to segment length.
       dummy.scale.set(scale, 1, s.length);
       dummy.quaternion.copy(quat);
@@ -198,6 +226,7 @@ function buildMeshes(
     }
     segmentMesh.instanceMatrix.needsUpdate = true;
     segmentMesh.frustumCulled = true;
+    segmentMesh.renderOrder = renderOrder;
     segmentMesh.computeBoundingSphere();
   }
 
@@ -209,7 +238,7 @@ function buildMeshes(
   if (jointMesh) {
     for (let i = 0; i < joints.length; i += 1) {
       const j = joints[i]!;
-      dummy.position.set(j.x, CONNECTOR_Y, j.z);
+      dummy.position.set(j.x, y, j.z);
       dummy.scale.set(scale, 1, scale);
       dummy.quaternion.identity();
       dummy.updateMatrix();
@@ -217,6 +246,7 @@ function buildMeshes(
     }
     jointMesh.instanceMatrix.needsUpdate = true;
     jointMesh.frustumCulled = true;
+    jointMesh.renderOrder = renderOrder;
     jointMesh.computeBoundingSphere();
   }
 
@@ -263,11 +293,13 @@ function emptyBundle(): MeshBundle {
 export function ServiceConnectors({
   services,
   selectedServiceId = null,
+  activeConnectorId = null,
   /** When provided (from scan layout), skip client-side re-routing. */
   precomputedPaths = null,
 }: {
   services: InfrastructureService[];
   selectedServiceId?: string | null;
+  activeConnectorId?: string | null;
   precomputedPaths?: ConnectorPath[] | null;
 }) {
   const signature = useMemo(() => servicesSignature(services), [services]);
@@ -339,13 +371,13 @@ export function ServiceConnectors({
       segs.default as SegmentInstance[],
       joints.default as JointInstance[],
       getHighlightMaterial(),
-      HIGHLIGHT_SCALE,
+      OVERLAY_WIDTH_SCALE,
     );
     const warn = buildMeshes(
       segs.warning as SegmentInstance[],
       joints.warning as JointInstance[],
       getWarningHighlightMaterial(),
-      HIGHLIGHT_SCALE,
+      OVERLAY_WIDTH_SCALE,
     );
 
     return {
@@ -359,16 +391,40 @@ export function ServiceConnectors({
     };
   }, [geometry, selectedServiceId]);
 
+  const connectorHighlight = useMemo(() => {
+    if (!activeConnectorId) return emptyBundle();
+    const activePath = paths.find((path) => path.id === activeConnectorId);
+    if (!activePath) return emptyBundle();
+
+    const { segments, joints } = collectFromPaths([activePath]);
+    const variant: ConnectorVariant =
+      activePath.variant === "warning" ? "warning" : "default";
+    const built = buildMeshes(
+      segments,
+      joints,
+      getOverlayMaterial(variant),
+      OVERLAY_WIDTH_SCALE,
+      CONNECTOR_Y,
+      1,
+    );
+    return {
+      defaultSeg: variant === "warning" ? null : built.segmentMesh,
+      defaultJoint: variant === "warning" ? null : built.jointMesh,
+      warningSeg: variant === "warning" ? built.segmentMesh : null,
+      warningJoint: variant === "warning" ? built.jointMesh : null,
+    } satisfies MeshBundle;
+  }, [paths, activeConnectorId]);
+
   useLayoutEffect(
     () => () => {
-      for (const bundle of [meshes.idle, meshes.focused]) {
+      for (const bundle of [meshes.idle, meshes.focused, connectorHighlight]) {
         bundle.defaultSeg?.dispose();
         bundle.defaultJoint?.dispose();
         bundle.warningSeg?.dispose();
         bundle.warningJoint?.dispose();
       }
     },
-    [meshes],
+    [meshes, connectorHighlight],
   );
 
   const active = selectedServiceId ? meshes.focused : meshes.idle;
@@ -379,6 +435,18 @@ export function ServiceConnectors({
       {active.defaultJoint ? <primitive object={active.defaultJoint} /> : null}
       {active.warningSeg ? <primitive object={active.warningSeg} /> : null}
       {active.warningJoint ? <primitive object={active.warningJoint} /> : null}
+      {connectorHighlight.defaultSeg ? (
+        <primitive object={connectorHighlight.defaultSeg} />
+      ) : null}
+      {connectorHighlight.defaultJoint ? (
+        <primitive object={connectorHighlight.defaultJoint} />
+      ) : null}
+      {connectorHighlight.warningSeg ? (
+        <primitive object={connectorHighlight.warningSeg} />
+      ) : null}
+      {connectorHighlight.warningJoint ? (
+        <primitive object={connectorHighlight.warningJoint} />
+      ) : null}
     </group>
   );
 }

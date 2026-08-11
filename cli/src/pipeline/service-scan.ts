@@ -198,7 +198,7 @@ function linkEnvToDomains(
         for (const ownerId of owners) {
           if (ownerId === resource.id) continue;
           const owner = byResourceId.get(ownerId);
-          const label: [string, string] = ["domain", host];
+          const label = host;
 
           if (owner?.kind === "cf-r2") {
             const origin = `${url.protocol}//${url.host}`;
@@ -206,21 +206,18 @@ function linkEnvToDomains(
             if (allowed) {
               addConnection(service, ownerId, {
                 variant: "default",
-                from: label,
-                to: label,
+                labels: [label, label],
               });
             } else {
               addConnection(service, ownerId, {
                 variant: "warning",
-                from: label,
-                to: ["CORS", "origin not allowed"],
+                labels: [label, "origin not allowed"],
               });
             }
           } else {
             addConnection(service, ownerId, {
               variant: "default",
-              from: label,
-              to: label,
+              labels: [label, label],
             });
           }
         }

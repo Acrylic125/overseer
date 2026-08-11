@@ -1,5 +1,7 @@
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import { serviceWorldCenter } from "@/lib/graph/pack-layout";
+import { isOpenToInternet } from "@/lib/infrastructure-schema";
+import { INTERNET_ID } from "@/lib/internet";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 /** World-space XZ window (full width × depth) streamed around the camera. */
@@ -143,11 +145,47 @@ export function footprintInWindow(
   );
 }
 
+function isLinkedToInternet(service: InfrastructureService): boolean {
+  return (
+    service.connections.includes(INTERNET_ID) ||
+    isOpenToInternet(service.fields)
+  );
+}
+
+/** Direct neighbors of the selected service (both directions along connections). */
+export function linkedServiceIds(
+  all: InfrastructureService[],
+  selectedId: string,
+): Set<string> {
+  const byId = new Map(all.map((service) => [service.id, service]));
+  const relevant = new Set<string>([selectedId]);
+
+  if (selectedId === INTERNET_ID) {
+    for (const service of all) {
+      if (isLinkedToInternet(service)) relevant.add(service.id);
+    }
+    return relevant;
+  }
+
+  const selected = byId.get(selectedId);
+  if (selected) {
+    for (const id of selected.connections) relevant.add(id);
+    if (isLinkedToInternet(selected)) relevant.add(INTERNET_ID);
+  }
+
+  for (const service of all) {
+    if (service.connections.includes(selectedId)) relevant.add(service.id);
+  }
+
+  return relevant;
+}
+
 /** Keep selected service and its direct neighbors visible for connector highlights. */
 export function expandWithLinkedServices(
   visible: InfrastructureService[],
   all: InfrastructureService[],
   selectedId: string | null,
+  hubService?: InfrastructureService | null,
 ): InfrastructureService[] {
   if (!selectedId) return visible;
 
@@ -155,9 +193,12 @@ export function expandWithLinkedServices(
   const visibleIds = new Set(visible.map((service) => service.id));
   const out = [...visible];
 
+  const resolve = (id: string) =>
+    byId.get(id) ?? (hubService?.id === id ? hubService : undefined);
+
   const ensure = (id: string) => {
     if (visibleIds.has(id)) return;
-    const service = byId.get(id);
+    const service = resolve(id);
     if (!service) return;
     visibleIds.add(id);
     out.push(service);
@@ -175,12 +216,35 @@ export function expandWithLinkedServices(
   return out;
 }
 
+/** Keep hub edges when the on-map service is visible even if the hub is off-screen. */
 export function filterConnectorPaths(
   paths: ConnectorPath[],
   allowedIds: Set<string>,
+  hubId = INTERNET_ID,
 ): ConnectorPath[] {
-  return paths.filter(
-    (path) =>
-      allowedIds.has(path.sourceId) && allowedIds.has(path.targetId),
+  return paths.filter((path) => {
+    const sourceAllowed = allowedIds.has(path.sourceId);
+    const targetAllowed = allowedIds.has(path.targetId);
+    if (sourceAllowed && targetAllowed) return true;
+    return (
+      (path.sourceId === hubId && targetAllowed) ||
+      (path.targetId === hubId && sourceAllowed)
+    );
+  });
+}
+
+/** Client-side routing needs the hub service object when visible peers link to it. */
+export function withInternetHubForConnectors(
+  services: InfrastructureService[],
+  hub: InfrastructureService | null,
+  hubId = INTERNET_ID,
+): InfrastructureService[] {
+  if (!hub) return services;
+  const hasHub = services.some((service) => service.id === hubId);
+  if (hasHub) return services;
+  const needsHub = services.some(
+    (service) =>
+      service.id === hubId || service.connections.includes(hubId),
   );
+  return needsHub ? [...services, hub] : services;
 }

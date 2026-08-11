@@ -1,7 +1,7 @@
 "use client";
 
 import { Text } from "@react-three/drei";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 
 import {
@@ -41,6 +41,8 @@ type PublicInternetCloudProps = {
   /** Optional override; defaults to the cloud silhouette. */
   shape?: string;
   label?: string;
+  /** Full opacity when 1; dimmed service blocks use 0.2 when a service is focused. */
+  opacity?: number;
 };
 
 /**
@@ -54,6 +56,7 @@ export function PublicInternetCloud({
   depth = PUBLIC_INTERNET_BASE_DEPTH * CELL_SIZE,
   shape = PUBLIC_INTERNET_SHAPE,
   label = "Public Internet",
+  opacity = 1,
 }: PublicInternetCloudProps) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
   const [borderGeometry, setBorderGeometry] =
@@ -126,6 +129,17 @@ export function PublicInternetCloud({
     };
   }, [borderMaterial]);
 
+  useLayoutEffect(() => {
+    if (!material) return;
+    const dimmed = opacity < 1;
+    material.transparent = dimmed;
+    material.opacity = opacity;
+    material.depthWrite = !dimmed;
+    borderMaterial.transparent = dimmed;
+    borderMaterial.opacity = opacity;
+    borderMaterial.depthWrite = !dimmed;
+  }, [material, borderMaterial, opacity]);
+
   const fitBox = useMemo(() => {
     const source = borderGeometry ?? geometry;
     if (!source) return null;
@@ -180,6 +194,7 @@ export function PublicInternetCloud({
         <Text
           fontSize={fontSize}
           color="#F8FAFC"
+          fillOpacity={opacity}
           anchorX="center"
           anchorY="middle"
           maxWidth={Math.max(width * 0.9, fontSize)}

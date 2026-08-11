@@ -87,10 +87,14 @@ export function clampServiceLabelLines(
  * Service name labels as troika Text, laid flat on the ground plane.
  * Width ≤ block + pad; hard-capped to 2 lines (each rendered `nowrap`).
  */
+const DIMMED_LABEL_OPACITY = 0.2;
+
 export function ServiceLabels({
   services,
+  relevantIds = null,
 }: {
   services: InfrastructureService[];
+  relevantIds?: Set<string> | null;
 }) {
   const poses = useMemo(() => {
     const out: LabelPose[] = [];
@@ -121,6 +125,11 @@ export function ServiceLabels({
               key={`${pose.id}:${index}`}
               fontSize={LABEL_FONT}
               color="#E2E8F0"
+              fillOpacity={
+                relevantIds == null || relevantIds.has(pose.id)
+                  ? 1
+                  : DIMMED_LABEL_OPACITY
+              }
               anchorX="center"
               anchorY="top"
               position={[0, -index * linePitch, 0]}

@@ -106,10 +106,92 @@ export const staticSchema = z.object({
   publicInternet: publicInternetSchema,
 });
 
-export const connectorSchema = z.object({
+export const connectorEndpointLabelSchema = z.string().nullable();
+
+export const connectorLabelsSchema = z.tuple([
+  connectorEndpointLabelSchema,
+  connectorEndpointLabelSchema,
+]);
+
+const legacyConnectorLabelSchema = z.tuple([z.string(), z.string()]);
+
+function legacyEndpointLabel(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") return value;
+  const parsed = legacyConnectorLabelSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const [kind, detail] = parsed.data;
+  if (kind === "domain") return detail;
+  return `${kind}: ${detail}`;
+}
+
+function migrateConnectorLabels(
+  nodes: [string, string],
+  from: unknown,
+  to: unknown,
+): [string | null, string | null] | undefined {
+  const fromLabel = legacyEndpointLabel(from);
+  const toLabel = legacyEndpointLabel(to);
+  if (!fromLabel && !toLabel) return undefined;
+
+  const involvesInternet = nodes[0] === "internet" || nodes[1] === "internet";
+  if (involvesInternet) {
+    const domain = fromLabel === toLabel ? fromLabel : (fromLabel ?? toLabel);
+    return [null, domain];
+  }
+
+  return [fromLabel, toLabel];
+}
+
+function normalizeInternetConnector<T extends {
+  nodes: [string, string];
+  labels?: [string | null, string | null];
+  path: [number, number, number][];
+}>(connector: T): T {
+  const involvesInternet =
+    connector.nodes[0] === "internet" || connector.nodes[1] === "internet";
+  if (!involvesInternet || connector.nodes[0] === "internet") {
+    return connector;
+  }
+
+  const serviceId = connector.nodes[0];
+  const domain =
+    connector.labels?.[1] ??
+    connector.labels?.[0] ??
+    null;
+
+  return {
+    ...connector,
+    nodes: ["internet", serviceId],
+    labels: domain != null ? [null, domain] : connector.labels,
+    path: [...connector.path].reverse(),
+  };
+}
+
+const connectorSchemaInput = z.object({
   nodes: z.tuple([z.string().min(1), z.string().min(1)]),
+  labels: connectorLabelsSchema.optional(),
+  from: legacyConnectorLabelSchema.nullable().optional(),
+  to: legacyConnectorLabelSchema.nullable().optional(),
   variant: z.enum(["default", "warning"]).optional(),
   path: z.array(posSchema).min(2),
+});
+
+export const connectorSchema = connectorSchemaInput.transform((connector) => {
+  const labels =
+    connector.labels ??
+    migrateConnectorLabels(connector.nodes, connector.from, connector.to);
+  const normalized = normalizeInternetConnector({
+    nodes: connector.nodes,
+    ...(labels ? { labels } : {}),
+    path: connector.path,
+  });
+  return {
+    nodes: normalized.nodes,
+    ...(normalized.labels ? { labels: normalized.labels } : {}),
+    ...(connector.variant === "warning" ? { variant: connector.variant } : {}),
+    path: normalized.path,
+  };
 });
 
 export const infrastructureDbSchema = z.object({
@@ -123,6 +205,8 @@ export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;
 export type Resource = z.infer<typeof resourceSchema>;
 export type Group = z.infer<typeof groupSchema>;
+export type ConnectorEndpointLabel = z.infer<typeof connectorEndpointLabelSchema>;
+export type ConnectorLabels = z.infer<typeof connectorLabelsSchema>;
 export type Connector = z.infer<typeof connectorSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
 

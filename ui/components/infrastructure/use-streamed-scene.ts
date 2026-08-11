@@ -13,6 +13,7 @@ import {
   quantizeFocus,
   streamServicesInWindow,
   windowAround,
+  withInternetHubForConnectors,
   type StreamFocus,
 } from "@/lib/graph/service-streaming";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
@@ -24,6 +25,7 @@ type UseStreamedSceneArgs = {
   publicInternet: PackLayoutResult["publicInternet"];
   connectorPaths: ConnectorPath[] | null;
   selectedServiceId: string | null;
+  internetHubService: InfrastructureService | null;
 };
 
 export function useStreamedScene({
@@ -33,6 +35,7 @@ export function useStreamedScene({
   publicInternet,
   connectorPaths,
   selectedServiceId,
+  internetHubService,
 }: UseStreamedSceneArgs) {
   const { camera } = useThree();
   const spatialIndex = useMemo(
@@ -67,12 +70,21 @@ export function useStreamedScene({
 
   const connectorServices = useMemo(
     () =>
-      expandWithLinkedServices(
-        visibleRenderServices,
-        services,
-        selectedServiceId,
+      withInternetHubForConnectors(
+        expandWithLinkedServices(
+          visibleRenderServices,
+          services,
+          selectedServiceId,
+          internetHubService,
+        ),
+        internetHubService,
       ),
-    [visibleRenderServices, services, selectedServiceId],
+    [
+      visibleRenderServices,
+      services,
+      selectedServiceId,
+      internetHubService,
+    ],
   );
 
   const visiblePlatforms = useMemo(

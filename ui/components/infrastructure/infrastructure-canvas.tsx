@@ -20,6 +20,10 @@ import {
   internetPickTarget,
   resolveCameraFrame,
 } from "@/components/infrastructure/infrastructure-scene";
+import {
+  ConnectorCallout,
+  type ConnectorFocus,
+} from "@/components/infrastructure/connector-callout";
 import { LookCrosshair } from "@/components/infrastructure/fly-controls";
 import { ServiceDetailSheet } from "@/components/infrastructure/service-detail-sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -73,9 +77,20 @@ export function InfrastructureCanvas({
     null,
   );
   const [lookLocked, setLookLocked] = useState(false);
+  const [pinnedConnector, setPinnedConnector] = useState<ConnectorFocus | null>(
+    null,
+  );
+  const [hoverConnector, setHoverConnector] = useState<ConnectorFocus | null>(
+    null,
+  );
+  const connectorFocus = hoverConnector ?? pinnedConnector;
+  const [sceneCamera, setSceneCamera] = useState<THREE.Camera | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("top");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(
+    null,
+  );
   const viewModeRef = useRef(viewMode);
   const servicesById = useMemo(
     () => new Map(services.map((service) => [service.id, service])),
@@ -95,6 +110,17 @@ export function InfrastructureCanvas({
   useEffect(() => {
     viewModeRef.current = viewMode;
   }, [viewMode]);
+
+  const handleSelectedServiceIdChange = useCallback((id: string | null) => {
+    setSelectedServiceId(id);
+    if (!id) return;
+    setPinnedConnector((prev) =>
+      prev && prev.sourceId !== id && prev.targetId !== id ? null : prev,
+    );
+    setHoverConnector((prev) =>
+      prev && prev.sourceId !== id && prev.targetId !== id ? null : prev,
+    );
+  }, []);
 
   const setViewModeFromUi = useCallback((next: ViewMode) => {
     if (next === "explore") {
@@ -133,6 +159,10 @@ export function InfrastructureCanvas({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [setViewModeFromUi]);
 
+  const handleCameraReady = useCallback((camera: THREE.Camera) => {
+    setSceneCamera(camera);
+  }, []);
+
   const helpText =
     viewMode === "top"
       ? "WASD move · drag to pan · scroll to zoom · Tab to explore"
@@ -145,8 +175,10 @@ export function InfrastructureCanvas({
       className="absolute inset-0 touch-none"
       style={{ background: SCENE.background }}
     >
-      <Canvas
-        dpr={[1, maxDpr]}
+      <div className="absolute inset-0">
+        <Canvas
+          className="block h-full w-full"
+          dpr={[1, maxDpr]}
         performance={{ min: 0.5 }}
         camera={{
           position: frame.position,
@@ -163,6 +195,7 @@ export function InfrastructureCanvas({
         }}
         onCreated={({ camera, gl }) => {
           canvasRef.current = gl.domElement;
+          setCanvasElement(gl.domElement);
           camera.up.set(0, 1, 0);
           camera.position.set(...frame.position);
           camera.quaternion.copy(TOP_DOWN_QUATERNION);
@@ -178,11 +211,28 @@ export function InfrastructureCanvas({
             connectorPaths={connectorPaths}
             viewMode={viewMode}
             selectedServiceId={selectedServiceId}
-            onSelectedServiceIdChange={setSelectedServiceId}
+            onSelectedServiceIdChange={handleSelectedServiceIdChange}
             onLookLockChange={setLookLocked}
+            connectorFocus={connectorFocus}
+            pinnedConnector={pinnedConnector}
+            hoverConnector={hoverConnector}
+            onPinnedConnectorChange={setPinnedConnector}
+            onHoverConnectorChange={setHoverConnector}
+            onCameraReady={handleCameraReady}
           />
         </Suspense>
-      </Canvas>
+        </Canvas>
+
+        {sceneCamera && canvasElement && connectorFocus ? (
+          <ConnectorCallout
+            focus={connectorFocus}
+            servicesById={servicesById}
+            hubService={hub}
+            camera={sceneCamera}
+            canvas={canvasElement}
+          />
+        ) : null}
+      </div>
 
       <div className="absolute top-4 left-1/2 z-20 -translate-x-1/2">
         <Tabs

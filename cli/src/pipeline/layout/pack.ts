@@ -736,49 +736,77 @@ export async function layoutServices(
     graphServices.map((service) => [service.id, service]),
   );
 
-  const connectorLabels = (sourceId: string, targetId: string) => {
+  const connectorLabels = (
+    sourceId: string,
+    targetId: string,
+  ): {
+    labels?: [string | null, string | null];
+    variant?: "default" | "warning";
+  } => {
+    const involvesInternet =
+      sourceId === INTERNET_ID || targetId === INTERNET_ID;
+
+    if (involvesInternet) {
+      const peerId = sourceId === INTERNET_ID ? targetId : sourceId;
+      const peer = serviceById.get(peerId);
+      if (!peer) return {};
+
+      const meta = peer.connectionMeta?.[INTERNET_ID];
+      if (meta?.labels) {
+        return {
+          labels: [meta.labels[0] ?? null, meta.labels[1] ?? null],
+          variant: meta.variant,
+        };
+      }
+
+      if (isOpenToInternet(peer.fields)) {
+        const label = domainConnectorLabel(networkingDomains(peer.fields));
+        if (label) {
+          return { labels: [null, label], variant: "default" };
+        }
+      }
+      return {};
+    }
+
     const forward = serviceById.get(sourceId)?.connectionMeta?.[targetId];
-    if (forward) {
+    if (forward?.labels) {
       return {
-        from: forward.from ?? null,
-        to: forward.to ?? null,
+        labels: [forward.labels[0] ?? null, forward.labels[1] ?? null],
         variant: forward.variant,
       };
     }
 
     const reverse = serviceById.get(targetId)?.connectionMeta?.[sourceId];
-    if (reverse) {
+    if (reverse?.labels) {
       return {
-        from: reverse.to ?? null,
-        to: reverse.from ?? null,
+        labels: [reverse.labels[1] ?? null, reverse.labels[0] ?? null],
         variant: reverse.variant,
       };
     }
 
-    const involvesInternet =
-      sourceId === INTERNET_ID || targetId === INTERNET_ID;
-    if (involvesInternet) {
-      const peerId = sourceId === INTERNET_ID ? targetId : sourceId;
-      const peer = serviceById.get(peerId);
-      if (peer && isOpenToInternet(peer.fields)) {
-        const label = domainConnectorLabel(networkingDomains(peer.fields));
-        if (label) {
-          return { from: label, to: label, variant: "default" as const };
-        }
-      }
-    }
-
-    return { from: null, to: null, variant: undefined };
+    return {};
   };
 
   const connectors: Connector[] = paths.map((path) => {
-    const labels = connectorLabels(path.sourceId, path.targetId);
+    let sourceId = path.sourceId;
+    let targetId = path.targetId;
+    let pathPoints = path.points;
+
+    const involvesInternet =
+      sourceId === INTERNET_ID || targetId === INTERNET_ID;
+    if (involvesInternet && sourceId !== INTERNET_ID) {
+      sourceId = INTERNET_ID;
+      targetId = path.sourceId;
+      pathPoints = [...path.points].reverse();
+    }
+
+    const { labels, variant } = connectorLabels(sourceId, targetId);
+
     return {
-      nodes: [path.sourceId, path.targetId],
-      from: labels.from,
-      to: labels.to,
-      ...(labels.variant === "warning" ? { variant: "warning" as const } : {}),
-      path: path.points.map((p): Pos => roundPos([p.x, p.y, CONNECTOR_Z])),
+      nodes: [sourceId, targetId],
+      ...(labels ? { labels: [...labels] } : {}),
+      ...(variant === "warning" ? { variant: "warning" as const } : {}),
+      path: pathPoints.map((p): Pos => roundPos([p.x, p.y, CONNECTOR_Z])),
     };
   });
 

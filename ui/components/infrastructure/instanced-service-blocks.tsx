@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import * as THREE from "three";
 
 import { loadGlbIconGeometry } from "@/components/infrastructure/glb-icon-geometry";
@@ -28,6 +35,15 @@ const glbIconMaterial = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
   toneMapped: false,
   depthWrite: true,
+});
+
+const glbIconMaterialDimmed = new THREE.MeshBasicMaterial({
+  vertexColors: true,
+  side: THREE.DoubleSide,
+  toneMapped: false,
+  transparent: true,
+  opacity: 0.2,
+  depthWrite: false,
 });
 
 type InstancePose = {
@@ -136,7 +152,13 @@ function useIconAssetMap(services: InfrastructureService[]) {
   return assets;
 }
 
-function InstancedIcons({ services }: { services: InfrastructureService[] }) {
+function InstancedIcons({
+  services,
+  relevantIds,
+}: {
+  services: InfrastructureService[];
+  relevantIds: Set<string> | null;
+}) {
   const assets = useIconAssetMap(services);
 
   const batches = useMemo(() => {
@@ -158,25 +180,57 @@ function InstancedIcons({ services }: { services: InfrastructureService[] }) {
     return [...map.entries()];
   }, [services, assets]);
 
-  return batches.map(([iconName, batch]) => {
-    const poses = batch.services.map((service) => {
-      const [x, , z] = serviceWorldCenter(service);
-      return {
-        x,
-        y: ICON_Y,
-        z,
-        scale: iconScale(service),
-      };
-    });
+  return batches.flatMap(([iconName, batch]) => {
+    const relevantServices =
+      relevantIds == null
+        ? batch.services
+        : batch.services.filter((service) => relevantIds.has(service.id));
+    const dimmedServices =
+      relevantIds == null
+        ? []
+        : batch.services.filter((service) => !relevantIds.has(service.id));
 
-    return (
-      <InstancedLayer
-        key={iconName}
-        geometry={batch.geometry}
-        material={glbIconMaterial}
-        poses={poses}
-      />
-    );
+    const layers: ReactNode[] = [];
+
+    if (relevantServices.length > 0) {
+      layers.push(
+        <InstancedLayer
+          key={`${iconName}:relevant`}
+          geometry={batch.geometry}
+          material={glbIconMaterial}
+          poses={relevantServices.map((service) => {
+            const [x, , z] = serviceWorldCenter(service);
+            return {
+              x,
+              y: ICON_Y,
+              z,
+              scale: iconScale(service),
+            };
+          })}
+        />,
+      );
+    }
+
+    if (dimmedServices.length > 0) {
+      layers.push(
+        <InstancedLayer
+          key={`${iconName}:dimmed`}
+          geometry={batch.geometry}
+          material={glbIconMaterialDimmed}
+          poses={dimmedServices.map((service) => {
+            const [x, , z] = serviceWorldCenter(service);
+            return {
+              x,
+              y: ICON_Y,
+              z,
+              scale: iconScale(service),
+            };
+          })}
+        />,
+      );
+    }
+
+    return layers;
   });
 }
 
@@ -186,13 +240,18 @@ function InstancedIcons({ services }: { services: InfrastructureService[] }) {
  */
 export function InstancedServiceBlocks({
   services,
+  relevantIds = null,
 }: {
   services: InfrastructureService[];
+  relevantIds?: Set<string> | null;
 }) {
   return (
     <group>
-      <InstancedIcons services={services} />
-      <ServiceLabels services={services} />
+      <InstancedIcons services={services} relevantIds={relevantIds} />
+      <ServiceLabels
+        services={services}
+        relevantIds={relevantIds}
+      />
     </group>
   );
 }

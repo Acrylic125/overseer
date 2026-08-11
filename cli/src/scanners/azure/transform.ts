@@ -190,27 +190,24 @@ export function linkEntraByEnvValues(
         const matchedClientId = envUuids(value).find(
           (uuid) => uuid === entra.applicationId.toLowerCase(),
         );
-        const label: [string, string] = matchedClientId
-          ? ["Application (client) ID", entra.applicationId]
-          : ["Object ID", entra.objectId];
+        const label = matchedClientId
+          ? `Application (client) ID: ${entra.applicationId}`
+          : `Object ID: ${entra.objectId}`;
 
         if (domains.length === 0) {
           addConnection(service, entra.id, {
             variant: "warning",
-            from: label,
-            to: ["redirect URI", "service has no domain"],
+            labels: [label, "service has no domain"],
           });
         } else if (!domainsMatchRedirects(domains, entra.redirectUris)) {
           addConnection(service, entra.id, {
             variant: "warning",
-            from: label,
-            to: ["redirect URI", "domain mismatch"],
+            labels: [label, "domain mismatch"],
           });
         } else {
           addConnection(service, entra.id, {
             variant: "default",
-            from: label,
-            to: label,
+            labels: [label, label],
           });
         }
       }

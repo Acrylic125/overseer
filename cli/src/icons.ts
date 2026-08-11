@@ -9,7 +9,7 @@ const CF_ICON_BY_KIND: Record<string, string> = {
   Worker: "cf-worker",
   KV: "cf-worker-kv",
   D1: "cf-d1",
-  R2: "r2",
+  R2: "cf-r2",
   Vectorize: "cf-vectorize",
 };
 

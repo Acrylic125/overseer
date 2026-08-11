@@ -101,14 +101,19 @@ export function omitDefaultSize(size?: Size | null): Size | undefined {
 /** Cluster path, or `null` for ungrouped hubs (e.g. public internet). */
 export const serviceGroupSchema = z.union([z.string().min(1), z.null()]);
 
-/** Connector endpoint label: `[kind, detail]` shown when that service is focused. */
-export const connectorLabelSchema = z.tuple([z.string(), z.string()]);
+/** Endpoint label on a connector — `null` for the public-internet side. */
+export const connectorEndpointLabelSchema = z.string().nullable();
+
+/** `[from label, to label]` aligned with connector `nodes` order. */
+export const connectorLabelsSchema = z.tuple([
+  connectorEndpointLabelSchema,
+  connectorEndpointLabelSchema,
+]);
 
 /** Scan-time graph metadata on a service (not written to infrastructure.json). */
 export const connectorMetaSchema = z.object({
   variant: z.enum(["default", "warning"]).default("default"),
-  from: connectorLabelSchema.nullable().optional(),
-  to: connectorLabelSchema.nullable().optional(),
+  labels: connectorLabelsSchema.optional(),
 });
 
 /** Scanned service before layout (internal pipeline only). */
@@ -152,8 +157,7 @@ export const staticSchema = z.object({
 
 export const connectorSchema = z.object({
   nodes: z.tuple([z.string().min(1), z.string().min(1)]),
-  from: connectorLabelSchema.nullable().optional(),
-  to: connectorLabelSchema.nullable().optional(),
+  labels: connectorLabelsSchema.optional(),
   variant: z.enum(["default", "warning"]).optional(),
   path: z.array(posSchema).min(2),
 });
@@ -165,7 +169,8 @@ export const infrastructureDbSchema = z.object({
   connectors: z.array(connectorSchema),
 });
 
-export type ConnectorLabel = z.infer<typeof connectorLabelSchema>;
+export type ConnectorEndpointLabel = z.infer<typeof connectorEndpointLabelSchema>;
+export type ConnectorLabels = z.infer<typeof connectorLabelsSchema>;
 export type ConnectorMeta = z.infer<typeof connectorMetaSchema>;
 export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
 export type ServiceFields = Record<string, CategoryFields>;

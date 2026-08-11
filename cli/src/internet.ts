@@ -71,12 +71,10 @@ function hostFromDomain(domain: string): string | null {
 }
 
 /** First public hostname label for connector text, or null. */
-export function domainConnectorLabel(
-  domains: string[],
-): [string, string] | null {
+export function domainConnectorLabel(domains: string[]): string | null {
   for (const domain of domains) {
     const host = hostFromDomain(domain);
-    if (host) return ["domain", host];
+    if (host) return host;
   }
   return null;
 }
@@ -125,8 +123,7 @@ export function linkInternetDomains(
 
     const meta: ConnectorMeta = {
       variant: "default",
-      from: label,
-      to: label,
+      labels: [null, label],
     };
     service.connectionMeta = {
       ...(service.connectionMeta ?? {}),
