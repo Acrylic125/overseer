@@ -1,4 +1,6 @@
-import type { ConnectorMeta, ScannedService, ServiceFields } from "./schema.js";
+import type { CategoryFields, ServiceFields } from "./schema.js";
+import { resolveFieldValue } from "./schema.js";
+import type { ConnectorMeta, ScannedService } from "./schema.js";
 import { parseEnvUrl } from "./utils.js";
 
 /** Stable id for the public-internet hub service. */
@@ -10,15 +12,25 @@ export const INTERNET_SHAPE = "cloud";
 export const INTERNET_SOURCE_TYPE = "internet";
 export const INTERNET_LABEL = "Public Internet";
 
-const OPEN_TO_INTERNET_KEY = "bool:Is Open To Internet";
+const OPEN_TO_INTERNET_KEY = "Is Open To Internet";
+const OPEN_TO_INTERNET_KEY_LEGACY = "bool:Is Open To Internet";
+
+function readOpenFlag(fields: CategoryFields | undefined): unknown {
+  if (!fields) return undefined;
+  return fields[OPEN_TO_INTERNET_KEY] ?? fields[OPEN_TO_INTERNET_KEY_LEGACY];
+}
 
 /** True when networking marks the resource as publicly reachable. */
 export function isOpenToInternet(
   fields: ServiceFields | null | undefined,
 ): boolean {
-  const value = fields?.networking?.[OPEN_TO_INTERNET_KEY];
+  const value = readOpenFlag(fields?.networking);
   if (typeof value === "boolean") return value;
   if (Array.isArray(value)) return value.some(Boolean);
+  const resolved = resolveFieldValue(value);
+  if (resolved && !Array.isArray(resolved) && resolved.type === "bool") {
+    return resolved.value;
+  }
   return false;
 }
 
@@ -46,7 +58,7 @@ export function createInternetService(options?: {
 
 /**
  * Ensure a single internet hub service exists.
- * Open reachability stays on `bool:Is Open To Internet` — layout/UI derive
+ * Open reachability stays on `Is Open To Internet` — layout/UI derive
  * connectors to the hub from that flag (do not store `"internet"` in connections).
  */
 export function ensureInternetHub(services: ScannedService[]): ScannedService[] {
@@ -79,27 +91,35 @@ export function domainConnectorLabel(domains: string[]): string | null {
   return null;
 }
 
+function stringFieldValues(raw: unknown): string[] {
+  const resolved = resolveFieldValue(raw);
+  if (!resolved) return [];
+  if (Array.isArray(resolved)) {
+    return resolved
+      .filter((item): item is { type: "string"; value: string } => item.type === "string")
+      .map((item) => item.value);
+  }
+  return resolved.type === "string" ? [resolved.value] : [];
+}
+
 function domainsFromNetworking(fields: ServiceFields): string[] {
   const networking = fields.networking;
   if (!networking) return [];
 
   const domains: string[] = [];
-  const raw = networking["link:Domains"];
-  if (Array.isArray(raw)) {
-    domains.push(...raw.filter((d): d is string => typeof d === "string"));
-  } else if (typeof raw === "string" && raw) {
-    domains.push(raw);
-  }
-
-  const entry = networking["link:Entry Domain"];
-  if (typeof entry === "string" && entry) {
-    domains.push(entry);
-  }
+  domains.push(
+    ...stringFieldValues(networking.Domains ?? networking["link:Domains"]),
+  );
+  domains.push(
+    ...stringFieldValues(
+      networking["Entry Domain"] ?? networking["link:Entry Domain"],
+    ),
+  );
 
   return domains;
 }
 
-/** Domains from networking fields (`link:Domains`, `link:Entry Domain`). */
+/** Domains from networking fields (`Domains`, `Entry Domain`). */
 export function networkingDomains(fields: ServiceFields): string[] {
   return domainsFromNetworking(fields);
 }

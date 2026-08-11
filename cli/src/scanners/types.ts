@@ -31,6 +31,29 @@ export type ScrapedCfWorker = ScrapedBase & {
   logUrl: string;
 };
 
+/** Durable Object namespace — same field surface as a Worker. */
+export type ScrapedCfDurableObject = ScrapedBase & {
+  kind: "cf-do";
+  domains: string[];
+  envs: ScrapedEnvVar[];
+  connections: string[];
+  logUrl: string;
+  /** Hosting Worker script name, when known. */
+  scriptName: string | null;
+  className: string | null;
+  namespaceId: string;
+};
+
+export type ScrapedCfWorkflow = ScrapedBase & {
+  kind: "cf-workflow";
+  connections: string[];
+  /** Step graph from the latest deployed version, when available. */
+  steps: {
+    vertices: string[];
+    edges: [string, string][];
+  } | null;
+};
+
 export type ScrapedCfKv = ScrapedBase & {
   kind: "cf-kv";
   namespaceId: string;
@@ -91,6 +114,8 @@ export type ScrapedAzureEntra = ScrapedBase & {
 /** Discriminated by `kind` — only the fields that service actually has. */
 export type ScrapedResource =
   | ScrapedCfWorker
+  | ScrapedCfDurableObject
+  | ScrapedCfWorkflow
   | ScrapedCfKv
   | ScrapedCfD1
   | ScrapedCfR2

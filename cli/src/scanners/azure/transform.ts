@@ -19,6 +19,7 @@ function hostFromDomain(domain: string): string | null {
 function resourceDomains(resource: ScrapedResource): string[] {
   switch (resource.kind) {
     case "cf-worker":
+    case "cf-do":
     case "cf-r2":
     case "vercel-project":
       return resource.domains;
@@ -30,6 +31,7 @@ function resourceDomains(resource: ScrapedResource): string[] {
 function resourceEnvs(resource: ScrapedResource) {
   switch (resource.kind) {
     case "cf-worker":
+    case "cf-do":
     case "vercel-project":
       return resource.envs;
     default:
@@ -107,7 +109,9 @@ function secretFields(secrets: ScrapedAzureEntraSecret[]): CategoryFields {
     usedKeys.set(base, count + 1);
     const key = count === 0 ? base : `${base} (${count + 1})`;
     const redacted = secret.hint ? `${secret.hint}******` : "******";
-    const expiry = secret.expiresAt ? secret.expiresAt.slice(0, 10) : "unknown";
+    const expiry = secret.expiresAt
+      ? ({ type: "date", value: secret.expiresAt } as const)
+      : "unknown";
     fields[key] = [redacted, expiry];
   }
 

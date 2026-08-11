@@ -1,9 +1,16 @@
 import { iconServiceForCfKind } from "../../icons.js";
-import type { CategoryFields, ScannedService, ServiceFields } from "../../schema.js";
+import type {
+  CategoryFields,
+  FieldGraphValue,
+  ScannedService,
+  ServiceFields,
+} from "../../schema.js";
 import { redactSensitiveValue } from "../../utils.js";
 import type {
+  ScrapedCfDurableObject,
   ScrapedCfR2,
   ScrapedCfWorker,
+  ScrapedCfWorkflow,
   ScrapedEnvVar,
   ScrapeContext,
 } from "../types.js";
@@ -24,7 +31,11 @@ function envFields(envs: ScrapedEnvVar[]): ServiceFields {
   for (const env of envs) {
     const targets =
       env.target && env.target.length > 0
-        ? [...new Set(env.target.map((t) => t.trim().toLowerCase()).filter(Boolean))]
+        ? [
+            ...new Set(
+              env.target.map((t) => t.trim().toLowerCase()).filter(Boolean),
+            ),
+          ]
         : ["shared"];
 
     for (const target of targets) {
@@ -43,23 +54,52 @@ function envFields(envs: ScrapedEnvVar[]): ServiceFields {
   return Object.fromEntries(buckets);
 }
 
-function workerService(resource: ScrapedCfWorker): ScannedService {
+function workerLikeService(
+  resource: ScrapedCfWorker | ScrapedCfDurableObject,
+  kind: "Worker" | "Durable Object",
+): ScannedService {
   return {
     id: resource.id,
     group: resource.group,
     name: resource.name,
     sourceType: "cf",
-    service: iconServiceForCfKind("Worker"),
+    service: iconServiceForCfKind(kind),
     connections: [...resource.connections],
     fields: {
       networking: {
-        "bool:Is Open To Internet": resource.domains.length > 0,
-        "link:Domains": resource.domains,
+        "Is Open To Internet": resource.domains.length > 0,
+        Domains: resource.domains,
       },
       observability: {
-        "link:View Logs": resource.logUrl,
+        "View Logs": resource.logUrl,
       },
     },
+  };
+}
+
+function workflowService(resource: ScrapedCfWorkflow): ScannedService {
+  const steps: FieldGraphValue | null = resource.steps
+    ? {
+        type: "graph",
+        vertices: resource.steps.vertices,
+        edges: resource.steps.edges,
+      }
+    : null;
+
+  return {
+    id: resource.id,
+    group: resource.group,
+    name: resource.name,
+    sourceType: "cf",
+    service: iconServiceForCfKind("Workflow"),
+    connections: [...resource.connections],
+    fields: steps
+      ? {
+          Workflow: {
+            Steps: steps,
+          },
+        }
+      : {},
   };
 }
 
@@ -73,9 +113,9 @@ function r2Service(resource: ScrapedCfR2): ScannedService {
     connections: [],
     fields: {
       networking: {
-        "bool:Is Open To Internet": resource.openToInternet,
-        "link:Domains": resource.domains,
-        "link:S3 API URL": [resource.s3ApiUrl],
+        "Is Open To Internet": resource.openToInternet,
+        Domains: resource.domains,
+        "S3 API URL": [resource.s3ApiUrl],
         ...(resource.cors.length > 0 ? { CORS: resource.cors } : {}),
       },
     },
@@ -85,7 +125,7 @@ function r2Service(resource: ScrapedCfR2): ScannedService {
 function openNetworking(): ServiceFields {
   return {
     networking: {
-      "bool:Is Open To Internet": true,
+      "Is Open To Internet": true,
     },
   };
 }
@@ -96,7 +136,13 @@ export function transformCf(ctx: ScrapeContext): ScannedService[] {
   for (const resource of ctx.resources) {
     switch (resource.kind) {
       case "cf-worker":
-        services.push(workerService(resource));
+        services.push(workerLikeService(resource, "Worker"));
+        break;
+      case "cf-do":
+        services.push(workerLikeService(resource, "Durable Object"));
+        break;
+      case "cf-workflow":
+        services.push(workflowService(resource));
         break;
       case "cf-r2":
         services.push(r2Service(resource));
@@ -146,7 +192,7 @@ export function transformCf(ctx: ScrapeContext): ScannedService[] {
 /** Redact and attach env fields after env-value linking. */
 export function applyCfEnvFields(
   services: ScannedService[],
-  resources: ScrapedCfWorker[],
+  resources: Array<ScrapedCfWorker | ScrapedCfDurableObject>,
 ): void {
   const byId = new Map(services.map((service) => [service.id, service]));
   for (const resource of resources) {

@@ -727,7 +727,7 @@ export async function layoutServices(
     boxes,
     graphServices.map((service) => ({
       id: service.id,
-      // Internet edges come from `bool:Is Open To Internet`, not stored connections.
+      // Internet edges come from `Is Open To Internet`, not stored connections.
       connections: connectionsForLayout(service),
     })),
   );

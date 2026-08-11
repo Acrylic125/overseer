@@ -22,6 +22,7 @@ import {
 } from "../scanners/cf/transform.js";
 import { CloudflareScanner } from "../scanners/cf/scrape.js";
 import type {
+  ScrapedCfDurableObject,
   ScrapedCfWorker,
   ScrapedResource,
   ScrapedVercelProject,
@@ -92,6 +93,7 @@ function hostFromDomain(domain: string): string | null {
 function resourceDomains(resource: ScrapedResource): string[] {
   switch (resource.kind) {
     case "cf-worker":
+    case "cf-do":
     case "cf-r2":
     case "vercel-project":
       return resource.domains;
@@ -103,6 +105,7 @@ function resourceDomains(resource: ScrapedResource): string[] {
 function resourceEnvs(resource: ScrapedResource) {
   switch (resource.kind) {
     case "cf-worker":
+    case "cf-do":
     case "vercel-project":
       return resource.envs;
     default:
@@ -305,14 +308,17 @@ export async function runServiceScan(): Promise<ScanOutcome> {
   linkEntraByEnvValues(services, resources);
   linkInternetDomains(services, domainsByServiceId(resources));
 
-  const cfWorkers = resources.filter(
-    (resource): resource is ScrapedCfWorker => resource.kind === "cf-worker",
+  const cfWithEnvs = resources.filter(
+    (
+      resource,
+    ): resource is ScrapedCfWorker | ScrapedCfDurableObject =>
+      resource.kind === "cf-worker" || resource.kind === "cf-do",
   );
   const vercelProjects = resources.filter(
     (resource): resource is ScrapedVercelProject =>
       resource.kind === "vercel-project",
   );
-  applyCfEnvFields(services, cfWorkers);
+  applyCfEnvFields(services, cfWithEnvs);
   applyVercelEnvFields(services, vercelProjects);
 
   return {

@@ -6,11 +6,13 @@ import type { ScannedService } from "../../schema.js";
 import { transformCf } from "./transform.js";
 import type {
   ScrapedCfD1,
+  ScrapedCfDurableObject,
   ScrapedCfKv,
   ScrapedCfQueue,
   ScrapedCfR2,
   ScrapedCfVectorize,
   ScrapedCfWorker,
+  ScrapedCfWorkflow,
   ScrapedEnvVar,
   ScrapedResource,
   ScrapeContext,
@@ -34,6 +36,7 @@ import {
   settled,
   withTimeout,
 } from "./client.js";
+import { workflowNodesToGraph } from "./workflow-graph.js";
 
 function formatCorsEntries(
   rules: Array<{
@@ -58,6 +61,22 @@ function workerViewLogUrl(accountId: string, name: string) {
   return `https://dash.cloudflare.com/${accountId}/workers/services/view/${encodeURIComponent(name)}/production/observability/events`;
 }
 
+function durableObjectLogUrl(accountId: string, namespaceId: string) {
+  return `https://dash.cloudflare.com/${accountId}/workers/durable-objects/${encodeURIComponent(namespaceId)}`;
+}
+
+type BindingIndexes = {
+  byKvId: Map<string, string>;
+  byD1Id: Map<string, string>;
+  byR2Name: Map<string, string>;
+  byVectorizeName: Map<string, string>;
+  byQueueName: Map<string, string>;
+  byWorkerName: Map<string, string>;
+  byDoId: Map<string, string>;
+  byDoClassScript: Map<string, string>;
+  byWorkflowName: Map<string, string>;
+};
+
 function r2S3ApiUrl(accountId: string, bucketName: string) {
   return `https://${accountId}.r2.cloudflarestorage.com/${bucketName}`;
 }
@@ -73,14 +92,8 @@ function serviceId(
 
 function resolveBindingTarget(
   binding: { type: string } & Record<string, unknown>,
-  indexes: {
-    byKvId: Map<string, string>;
-    byD1Id: Map<string, string>;
-    byR2Name: Map<string, string>;
-    byVectorizeName: Map<string, string>;
-    byQueueName: Map<string, string>;
-    byWorkerName: Map<string, string>;
-  },
+  indexes: BindingIndexes,
+  sourceWorkerName?: string,
 ): string | null {
   switch (binding.type) {
     case "kv_namespace": {
@@ -116,6 +129,26 @@ function resolveBindingTarget(
       const name = binding.service;
       return typeof name === "string"
         ? (indexes.byWorkerName.get(name) ?? null)
+        : null;
+    }
+    case "durable_object_namespace": {
+      const id = binding.namespace_id;
+      if (typeof id === "string") {
+        return indexes.byDoId.get(id) ?? null;
+      }
+      const className = binding.class_name;
+      if (typeof className !== "string") return null;
+      const script =
+        (typeof binding.script_name === "string" && binding.script_name) ||
+        sourceWorkerName ||
+        null;
+      if (!script) return null;
+      return indexes.byDoClassScript.get(`${script}:${className}`) ?? null;
+    }
+    case "workflow": {
+      const name = binding.workflow_name;
+      return typeof name === "string"
+        ? (indexes.byWorkflowName.get(name) ?? null)
         : null;
     }
     default:
@@ -247,6 +280,8 @@ async function fetchAccountInfrastructure(
 
   const [
     workerList,
+    durableObjectsResult,
+    workflowsResult,
     kvResult,
     d1Result,
     r2Result,
@@ -256,6 +291,25 @@ async function fetchAccountInfrastructure(
     workersDevResult,
   ] = await Promise.all([
     timedServiceScan("Workers", () => listWorkerNames(client, accountId)),
+    timedServiceScan("Durable Objects", () =>
+      timedList(
+        "durableObjects.namespaces.list",
+        () =>
+          collectPages(
+            client.durableObjects.namespaces.list(account),
+            "durableObjects.namespaces.list",
+          ),
+        [],
+      ),
+    ),
+    timedServiceScan("Workflows", () =>
+      timedList(
+        "workflows.list",
+        () =>
+          collectPages(client.workflows.list(account), "workflows.list"),
+        [],
+      ),
+    ),
     timedServiceScan("KV", () =>
       timedList(
         "kv.namespaces.list",
@@ -328,6 +382,8 @@ async function fetchAccountInfrastructure(
 
   warnings.push(...workerList.warnings);
   for (const result of [
+    durableObjectsResult,
+    workflowsResult,
     kvResult,
     d1Result,
     r2Result,
@@ -341,6 +397,8 @@ async function fetchAccountInfrastructure(
 
   const listErrors = [
     ...workerList.warnings,
+    durableObjectsResult.error,
+    workflowsResult.error,
     kvResult.error,
     d1Result.error,
     r2Result.error,
@@ -383,10 +441,14 @@ async function fetchAccountInfrastructure(
   const r2Response = r2Result.value;
   const vectorizeIndexes = vectorizeResult.value;
   const queues = queuesResult.value;
+  const durableObjectNamespaces = durableObjectsResult.value;
+  const workflows = workflowsResult.value;
 
   log("resource counts", {
     namespace: ns,
     workers: workerList.names.length,
+    durableObjects: durableObjectNamespaces.length,
+    workflows: workflows.length,
     kv: kvNamespaces.length,
     d1: d1Databases.length,
     r2: r2Response.buckets?.length ?? 0,
@@ -396,13 +458,16 @@ async function fetchAccountInfrastructure(
   });
 
   const resources: ScrapedResource[] = [];
-  const indexes = {
+  const indexes: BindingIndexes = {
     byKvId: new Map<string, string>(),
     byD1Id: new Map<string, string>(),
     byR2Name: new Map<string, string>(),
     byVectorizeName: new Map<string, string>(),
     byQueueName: new Map<string, string>(),
     byWorkerName: new Map<string, string>(),
+    byDoId: new Map<string, string>(),
+    byDoClassScript: new Map<string, string>(),
+    byWorkflowName: new Map<string, string>(),
   };
 
   function trackResource(resource: ScrapedResource) {
@@ -410,6 +475,18 @@ async function fetchAccountInfrastructure(
     switch (resource.kind) {
       case "cf-worker":
         indexes.byWorkerName.set(resource.name, resource.id);
+        break;
+      case "cf-do":
+        indexes.byDoId.set(resource.namespaceId, resource.id);
+        if (resource.scriptName && resource.className) {
+          indexes.byDoClassScript.set(
+            `${resource.scriptName}:${resource.className}`,
+            resource.id,
+          );
+        }
+        break;
+      case "cf-workflow":
+        indexes.byWorkflowName.set(resource.name, resource.id);
         break;
       case "cf-kv":
         indexes.byKvId.set(resource.namespaceId, resource.id);
@@ -450,6 +527,44 @@ async function fetchAccountInfrastructure(
       logUrl: workerViewLogUrl(accountId, name),
     };
     trackResource(worker);
+  }
+
+  for (const nsDo of durableObjectNamespaces) {
+    if (!nsDo.id) continue;
+    const name = nsDo.name || nsDo.class || nsDo.id;
+    const scriptName = nsDo.script ?? null;
+    const className = nsDo.class ?? null;
+    const scriptWorkerId = scriptName
+      ? (indexes.byWorkerName.get(scriptName) ?? null)
+      : null;
+    const resource: ScrapedCfDurableObject = {
+      kind: "cf-do",
+      id: serviceId(ns, accountId, "do", nsDo.id),
+      name,
+      group: ns,
+      domains: [],
+      envs: [],
+      connections: scriptWorkerId ? [scriptWorkerId] : [],
+      logUrl: durableObjectLogUrl(accountId, nsDo.id),
+      scriptName,
+      className,
+      namespaceId: nsDo.id,
+    };
+    trackResource(resource);
+  }
+
+  for (const workflow of workflows) {
+    if (!workflow.name || !workflow.id) continue;
+    const scriptWorkerId = indexes.byWorkerName.get(workflow.script_name) ?? null;
+    const resource: ScrapedCfWorkflow = {
+      kind: "cf-workflow",
+      id: serviceId(ns, accountId, "workflow", workflow.id),
+      name: workflow.name,
+      group: ns,
+      connections: scriptWorkerId ? [scriptWorkerId] : [],
+      steps: null,
+    };
+    trackResource(resource);
   }
 
   for (const kv of kvNamespaces) {
@@ -594,6 +709,86 @@ async function fetchAccountInfrastructure(
     cli.step(`Resolving R2 networking (${elapsed(r2NetStart)})`);
   }
 
+  const workflowResources = resources.filter(
+    (resource): resource is ScrapedCfWorkflow => resource.kind === "cf-workflow",
+  );
+  if (workflowResources.length > 0) {
+    const stepsStart = Date.now();
+    log("fetching workflow steps", {
+      workflows: workflowResources.length,
+      concurrency: BINDING_CONCURRENCY,
+    });
+    await mapPool(workflowResources, BINDING_CONCURRENCY, async (workflow) => {
+      const start = Date.now();
+      const versionsResult = await settled(
+        withTimeout(
+          collectPages(
+            client.workflows.versions.list(workflow.name, {
+              account_id: accountId,
+            }),
+            `workflows.versions:${workflow.name}`,
+          ),
+          BINDING_TIMEOUT_MS,
+          `workflows.versions:${workflow.name}`,
+        ),
+        [],
+        `workflows.versions:${workflow.name}`,
+      );
+
+      // Prefer newest version (API order is not guaranteed).
+      const latest = [...versionsResult.value].sort((a, b) => {
+        const aTime = Date.parse(a.modified_on || a.created_on) || 0;
+        const bTime = Date.parse(b.modified_on || b.created_on) || 0;
+        return bTime - aTime;
+      })[0];
+      if (!latest?.id) {
+        log("workflow versions empty", {
+          workflow: workflow.name,
+          duration: elapsed(start),
+          error: versionsResult.error,
+        });
+        return;
+      }
+
+      const graphResult = await settled(
+        withTimeout(
+          client.workflows.versions.graph(latest.id, {
+            account_id: accountId,
+            workflow_name: workflow.name,
+          }),
+          BINDING_TIMEOUT_MS,
+          `workflows.graph:${workflow.name}`,
+        ),
+        null,
+        `workflows.graph:${workflow.name}`,
+      );
+
+      const nodes = graphResult.value?.graph?.workflow?.nodes;
+      if (!nodes || nodes.length === 0) {
+        log("workflow graph empty", {
+          workflow: workflow.name,
+          versionId: latest.id,
+          duration: elapsed(start),
+          error: graphResult.error,
+        });
+        return;
+      }
+
+      const graph = workflowNodesToGraph(nodes);
+      workflow.steps = {
+        vertices: graph.vertices,
+        edges: graph.edges,
+      };
+      log("workflow steps resolved", {
+        workflow: workflow.name,
+        vertices: graph.vertices.length,
+        edges: graph.edges.length,
+        duration: elapsed(start),
+      });
+    });
+    cli.step(`Resolving workflow steps (${elapsed(stepsStart)})`);
+  }
+
   const workerResources = resources.filter(
     (resource): resource is ScrapedCfWorker => resource.kind === "cf-worker",
   );
@@ -643,7 +838,7 @@ async function fetchAccountInfrastructure(
       const env = extractEnvFromBinding(record);
       if (env) envs.push(env);
 
-      const target = resolveBindingTarget(record, indexes);
+      const target = resolveBindingTarget(record, indexes, worker.name);
       if (target && target !== worker.id) targets.add(target);
     }
     worker.envs = envs;

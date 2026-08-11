@@ -19,6 +19,8 @@ export const UNKNOWN_SERVICE = "all-unknown";
 export const SERVICE_TYPES: Record<string, ServiceTypeMeta> = {
   "all-unknown": { icon: UNKNOWN_SERVICE, type: "compute" },
   "cf-worker": { icon: "cf-worker", type: "compute" },
+  "cf-do": { icon: "cf-do", type: "compute" },
+  "cf-workflow": { icon: "cf-workflow", type: "compute" },
   "cf-worker-kv": { icon: "cf-worker-kv", type: "database" },
   "cf-d1": { icon: "cf-d1", type: "database" },
   "cf-vectorize": { icon: "cf-vectorize", type: "database" },

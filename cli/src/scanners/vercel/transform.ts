@@ -52,8 +52,8 @@ function projectService(resource: ScrapedVercelProject): ScannedService {
     connections: [],
     fields: {
       networking: {
-        "bool:Is Open To Internet": resource.domains.length > 0,
-        "link:Domains": resource.domains,
+        "Is Open To Internet": resource.domains.length > 0,
+        Domains: resource.domains,
       },
     },
   };

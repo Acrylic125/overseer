@@ -62,7 +62,7 @@ export async function runInit(): Promise<void> {
         {
           name: "Cloudflare",
           value: "cf" as const,
-          description: "Workers, KV, D1, R2, Queues, Vectorize",
+          description: "Workers, Durable Objects, Workflows, KV, D1, R2, Queues, Vectorize",
         },
         {
           name: "Vercel",
@@ -102,7 +102,7 @@ export async function runInit(): Promise<void> {
       console.log("\nCreate a READONLY Cloudflare API token at:");
       console.log(`  ${CF_TOKEN_URL}`);
       console.log('\nUse "Read all resources", or custom Account Read for');
-      console.log("Workers, KV, D1, R2, Queues, and Vectorize.");
+      console.log("Workers, Durable Objects, Workflows, KV, D1, R2, Queues, and Vectorize.");
       console.log(`\nStored as ${key}\n`);
 
       const token = await input({

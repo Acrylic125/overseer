@@ -1,69 +1,158 @@
 import { z } from "zod";
 
-export const fieldTypes = ["link", "bool"] as const;
-export type FieldType = (typeof fieldTypes)[number] | "text";
+/** Supported field value types (implicit from JS value, or explicit via `{ type }`). */
+export const fieldTypes = ["string", "bool", "date", "graph"] as const;
+export type FieldType = (typeof fieldTypes)[number];
 
-const fieldTypeSet = new Set<string>(fieldTypes);
+/** Column span within the 2-col field grid (label | value). */
+export const FIELD_TYPE_SPAN: Record<FieldType, 1 | 2> = {
+  string: 1,
+  bool: 1,
+  date: 1,
+  graph: 2,
+};
 
-/** Parse `"type:Name"` keys; bare keys are plain text. */
-export function parseFieldKey(key: string): { type: FieldType; name: string } {
-  const separator = key.indexOf(":");
-  if (separator > 0) {
-    const prefix = key.slice(0, separator);
-    if (fieldTypeSet.has(prefix)) {
-      return {
-        type: prefix as (typeof fieldTypes)[number],
-        name: key.slice(separator + 1),
-      };
-    }
-  }
-  return { type: "text", name: key };
-}
+export type FieldGraphEdge = [string, string];
 
-function isStringValue(value: unknown): value is string | string[] {
-  return (
-    typeof value === "string" ||
-    (Array.isArray(value) && value.every((item) => typeof item === "string"))
-  );
-}
+export type FieldGraphValue = {
+  type: "graph";
+  vertices: string[];
+  edges: FieldGraphEdge[];
+};
 
-function isBoolValue(value: unknown): value is boolean | boolean[] {
-  return (
-    typeof value === "boolean" ||
-    (Array.isArray(value) && value.every((item) => typeof item === "boolean"))
-  );
-}
+export type FieldDateValue = {
+  type: "date";
+  value: string;
+};
 
-const fieldValueSchema = z.union([
-  z.string(),
-  z.boolean(),
-  z.array(z.string()),
-  z.array(z.boolean()),
+export type FieldStringValue = {
+  type: "string";
+  value: string;
+};
+
+export type FieldBoolValue = {
+  type: "bool";
+  value: boolean;
+};
+
+/** One resolved scalar after implicit/explicit typing. */
+export type ResolvedField =
+  | { type: "string"; value: string }
+  | { type: "bool"; value: boolean }
+  | { type: "date"; value: string }
+  | { type: "graph"; vertices: string[]; edges: FieldGraphEdge[] };
+
+const fieldGraphSchema = z.object({
+  type: z.literal("graph"),
+  vertices: z.array(z.string()),
+  edges: z.array(z.tuple([z.string(), z.string()])),
+});
+
+const fieldDateSchema = z.object({
+  type: z.literal("date"),
+  value: z.string(),
+});
+
+const fieldStringSchema = z.object({
+  type: z.literal("string"),
+  value: z.string(),
+});
+
+const fieldBoolSchema = z.object({
+  type: z.literal("bool"),
+  value: z.boolean(),
+});
+
+const explicitFieldSchema = z.discriminatedUnion("type", [
+  fieldGraphSchema,
+  fieldDateSchema,
+  fieldStringSchema,
+  fieldBoolSchema,
 ]);
 
-/** One category of typed fields: `{ "bool:Name": true, "link:Name": "…", label: "…" }`. */
-export const categoryFieldsSchema = z
-  .record(z.string(), fieldValueSchema)
-  .superRefine((fields, ctx) => {
-    for (const [key, value] of Object.entries(fields)) {
-      const { type } = parseFieldKey(key);
-      if (type === "bool") {
-        if (!isBoolValue(value)) {
-          ctx.addIssue({
-            code: "custom",
-            message: `Field "${key}" must be a boolean or boolean[]`,
-            path: [key],
-          });
-        }
-      } else if (!isStringValue(value)) {
-        ctx.addIssue({
-          code: "custom",
-          message: `Field "${key}" must be a string or string[]`,
-          path: [key],
-        });
-      }
+/** Wire value: primitives (implicit), arrays (implicit items), or `{ type }` objects. */
+export const fieldValueSchema = z.union([
+  z.string(),
+  z.boolean(),
+  z.array(z.union([z.string(), z.boolean(), explicitFieldSchema])),
+  explicitFieldSchema,
+]);
+
+export type FieldValue = z.infer<typeof fieldValueSchema>;
+
+function resolveScalar(value: unknown): ResolvedField | null {
+  if (typeof value === "boolean") {
+    return { type: "bool", value };
+  }
+  if (typeof value === "string") {
+    return { type: "string", value };
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.type === "graph") {
+      const parsed = fieldGraphSchema.safeParse(value);
+      return parsed.success
+        ? {
+            type: "graph",
+            vertices: parsed.data.vertices,
+            edges: parsed.data.edges,
+          }
+        : null;
     }
-  });
+    if (record.type === "date") {
+      const parsed = fieldDateSchema.safeParse(value);
+      return parsed.success
+        ? { type: "date", value: parsed.data.value }
+        : null;
+    }
+    if (record.type === "string") {
+      const parsed = fieldStringSchema.safeParse(value);
+      return parsed.success
+        ? { type: "string", value: parsed.data.value }
+        : null;
+    }
+    if (record.type === "bool") {
+      const parsed = fieldBoolSchema.safeParse(value);
+      return parsed.success
+        ? { type: "bool", value: parsed.data.value }
+        : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve a category field value to typed scalar(s).
+ * Arrays stay implicit wrappers — each item is resolved independently.
+ */
+export function resolveFieldValue(
+  value: unknown,
+): ResolvedField | ResolvedField[] | null {
+  if (Array.isArray(value)) {
+    const items: ResolvedField[] = [];
+    for (const item of value) {
+      const resolved = resolveScalar(item);
+      if (resolved) items.push(resolved);
+    }
+    return items;
+  }
+  return resolveScalar(value);
+}
+
+/** Span for a resolved value: multi-item arrays force span 2 per item. */
+export function fieldSpan(resolved: ResolvedField | ResolvedField[]): 1 | 2 {
+  if (Array.isArray(resolved)) {
+    if (resolved.length <= 1) {
+      const only = resolved[0];
+      return only ? FIELD_TYPE_SPAN[only.type] : 1;
+    }
+    return 2;
+  }
+  return FIELD_TYPE_SPAN[resolved.type];
+}
+
+/** One category of fields: bare names → values (type implied or explicit). */
+export const categoryFieldsSchema = z.record(z.string(), fieldValueSchema);
 
 /** World / layout position: `[x, y, z]`. */
 export const posSchema = z.tuple([z.number(), z.number(), z.number()]);
@@ -143,11 +232,13 @@ function migrateConnectorLabels(
   return [fromLabel, toLabel];
 }
 
-function normalizeInternetConnector<T extends {
-  nodes: [string, string];
-  labels?: [string | null, string | null];
-  path: [number, number, number][];
-}>(connector: T): T {
+function normalizeInternetConnector<
+  T extends {
+    nodes: [string, string];
+    labels?: [string | null, string | null];
+    path: [number, number, number][];
+  },
+>(connector: T): T {
   const involvesInternet =
     connector.nodes[0] === "internet" || connector.nodes[1] === "internet";
   if (!involvesInternet || connector.nodes[0] === "internet") {
@@ -155,10 +246,7 @@ function normalizeInternetConnector<T extends {
   }
 
   const serviceId = connector.nodes[0];
-  const domain =
-    connector.labels?.[1] ??
-    connector.labels?.[0] ??
-    null;
+  const domain = connector.labels?.[1] ?? connector.labels?.[0] ?? null;
 
   return {
     ...connector,
@@ -210,14 +298,26 @@ export type ConnectorLabels = z.infer<typeof connectorLabelsSchema>;
 export type Connector = z.infer<typeof connectorSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
 
-const OPEN_TO_INTERNET_KEY = "bool:Is Open To Internet";
+const OPEN_TO_INTERNET_KEY = "Is Open To Internet";
+const OPEN_TO_INTERNET_KEY_LEGACY = "bool:Is Open To Internet";
 
-/** True when `fields.networking["bool:Is Open To Internet"]` is set. */
+function readOpenToInternetFlag(fields: CategoryFields | undefined): unknown {
+  if (!fields) return undefined;
+  return fields[OPEN_TO_INTERNET_KEY] ?? fields[OPEN_TO_INTERNET_KEY_LEGACY];
+}
+
+/** True when `fields.networking["Is Open To Internet"]` is set. */
 export function isOpenToInternet(
   fields: ServiceFields | null | undefined,
 ): boolean {
-  const value = fields?.networking?.[OPEN_TO_INTERNET_KEY];
+  const value = readOpenToInternetFlag(fields?.networking);
   if (typeof value === "boolean") return value;
   if (Array.isArray(value)) return value.some(Boolean);
+  if (value && typeof value === "object" && "type" in value) {
+    const resolved = resolveFieldValue(value);
+    if (resolved && !Array.isArray(resolved) && resolved.type === "bool") {
+      return resolved.value;
+    }
+  }
   return false;
 }

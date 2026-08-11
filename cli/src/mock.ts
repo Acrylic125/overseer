@@ -219,11 +219,11 @@ function buildService(
         service: iconServiceForCfKind("Worker"),
         fields: {
           networking: {
-            "bool:Is Open To Internet": true,
-            "link:Domains": [`${base.name}.example.workers.dev`],
+            "Is Open To Internet": true,
+            Domains: [`${base.name}.example.workers.dev`],
           },
           observability: {
-            "link:View Logs": `https://dash.cloudflare.com/mock/workers/services/view/${encodeURIComponent(base.name)}/production/observability/events`,
+            "View Logs": `https://dash.cloudflare.com/mock/workers/services/view/${encodeURIComponent(base.name)}/production/observability/events`,
           },
         },
       };
@@ -233,9 +233,9 @@ function buildService(
         service: iconServiceForCfKind("R2"),
         fields: {
           networking: {
-            "bool:Is Open To Internet": false,
-            "link:S3 API URL": `https://mock.r2.cloudflarestorage.com/${base.name}`,
-            cors: ["GET https://example.com", "PUT https://example.com"],
+            "Is Open To Internet": false,
+            "S3 API URL": `https://mock.r2.cloudflarestorage.com/${base.name}`,
+            CORS: ["GET https://example.com", "PUT https://example.com"],
           },
         },
       };
@@ -248,7 +248,7 @@ function buildService(
         service: iconServiceForCfKind(kind),
         fields: {
           networking: {
-            "bool:Is Open To Internet": false,
+            "Is Open To Internet": false,
           },
         },
       };
@@ -326,7 +326,7 @@ export function createMockServices(seed = 42): ScannedService[] {
         ...service.fields,
         networking: {
           ...(service.fields.networking ?? {}),
-          "bool:Is Open To Internet": false,
+          "Is Open To Internet": false,
         },
       },
     };
