@@ -1,0 +1,33 @@
+{
+  "name": "@acrylic125/overseer-sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Overseer scan pipeline SDK",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "pnpm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@vercel/sdk": "^1.28.17",
+    "cloudflare": "^7.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@microsoft/microsoft-graph-types": "^2.40.0",
+    "typescript": "^5.9.3"
+  }
+}

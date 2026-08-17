@@ -1,8 +1,15 @@
+import { readFile } from "node:fs/promises";
+
+import { layout } from "@acrylic125/overseer-sdk";
+
 import { createMockServices } from "../mock.js";
-import { runLayout } from "../pipeline/layout/index.js";
 import { writeInfrastructureDb } from "../pipeline/output.js";
 import { elapsed, log } from "../cli/log.js";
-import { resolveOutDir } from "../paths.js";
+import {
+  ARTIFACT_ASSETS_GLB,
+  artifactPath,
+  resolveOutDir,
+} from "../paths.js";
 
 export type MockOptions = {
   outDir?: string;
@@ -19,13 +26,19 @@ export async function runMock(options: MockOptions = {}): Promise<void> {
     log.section("Mock services");
     log.step("Generating");
     const start = Date.now();
-    const services = createMockServices();
-    log.step(`${services.length} services (${elapsed(start)})`);
+    const { resources, connections } = createMockServices();
+    log.step(`${resources.length} services (${elapsed(start)})`);
 
-    const layout = await runLayout(services);
+    const glbPath = artifactPath(outDir, ARTIFACT_ASSETS_GLB);
+    log.section("Layout");
+    const packed = layout({
+      resources,
+      connections,
+      glb: await readFile(glbPath),
+    });
     await writeInfrastructureDb({
-      layout,
-      warnings: ["Generated from scan/src/mock.ts"],
+      layout: packed,
+      warnings: ["Generated from cli/src/mock.ts"],
       outDir,
     });
 

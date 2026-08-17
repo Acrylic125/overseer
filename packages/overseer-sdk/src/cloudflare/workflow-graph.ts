@@ -1,4 +1,5 @@
-import type { FieldGraphEdge, FieldGraphValue } from "../../schema.js";
+import type { FieldValue } from "../types.js";
+import type { WorkflowNode } from "./schemas.js";
 
 type NodeEnds = { starts: string[]; ends: string[] };
 
@@ -10,28 +11,22 @@ const STEP_TYPES = new Set([
   "function_call",
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function uniqueName(base: string, used: Map<string, number>): string {
+function uniqueName(base: string, used: Map<string, number>) {
   const count = used.get(base) ?? 0;
   used.set(base, count + 1);
   if (count === 0) return base;
   return `${base} (${count + 1})`;
 }
 
-/**
- * Flatten a Cloudflare Workflow version graph into vertices + directed edges.
- * Nested control flow (parallel / if / try / loop) is preserved as fan-out edges.
- */
-export function workflowNodesToGraph(nodes: unknown[]): FieldGraphValue {
+export function workflowNodesToGraph(
+  nodes: WorkflowNode[],
+): Extract<FieldValue, { type: "graph" }> {
   const vertices: string[] = [];
-  const edges: FieldGraphEdge[] = [];
+  const edges: [string, string][] = [];
   const seenEdges = new Set<string>();
   const usedNames = new Map<string, number>();
 
-  function addVertex(label: string): string {
+  function addVertex(label: string) {
     const name = uniqueName(label, usedNames);
     vertices.push(name);
     return name;
@@ -50,7 +45,7 @@ export function workflowNodesToGraph(nodes: unknown[]): FieldGraphValue {
     }
   }
 
-  function walkSequence(list: unknown[]): NodeEnds {
+  function walkSequence(list: WorkflowNode[]): NodeEnds {
     let first: string[] = [];
     let prevEnds: string[] = [];
 
@@ -65,9 +60,7 @@ export function workflowNodesToGraph(nodes: unknown[]): FieldGraphValue {
     return { starts: first, ends: prevEnds };
   }
 
-  function walkBranches(
-    branches: Array<{ nodes?: unknown[] }>,
-  ): NodeEnds {
+  function walkBranches(branches: Array<{ nodes?: WorkflowNode[] }>): NodeEnds {
     const starts: string[] = [];
     const ends: string[] = [];
     for (const branch of branches) {
@@ -78,28 +71,26 @@ export function workflowNodesToGraph(nodes: unknown[]): FieldGraphValue {
     return { starts, ends };
   }
 
-  function walkNode(node: unknown): NodeEnds {
-    if (!isRecord(node)) return { starts: [], ends: [] };
-    const type = typeof node.type === "string" ? node.type : "";
+  function walkNode(node: WorkflowNode): NodeEnds {
+    const type = node.type ?? "";
 
     if (STEP_TYPES.has(type)) {
-      const rawName =
-        typeof node.name === "string" && node.name.trim()
-          ? node.name.trim()
-          : type;
+      const rawName = node.name?.trim() ? node.name.trim() : type;
       const name = addVertex(rawName);
-      // Nested children inside step_do (rare) still run after the step.
-      if (Array.isArray(node.nodes) && node.nodes.length > 0) {
+      if (node.nodes && node.nodes.length > 0) {
         const inner = walkSequence(node.nodes);
         if (inner.starts.length > 0) {
           connect([name], inner.starts);
-          return { starts: [name], ends: inner.ends.length ? inner.ends : [name] };
+          return {
+            starts: [name],
+            ends: inner.ends.length ? inner.ends : [name],
+          };
         }
       }
       return { starts: [name], ends: [name] };
     }
 
-    if (type === "parallel" && Array.isArray(node.nodes)) {
+    if (type === "parallel" && node.nodes) {
       const starts: string[] = [];
       const ends: string[] = [];
       for (const child of node.nodes) {
@@ -110,19 +101,18 @@ export function workflowNodesToGraph(nodes: unknown[]): FieldGraphValue {
       return { starts, ends };
     }
 
-    if ((type === "if" || type === "switch") && Array.isArray(node.branches)) {
-      return walkBranches(
-        node.branches.filter((branch): branch is { nodes?: unknown[] } =>
-          isRecord(branch),
-        ),
-      );
+    if ((type === "if" || type === "switch") && node.branches) {
+      return walkBranches(node.branches);
     }
 
     if (type === "try") {
       const parts: NodeEnds[] = [];
-      for (const key of ["try_block", "catch_block", "finally_block"] as const) {
-        const block = node[key];
-        if (!isRecord(block) || !Array.isArray(block.nodes)) continue;
+      for (const block of [
+        node.try_block,
+        node.catch_block,
+        node.finally_block,
+      ]) {
+        if (!block?.nodes) continue;
         parts.push(walkSequence(block.nodes));
       }
       if (parts.length === 0) return { starts: [], ends: [] };
@@ -138,13 +128,16 @@ export function workflowNodesToGraph(nodes: unknown[]): FieldGraphValue {
     }
 
     if (
-      (type === "loop" || type === "block" || type === "function_def" || type === "start") &&
-      Array.isArray(node.nodes)
+      (type === "loop" ||
+        type === "block" ||
+        type === "function_def" ||
+        type === "start") &&
+      node.nodes
     ) {
       return walkSequence(node.nodes);
     }
 
-    if (Array.isArray(node.nodes)) {
+    if (node.nodes) {
       return walkSequence(node.nodes);
     }
 

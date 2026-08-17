@@ -1,1 +1,45 @@
 .DS_Store
+
+# dependencies
+node_modules/
+.pnpm-store
+.pnp
+.pnp.*
+
+# build outputs
+dist/
+packages/*/dist/
+
+# env
+.env
+.env.*
+
+# logs
+*.log
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Next.js (ui)
+.next/
+out/
+build/
+
+# Vercel
+.vercel
+
+# CLI generated/runtime
+cli/data.json
+cli/_generated/
+
+# UI generated data
+ui/infrastructure.json
+ui/next-env.d.ts
+
+# misc
+*.pem
+coverage/

@@ -10,7 +10,7 @@ Providers: Cloudflare (`PROVIDER_CF_<ns>_API_KEY`) and Vercel
 `scan` runs four steps end-to-end:
 
 1. **Precompute** — bake icons, platform, and shapes into `assets.glb`
-2. **Service scan** — per provider `scrape()` → `transform(ctx)` (grouping + fields), then cross-provider finalize (env→domain links + internet hub). Internet connectors are derived at layout from `bool:Is Open To Internet`.
+2. **Service scan** — each provider scanner scrapes and transforms its own resources, then `linkByReferences` matches env references to exposed domains.
 3. **Layout** — pack platforms, icons, connectors
 4. **Output** — write `infrastructure.json` (v2)
 

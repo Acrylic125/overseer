@@ -1,23 +1,28 @@
-import { runLayout } from "../pipeline/layout/index.js";
+import { readFile } from "node:fs/promises";
+
+import { layout } from "@acrylic125/overseer-sdk";
+
+import { elapsed, log } from "../cli/log.js";
+import {
+  ARTIFACT_ASSETS_GLB,
+  artifactPath,
+  resolveOutDir,
+} from "../paths.js";
 import { writeInfrastructureDb } from "../pipeline/output.js";
 import { precomputeAssets } from "../pipeline/precompute.js";
 import { runServiceScan } from "../pipeline/service-scan.js";
-import { log } from "../cli/log.js";
-import { resolveOutDir } from "../paths.js";
 
 export type ScanPipelineOptions = {
-  /** Artifact directory (`./_generated` or `--dir`). */
   outDir?: string;
-  /** Skip asset bake when iterating on scan/layout only. */
   skipPrecompute?: boolean;
 };
 
 /**
  * Full Overseer pipeline:
- *   1. Precompute → assets.glb (+ gradient) in outDir
- *   2. Service scan
- *   3. Layout
- *   4. Output infrastructure.json in outDir
+ *   1. Precompute → assets.glb
+ *   2. SDK scrape + transform + link
+ *   3. SDK layout
+ *   4. infrastructure.json
  */
 export async function runScanPipeline(
   options: ScanPipelineOptions = {},
@@ -35,9 +40,20 @@ export async function runScanPipeline(
       await precomputeAssets({ outDir });
     }
 
-    const { services, warnings } = await runServiceScan();
-    const layout = await runLayout(services);
-    await writeInfrastructureDb({ layout, warnings, outDir });
+    const { resources, connections, warnings } = await runServiceScan();
+    const glbPath = artifactPath(outDir, ARTIFACT_ASSETS_GLB);
+    log.section("Layout");
+    log.start("Packing layout...");
+    const start = Date.now();
+    const packed = layout({
+      resources,
+      connections,
+      glb: await readFile(glbPath),
+    });
+    log.step(
+      `${packed.resources.length} resources · ${packed.layout.length} layout items (${elapsed(start)})`,
+    );
+    await writeInfrastructureDb({ layout: packed, warnings, outDir });
 
     log.done("Scan Complete!");
   } catch (error) {
