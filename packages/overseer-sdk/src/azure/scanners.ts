@@ -2,6 +2,8 @@ import { ClientSecretCredential } from "@azure/identity";
 import { Client, PageIterator } from "@microsoft/microsoft-graph-client";
 import { TokenCredentialAuthenticationProvider } from "@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js";
 
+import { envToClaims, urlBaseMatchClaim } from "../core/claims.js";
+import { parseEnvUrl, type EnvVar } from "../core/env.js";
 import { resourceId } from "../core/resource-id.js";
 import { type ScrapeStepFn } from "../core/scrape-async.js";
 import type { FieldValue, ProviderResourceScanner } from "../types.js";
@@ -113,11 +115,24 @@ export const entraScanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const uris = redirectUris(item.application);
+    const envs: EnvVar[] = uris.map((uri) => ({
+      key: uri,
+      value: uri,
+      type: "plain",
+    }));
+    return {
+      claims: envToClaims(envs),
+      require: (claim) => {
+        for (const uri of uris) {
+          if (!urlBaseMatchClaim(uri, claim)) continue;
+          const label = parseEnvUrl(uri)?.hostname ?? uri;
+          return { type: "connected", label };
+        }
+        return false;
+      },
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeEntra>>[number],

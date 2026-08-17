@@ -7,10 +7,11 @@ import {
   settled,
   type ScrapeStepFn,
 } from "../core/scrape-async.js";
-import { envFields, envReferences, exposedByDomains, type EnvVar } from "../core/env.js";
+import { envToClaims, urlBaseMatchClaim } from "../core/claims.js";
+import { envFields, parseEnvUrl, type EnvVar } from "../core/env.js";
 import { resourceId } from "../core/resource-id.js";
 import { scanEntries } from "../core/scan.js";
-import type { FieldValue, ProviderResourceScanner } from "../types.js";
+import type { FieldValue, ProviderResourceScanner, ResourceClaims, ConnectionRequirement } from "../types.js";
 import { iconForKind } from "./icons.js";
 import {
   parseR2Cors,
@@ -89,6 +90,53 @@ function workerEnvs(bindings: WorkerBinding[]) {
   return envs;
 }
 
+function bindingRefClaims(bindings: WorkerBinding[], workerName: string) {
+  const claims: ResourceClaims[] = [];
+  const seen = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    if (!value) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    claims.push({ type: "ref", value: trimmed });
+  };
+  for (const binding of bindings) {
+    const type = binding.type?.toLowerCase();
+    if (type === "plain_text" || type === "secret_text") continue;
+    const classRef =
+      binding.class_name && (binding.script_name ?? workerName)
+        ? `${binding.script_name ?? workerName}:${binding.class_name}`
+        : null;
+    add(binding.namespace_id);
+    add(binding.database_id);
+    add(binding.id);
+    add(binding.bucket_name);
+    add(binding.index_name);
+    add(binding.queue_name);
+    add(binding.service);
+    add(binding.workflow_name);
+    add(classRef);
+  }
+  return claims;
+}
+
+function requireRef(
+  refs: Array<{ value: string | null | undefined; label: string }>,
+  claim: ResourceClaims,
+): ConnectionRequirement {
+  if (claim.type !== "ref") return false;
+  const claimValue = claim.value.trim().toLowerCase();
+  for (const ref of refs) {
+    if (!ref.value) continue;
+    if (ref.value.trim().toLowerCase() === claimValue) {
+      return { type: "connected" as const, label: ref.label };
+    }
+  }
+  return false;
+}
+
 function formatCors(cors: R2Cors) {
   if (!cors.rules) return [];
   const entries: string[] = [];
@@ -100,6 +148,29 @@ function formatCors(cors: R2Cors) {
     }
   }
   return entries;
+}
+
+function r2CorsOrigins(cors: R2Cors) {
+  if (!cors.rules) return [];
+  const origins: string[] = [];
+  for (const rule of cors.rules) {
+    origins.push(...(rule.allowed?.origins ?? rule.allowedOrigins ?? []));
+  }
+  return origins;
+}
+
+function r2CorsAllowsClaim(cors: R2Cors | undefined, claim: ResourceClaims) {
+  if (!cors) return true;
+  if (claim.type !== "url") return false;
+  const claimHost =
+    parseEnvUrl(claim.value)?.hostname.toLowerCase() ??
+    claim.value.trim().toLowerCase();
+  if (!claimHost) return false;
+  for (const origin of r2CorsOrigins(cors)) {
+    if (origin === "*") return true;
+    if (urlBaseMatchClaim(origin, claim)) return true;
+  }
+  return false;
 }
 
 function r2Domains(custom: R2CustomDomains) {
@@ -331,11 +402,21 @@ export const workerScanner = {
       tags: { namespace },
     };
   },
-  references(item) {
-    return envReferences(workerEnvs(item.bindings));
-  },
-  isExposedBy(item, use) {
-    return exposedByDomains(item.domains, use);
+  connection(item) {
+    const domains = item.domains;
+    return {
+      claims: [
+        ...envToClaims(workerEnvs(item.bindings)),
+        ...bindingRefClaims(item.bindings, item.name),
+      ],
+      require: (claim) => {
+        for (const domain of domains) {
+          if (!urlBaseMatchClaim(domain, claim)) continue;
+          return { type: "connected", label: domain };
+        }
+        return false;
+      },
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeWorkers>>[number],
@@ -361,11 +442,26 @@ export const durableObjectScanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const namespaceDo = item.namespaceDo;
+    const name = namespaceDo.name ?? namespaceDo.class ?? namespaceDo.id ?? "";
+    const script = namespaceDo.script;
+    const className = namespaceDo.class;
+    const classRef =
+      script && className ? `${script}:${className}` : null;
+    return {
+      claims: [],
+      require: (claim) =>
+        requireRef(
+          [
+            { value: namespaceDo.id, label: name },
+            { value: namespaceDo.name, label: name },
+            { value: namespaceDo.class, label: name },
+            { value: classRef, label: name },
+          ],
+          claim,
+        ),
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeDurableObjects>>[number],
@@ -401,11 +497,20 @@ export const workflowScanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const name = item.workflow.name ?? "";
+    return {
+      claims: [],
+      require: (claim) =>
+        requireRef(
+          [
+            { value: item.workflow.name, label: name },
+            { value: item.workflow.id, label: name },
+            { value: item.workflow.script_name, label: name },
+          ],
+          claim,
+        ),
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeWorkflows>>[number],
@@ -431,11 +536,20 @@ export const kvScanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const kvId = item.kv.id;
+    const title = item.kv.title ?? kvId ?? "";
+    return {
+      claims: [],
+      require: (claim) =>
+        requireRef(
+          [
+            { value: kvId, label: title },
+            { value: title, label: title },
+          ],
+          claim,
+        ),
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeKv>>[number],
@@ -461,11 +575,19 @@ export const d1Scanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const name = item.db.name ?? "";
+    return {
+      claims: [],
+      require: (claim) =>
+        requireRef(
+          [
+            { value: item.db.uuid, label: name },
+            { value: name, label: name },
+          ],
+          claim,
+        ),
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeD1>>[number],
@@ -499,12 +621,29 @@ export const r2Scanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy(item, use) {
+  connection(item) {
     const domains = item.custom ? r2Domains(item.custom) : [];
-    return exposedByDomains(domains, use);
+    const cors = item.cors;
+    const name = item.bucket.name ?? "";
+    return {
+      claims: [],
+      require: (claim) => {
+        const refMatch = requireRef([{ value: name, label: name }], claim);
+        if (refMatch) return refMatch;
+        for (const domain of domains) {
+          if (!urlBaseMatchClaim(domain, claim)) continue;
+          if (!r2CorsAllowsClaim(cors, claim)) {
+            return {
+              type: "connected",
+              label: domain,
+              errorMessage: `CORS does not allow ${claim.value}`,
+            };
+          }
+          return { type: "connected", label: domain };
+        }
+        return false;
+      },
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeR2>>[number],
@@ -529,11 +668,12 @@ export const vectorizeScanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const name = item.index.name ?? "";
+    return {
+      claims: [],
+      require: (claim) => requireRef([{ value: name, label: name }], claim),
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeVectorize>>[number],
@@ -559,11 +699,20 @@ export const queueScanner = {
       tags: { namespace },
     };
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection(item) {
+    const name = item.queue.queue_name ?? "";
+    const queueId = item.queue.queue_id ?? name;
+    return {
+      claims: [],
+      require: (claim) =>
+        requireRef(
+          [
+            { value: name, label: name },
+            { value: queueId, label: name },
+          ],
+          claim,
+        ),
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeQueues>>[number],

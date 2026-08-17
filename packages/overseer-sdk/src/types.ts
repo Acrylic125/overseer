@@ -39,23 +39,34 @@ export type Resource<
   tags: Tags<TTag>;
 };
 
-export type ScannerExposure =
+export type ResourceClaims =
   | {
-      isConnected: true;
-      label: string;
-      error?: string;
+      type: "url";
+      value: string;
     }
   | {
-      isConnected: false;
-      label: string;
+      type: "ref";
+      value: string;
     };
+
+export type ConnectionRequirement =
+  | {
+      type: "connected";
+      label: string;
+      errorMessage?: string;
+    }
+  | false;
+
+export type ResourceConnectionHandler = {
+  claims: ResourceClaims[];
+  require: (claim: ResourceClaims) => ConnectionRequirement;
+};
 
 export type ProviderResourceScanner<T, TScrapeArgs extends unknown[] = []> = {
   type: string;
   scrape: (...args: TScrapeArgs) => T[] | Promise<T[]>;
   transform: (item: T, namespace: string) => Resource | null;
-  references: (item: T) => string[];
-  isExposedBy: (item: T, use: string) => ScannerExposure;
+  connection: (item: T) => ResourceConnectionHandler;
 };
 
 export type ResourceConnection = {

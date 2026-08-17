@@ -35,18 +35,6 @@ export function envFields(envs: EnvVar[]) {
   return fields;
 }
 
-export function envReferences(envs: EnvVar[]) {
-  const env: Record<string, string> = {};
-  for (const item of envs) {
-    if (item.gitBranch && item.gitBranch.length > 0) {
-      env[`${item.key} [${item.gitBranch}]`] = item.value;
-    } else {
-      env[item.key] = item.value;
-    }
-  }
-  return Object.values(env);
-}
-
 export function parseEnvUrl(raw: string) {
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -58,25 +46,4 @@ export function parseEnvUrl(raw: string) {
   } catch {
     return null;
   }
-}
-
-export function exposedByDomains(domains: string[], use: string) {
-  const useHost = parseEnvUrl(use)?.hostname.toLowerCase();
-  if (!useHost) {
-    return { isConnected: false, label: "" };
-  }
-  for (const domain of domains) {
-    const domainHost = parseEnvUrl(domain)?.hostname.toLowerCase();
-    if (!domainHost) continue;
-    if (domainHost === useHost) {
-      return { isConnected: true, label: "Domain" };
-    }
-    if (domainHost.endsWith(`.${useHost}`)) {
-      return { isConnected: true, label: "Domain" };
-    }
-    if (useHost.endsWith(`.${domainHost}`)) {
-      return { isConnected: true, label: "Domain" };
-    }
-  }
-  return { isConnected: false, label: "" };
 }

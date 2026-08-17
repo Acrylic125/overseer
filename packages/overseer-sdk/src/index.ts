@@ -31,6 +31,7 @@ export {
 } from "./azure/provider.js";
 
 export { type ScrapeStepFn } from "./core/scrape-async.js";
+export { envToClaims, urlBaseMatchClaim } from "./core/claims.js";
 export { linkResources, type LinkEntry } from "./core/link.js";
 export { linkByReferences, scanEntries } from "./core/scan.js";
 export {
@@ -49,15 +50,17 @@ export {
 } from "./types.js";
 export type {
   AssetsByProvider,
+  ConnectionRequirement,
   FieldValue,
   LayoutOutput,
   Pos,
   ProviderResourceScanner,
   Resource,
   ResourceAlert,
+  ResourceClaims,
   ResourceConnection,
+  ResourceConnectionHandler,
   ResourceId,
   ResourceLayoutItem,
-  ScannerExposure,
   Tags,
 } from "./types.js";

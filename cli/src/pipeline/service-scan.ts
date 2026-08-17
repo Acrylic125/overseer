@@ -25,7 +25,7 @@ export type ScanOutcome = {
 };
 
 /**
- * Scrape each service scanner, then link by references / isExposedBy.
+ * Scrape each service scanner, then link by claims / require.
  */
 export async function runServiceScan() {
   loadScanEnv();
@@ -88,7 +88,7 @@ export async function runServiceScan() {
   }
 
   log.section("Link");
-  log.step("Matching references to exposures");
+  log.step("Matching claims to connection requirements");
   const connections = linkByReferences(entries);
   const resources = entries.map((entry) => entry.resource);
 

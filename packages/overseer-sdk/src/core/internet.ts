@@ -25,11 +25,11 @@ export const internetScanner = {
   transform() {
     return internetResource();
   },
-  references() {
-    return [];
-  },
-  isExposedBy() {
-    return { isConnected: false, label: "" };
+  connection() {
+    return {
+      claims: [],
+      require: () => false,
+    };
   },
 } satisfies ProviderResourceScanner<Record<string, never>>;
 

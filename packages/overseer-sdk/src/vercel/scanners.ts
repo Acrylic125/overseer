@@ -1,6 +1,7 @@
 import { Vercel } from "@vercel/sdk";
 
-import { envFields, envReferences, exposedByDomains, type EnvVar } from "../core/env.js";
+import { envToClaims, urlBaseMatchClaim } from "../core/claims.js";
+import { envFields, type EnvVar } from "../core/env.js";
 import { resourceId } from "../core/resource-id.js";
 import {
   mapPoolCollect,
@@ -152,11 +153,18 @@ export const projectScanner = {
       tags: { namespace },
     };
   },
-  references(item) {
-    return envReferences(item.envs);
-  },
-  isExposedBy(item, use) {
-    return exposedByDomains(item.domains, use);
+  connection(item) {
+    const domains = item.domains;
+    return {
+      claims: envToClaims(item.envs),
+      require: (claim) => {
+        for (const domain of domains) {
+          if (!urlBaseMatchClaim(domain, claim)) continue;
+          return { type: "connected", label: domain };
+        }
+        return false;
+      },
+    };
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeProjects>>[number],

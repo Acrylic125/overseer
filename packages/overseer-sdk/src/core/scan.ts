@@ -1,11 +1,10 @@
-import type { Resource, ScannerExposure } from "../types.js";
+import type { Resource } from "../types.js";
 import { linkResources, type LinkEntry } from "./link.js";
 
 export function scanEntries<T>(
   scanner: {
     transform: (item: T, namespace: string) => Resource | null;
-    references: (item: T) => string[];
-    isExposedBy: (item: T, use: string) => ScannerExposure;
+    connection: (item: T) => LinkEntry["connection"];
   },
   items: T[],
   namespace: string,
@@ -16,8 +15,7 @@ export function scanEntries<T>(
     if (!resource) continue;
     const entry: LinkEntry = {
       resource,
-      references: scanner.references(item),
-      isExposedBy: (use: string) => scanner.isExposedBy(item, use),
+      connection: scanner.connection(item),
     };
     entries.push(entry);
   }
