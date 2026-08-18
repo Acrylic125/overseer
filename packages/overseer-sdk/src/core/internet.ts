@@ -3,6 +3,10 @@ import type { ProviderResourceScanner, Resource } from "../types.js";
 
 export const INTERNET_ID = "internet:public" as const;
 
+export function isInternetResource(resource: { id: string }): boolean {
+  return resource.id === INTERNET_ID;
+}
+
 export function internetResource(): Resource<"internet"> {
   return {
     id: INTERNET_ID,

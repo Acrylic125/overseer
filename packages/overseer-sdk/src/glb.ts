@@ -15,6 +15,12 @@ type GltfPrimitive = {
 type GltfMesh = {
   name?: string;
   primitives?: GltfPrimitive[];
+  extras?: {
+    footprint?: {
+      width?: number;
+      height?: number;
+    };
+  };
 };
 
 type GltfNode = {
@@ -69,7 +75,24 @@ function footprintFromMinMax(min: number[], max: number[]): MeshSize | null {
   return { width, height };
 }
 
-function meshFootprint(mesh: GltfMesh, accessors: GltfAccessor[]): MeshSize | null {
+const MAX_ACCESSOR_FOOTPRINT = 1000;
+
+function footprintFromExtras(mesh: GltfMesh): MeshSize | null {
+  const footprint = mesh.extras?.footprint;
+  if (
+    typeof footprint?.width !== "number" ||
+    typeof footprint?.height !== "number"
+  ) {
+    return null;
+  }
+  if (footprint.width <= 0 || footprint.height <= 0) return null;
+  return { width: footprint.width, height: footprint.height };
+}
+
+function footprintFromAccessors(
+  mesh: GltfMesh,
+  accessors: GltfAccessor[],
+): MeshSize | null {
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
@@ -94,7 +117,18 @@ function meshFootprint(mesh: GltfMesh, accessors: GltfAccessor[]): MeshSize | nu
   }
 
   if (!Number.isFinite(minX)) return null;
-  return footprintFromMinMax([minX, minY, minZ], [maxX, maxY, maxZ]);
+  const size = footprintFromMinMax([minX, minY, minZ], [maxX, maxY, maxZ]);
+  if (!size) return null;
+  if (size.width > MAX_ACCESSOR_FOOTPRINT || size.height > MAX_ACCESSOR_FOOTPRINT) {
+    return null;
+  }
+  return size;
+}
+
+function meshFootprint(mesh: GltfMesh, accessors: GltfAccessor[]): MeshSize | null {
+  const fromExtras = footprintFromExtras(mesh);
+  if (fromExtras) return fromExtras;
+  return footprintFromAccessors(mesh, accessors);
 }
 
 /** Layout footprints for named meshes in a baked assets GLB. */

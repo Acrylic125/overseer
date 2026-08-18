@@ -12,7 +12,9 @@ import * as THREE from "three";
 
 import { assetsIconsDir, assetsShapesDir } from "../paths.js";
 import {
+  collectSceneFootprints,
   compressMeshopt,
+  embedLayoutFootprints,
   ensureGlbNodeShims,
   exportSceneGlb,
 } from "./glb-node.js";
@@ -185,12 +187,20 @@ export async function buildAssets(outDir: string): Promise<BuildAssetsResult> {
   const pngFile = path.join(outDir, "platform-gradient.png");
   await writeFile(pngFile, png);
 
+  const footprints = collectSceneFootprints(scene);
   const rawGlb = await exportSceneGlb(scene);
   const withTexture = await embedGradientOnMeshes(rawGlb, png, texturedNames);
-  const compressed = await compressMeshopt(
+  const withFootprints = await embedLayoutFootprints(
     withTexture.buffer.slice(
       withTexture.byteOffset,
       withTexture.byteOffset + withTexture.byteLength,
+    ) as ArrayBuffer,
+    footprints,
+  );
+  const compressed = await compressMeshopt(
+    withFootprints.buffer.slice(
+      withFootprints.byteOffset,
+      withFootprints.byteOffset + withFootprints.byteLength,
     ) as ArrayBuffer,
   );
   await writeFile(glbFile, compressed);

@@ -1,4 +1,10 @@
-export { layout, DEFAULT_LAYOUT_CONFIG } from "./layout.js";
+export {
+  layout,
+  DEFAULT_LAYOUT_CONFIG,
+  GROUP_SEP,
+  MAX_GROUP_DEPTH,
+  PUBLIC_INTERNET_LAYOUT_GROUP,
+} from "./layout.js";
 
 export {
   cloudflareScanners,
@@ -38,6 +44,7 @@ export {
   INTERNET_ID,
   internetResource,
   internetScanner,
+  isInternetResource,
   newInternetProvider,
 } from "./core/internet.js";
 export { mergeResourceConnections } from "./core/connections.js";

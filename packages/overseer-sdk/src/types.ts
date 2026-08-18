@@ -114,7 +114,7 @@ export type ResourceLayoutItem<TProviderKeys extends string> =
       nodes: [string, string];
       path: Pos[];
     }
-  | { type: "group"; from: Pos; to: Pos };
+  | { type: "group"; group: string; from: Pos; to: Pos };
 
 export type LayoutOutput = {
   resources: Resource[];

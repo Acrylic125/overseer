@@ -4,7 +4,9 @@ import type { NextConfig } from "next";
 import "./env.ts";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Do not set turbopack.root here — explicit values break Next 16.2.12 module
+  // resolution for this app. Turbopack may warn about ~/pnpm-lock.yaml; remove
+  // that stray home-directory lockfile if the warning bothers you.
 };
 
 export default nextConfig;

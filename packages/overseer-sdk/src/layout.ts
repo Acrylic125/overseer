@@ -1,4 +1,5 @@
 import { createConnectorEngine, type LayoutAabb } from "./connectors.js";
+import { INTERNET_ID, isInternetResource } from "./core/internet.js";
 import { meshSizesFromGlb, type MeshSize } from "./glb.js";
 import type {
   LayoutOutput,
@@ -37,12 +38,8 @@ export type PackConfig = {
   iconHeight: number;
   /** Gap between icons inside a group. */
   iconGap: number;
-  /** Gap between adjacent groups. */
+  /** Edge-to-edge gap between root platforms. */
   groupGap: number;
-  /** Padding around group bounds. */
-  groupPad: number;
-  /** Max columns when grid-packing icons in a group. */
-  groupCols: number;
   /** Z for group/platform plane. */
   platformZ: number;
   /** Z for resource icons (above connectors). */
@@ -76,9 +73,7 @@ export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
     iconWidth: 1,
     iconHeight: 1,
     iconGap: 2,
-    groupGap: 4,
-    groupPad: 1,
-    groupCols: 3,
+    groupGap: 2,
     platformZ: 0,
     iconZ: 0.01,
     connectorZ: 0,
@@ -93,23 +88,28 @@ export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
   },
 };
 
-type GroupPlacement = {
-  boxes: LayoutAabb[];
-  items: ResourceLayoutItem<string>[];
-  maxX: number;
-};
+/** Layout group key for the public-internet cloud pad (not a resource group). */
+export const PUBLIC_INTERNET_LAYOUT_GROUP = "__public_internet__";
 
-function groupResources(resources: Resource[]): Map<string, Resource[]> {
-  const grouped = new Map<string, Resource[]>();
+/** Path separator for nested groups (`root/mid/leaf`, max 3 segments). */
+export const GROUP_SEP = "/";
+export const MAX_GROUP_DEPTH = 3;
 
-  for (const resource of resources) {
-    const members = grouped.get(resource.group) ?? [];
-    members.push(resource);
-    grouped.set(resource.group, members);
-  }
+const LABEL_INSET_Y = 0.5;
+const GROUP_TITLE_HEIGHT = 0.35;
+const TITLE_CONTENT_GAP = 1;
 
-  return grouped;
-}
+const PAD_TOP = LABEL_INSET_Y + GROUP_TITLE_HEIGHT + TITLE_CONTENT_GAP;
+const PAD_LEFT = 1;
+const PAD_RIGHT = 1;
+const PAD_BOTTOM = 1;
+
+const PLATFORM_Z = roundCoord(0);
+const ICON_Z = roundCoord(0.01);
+const CONNECTOR_Z = roundCoord(0);
+const NEST_Z_STEP = 0.002;
+
+const PUBLIC_INTERNET_GAP = 4;
 
 function sizeForAsset(
   asset: string,
@@ -119,11 +119,453 @@ function sizeForAsset(
   return sizes.get(asset) ?? sizes.get("all-unknown") ?? fallback;
 }
 
-function placeGroup(
-  members: Resource[],
-  offsetX: number,
-  config: LayoutConfig["pack"],
+type ClusterItem = { x: number; y: number };
+
+type ClusterLayout = {
+  name: string;
+  cols: number;
+  rows: number;
+  W: number;
+  H: number;
+  platformW: number;
+  platformH: number;
+  items: ClusterItem[];
+  resources: Resource[];
+};
+
+type PlacedCluster = {
+  cluster: ClusterLayout;
+  offsetX: number;
+  offsetY: number;
+};
+
+type PackGridResult = {
+  placed: PlacedCluster[];
+  totalWidth: number;
+  totalHeight: number;
+};
+
+type GroupNode = {
+  path: string;
+  children: Map<string, GroupNode>;
+  resources: Resource[];
+};
+
+type NestedPack = {
+  path: string;
+  platformW: number;
+  platformH: number;
+  children: { pack: NestedPack; x: number; y: number }[];
+  leaf: ClusterLayout | null;
+};
+
+function maxColsFor(n: number): number {
+  if (n <= 0) return 0;
+  return Math.max(1, Math.ceil(Math.sqrt(n)));
+}
+
+function splitGroupPath(group: string): string[] {
+  return group
+    .split(GROUP_SEP)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, MAX_GROUP_DEPTH);
+}
+
+function ensureGroupNode(
+  roots: Map<string, GroupNode>,
+  segments: string[],
+): GroupNode {
+  let level = roots;
+  let path = "";
+  let node: GroupNode | undefined;
+  for (const segment of segments) {
+    path = path ? `${path}${GROUP_SEP}${segment}` : segment;
+    let child = level.get(segment);
+    if (!child) {
+      child = { path, children: new Map(), resources: [] };
+      level.set(segment, child);
+    }
+    node = child;
+    level = child.children;
+  }
+  return node!;
+}
+
+function buildGroupForest(resources: Resource[]): Map<string, GroupNode> {
+  const roots = new Map<string, GroupNode>();
+  for (const resource of resources) {
+    if (isInternetResource(resource)) continue;
+    const segments = splitGroupPath(resource.group);
+    const path = (segments.length > 0 ? segments : ["default"]).join(GROUP_SEP);
+    const node = ensureGroupNode(
+      roots,
+      segments.length > 0 ? segments : ["default"],
+    );
+    node.resources.push(
+      resource.group === path
+        ? resource
+        : { ...resource, group: path },
+    );
+  }
+  return roots;
+}
+
+function shelfPackRects(
+  items: { w: number; h: number }[],
+  gap: number,
+): { placed: { x: number; y: number }[]; width: number; height: number } {
+  if (items.length === 0) {
+    return { placed: [], width: 0, height: 0 };
+  }
+
+  const area = items.reduce(
+    (sum, item) => sum + (item.w + gap) * (item.h + gap),
+    0,
+  );
+  const targetW = Math.max(
+    ...items.map((item) => item.w),
+    Math.ceil(Math.sqrt(area)),
+  );
+
+  const placed: { x: number; y: number }[] = [];
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowH = 0;
+  let maxX = 0;
+
+  for (const item of items) {
+    if (cursorX > 0 && cursorX + item.w > targetW) {
+      cursorX = 0;
+      cursorY += rowH + gap;
+      rowH = 0;
+    }
+    placed.push({ x: cursorX, y: cursorY });
+    cursorX += item.w + gap;
+    rowH = Math.max(rowH, item.h);
+    maxX = Math.max(maxX, cursorX - gap);
+  }
+
+  return {
+    placed,
+    width: maxX,
+    height: cursorY + rowH,
+  };
+}
+
+function packCluster(
+  n: number,
+  w: number,
+  h: number,
+  G: number,
+): Omit<ClusterLayout, "name" | "resources" | "platformW" | "platformH"> {
+  if (n <= 0) {
+    return { cols: 0, rows: 0, W: 0, H: 0, items: [] };
+  }
+
+  const maxCols = maxColsFor(n);
+  let bestScore = Infinity;
+  let bestLayout: { cols: number; rows: number; W: number; H: number } | null =
+    null;
+
+  for (let cols = 1; cols <= maxCols; cols += 1) {
+    const rows = Math.ceil(n / cols);
+    const W = cols * w + (cols - 1) * G;
+    const H = rows * h + (rows - 1) * G;
+    const score = Math.abs(W - H);
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestLayout = { cols, rows, W, H };
+    }
+  }
+
+  if (!bestLayout) {
+    return { cols: 0, rows: 0, W: 0, H: 0, items: [] };
+  }
+
+  const items: ClusterItem[] = [];
+  let idx = 0;
+  for (let r = 0; r < bestLayout.rows; r += 1) {
+    for (let c = 0; c < bestLayout.cols; c += 1) {
+      if (idx >= n) break;
+      items.push({
+        x: c * (w + G),
+        y: r * (h + G),
+      });
+      idx += 1;
+    }
+  }
+
+  return {
+    cols: bestLayout.cols,
+    rows: bestLayout.rows,
+    W: bestLayout.W,
+    H: bestLayout.H,
+    items,
+  };
+}
+
+function packPlatforms(
+  clusters: ClusterLayout[],
+  platformGap: number,
+): PackGridResult {
+  const n = clusters.length;
+  if (n === 0) {
+    return { placed: [], totalWidth: 0, totalHeight: 0 };
+  }
+
+  const cellW = Math.max(...clusters.map((cluster) => cluster.platformW));
+  const cellH = Math.max(...clusters.map((cluster) => cluster.platformH));
+  const grid = packCluster(n, cellW, cellH, platformGap);
+
+  const placed: PlacedCluster[] = clusters.map((cluster, index) => {
+    const item = grid.items[index]!;
+    return {
+      cluster,
+      offsetX: item.x,
+      offsetY: item.y,
+    };
+  });
+
+  return {
+    placed,
+    totalWidth: grid.W,
+    totalHeight: grid.H,
+  };
+}
+
+function packDomainCluster(
+  name: string,
+  resources: Resource[],
   sizes: Map<string, MeshSize>,
+  fallback: MeshSize,
+  iconGap: number,
+): ClusterLayout {
+  const byAsset = new Map<string, Resource[]>();
+  for (const resource of resources) {
+    const list = byAsset.get(resource.asset) ?? [];
+    list.push(resource);
+    byAsset.set(resource.asset, list);
+  }
+
+  const assetBlocks = [...byAsset.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([asset, members]) => {
+      const sorted = [...members].sort((a, b) => a.name.localeCompare(b.name));
+      const footprint = sizeForAsset(asset, sizes, fallback);
+      const packed = packCluster(
+        sorted.length,
+        footprint.width,
+        footprint.height,
+        iconGap,
+      );
+      return {
+        resources: sorted,
+        ...packed,
+      };
+    });
+
+  if (assetBlocks.length === 0) {
+    return {
+      name,
+      cols: 0,
+      rows: 0,
+      W: 0,
+      H: 0,
+      platformW: PAD_LEFT + PAD_RIGHT,
+      platformH: PAD_TOP + PAD_BOTTOM,
+      items: [],
+      resources: [],
+    };
+  }
+
+  const area = assetBlocks.reduce(
+    (sum, block) => sum + (block.W + iconGap) * (block.H + iconGap),
+    0,
+  );
+  const targetW = Math.max(
+    ...assetBlocks.map((block) => block.W),
+    Math.ceil(Math.sqrt(area)),
+  );
+
+  const items: ClusterItem[] = [];
+  const orderedResources: Resource[] = [];
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowH = 0;
+  let maxX = 0;
+
+  for (const block of assetBlocks) {
+    if (cursorX > 0 && cursorX + block.W > targetW) {
+      cursorX = 0;
+      cursorY += rowH + iconGap;
+      rowH = 0;
+    }
+
+    for (let j = 0; j < block.items.length; j += 1) {
+      const item = block.items[j]!;
+      const resource = block.resources[j];
+      if (!resource) continue;
+      items.push({
+        x: cursorX + item.x,
+        y: cursorY + item.y,
+      });
+      orderedResources.push(resource);
+    }
+
+    cursorX += block.W + iconGap;
+    rowH = Math.max(rowH, block.H);
+    maxX = Math.max(maxX, cursorX - iconGap);
+  }
+
+  const contentW = maxX;
+  const contentH = cursorY + rowH;
+
+  return {
+    name,
+    cols: assetBlocks.length,
+    rows: 1,
+    W: contentW,
+    H: contentH,
+    platformW: contentW + PAD_LEFT + PAD_RIGHT,
+    platformH: contentH + PAD_TOP + PAD_BOTTOM,
+    items,
+    resources: orderedResources,
+  };
+}
+
+function packGroupNode(
+  node: GroupNode,
+  sizes: Map<string, MeshSize>,
+  fallback: MeshSize,
+  iconGap: number,
+  platformGap: number,
+): NestedPack {
+  const childPacks = [...node.children.values()]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((child) =>
+      packGroupNode(child, sizes, fallback, iconGap, platformGap),
+    );
+
+  const leaf =
+    node.resources.length > 0
+      ? packDomainCluster(node.path, node.resources, sizes, fallback, iconGap)
+      : null;
+
+  if (childPacks.length === 0) {
+    if (!leaf) {
+      return {
+        path: node.path,
+        platformW: PAD_LEFT + PAD_RIGHT,
+        platformH: PAD_TOP + PAD_BOTTOM,
+        children: [],
+        leaf: null,
+      };
+    }
+    return {
+      path: node.path,
+      platformW: leaf.platformW,
+      platformH: leaf.platformH,
+      children: [],
+      leaf,
+    };
+  }
+
+  type Block =
+    | { kind: "child"; pack: NestedPack; w: number; h: number }
+    | { kind: "leaf"; leaf: ClusterLayout; w: number; h: number };
+
+  const blocks: Block[] = childPacks.map((pack) => ({
+    kind: "child" as const,
+    pack,
+    w: pack.platformW,
+    h: pack.platformH,
+  }));
+  if (leaf) {
+    blocks.push({
+      kind: "leaf",
+      leaf,
+      w: leaf.W,
+      h: leaf.H,
+    });
+  }
+
+  const shelf = shelfPackRects(
+    blocks.map((block) => ({ w: block.w, h: block.h })),
+    platformGap,
+  );
+
+  const children: NestedPack["children"] = [];
+  let leafOut: ClusterLayout | null = null;
+
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i]!;
+    const at = shelf.placed[i]!;
+    if (block.kind === "child") {
+      children.push({
+        pack: block.pack,
+        x: PAD_LEFT + at.x,
+        y: PAD_TOP + at.y,
+      });
+    } else {
+      leafOut = {
+        ...block.leaf,
+        items: block.leaf.items.map((item) => ({
+          x: at.x + item.x,
+          y: at.y + item.y,
+        })),
+      };
+    }
+  }
+
+  return {
+    path: node.path,
+    platformW: shelf.width + PAD_LEFT + PAD_RIGHT,
+    platformH: shelf.height + PAD_TOP + PAD_BOTTOM,
+    children,
+    leaf: leafOut,
+  };
+}
+
+function nestDepth(path: string): number {
+  return Math.max(0, path.split(GROUP_SEP).length - 1);
+}
+
+function publicInternetFootprint(
+  platformCount: number,
+  baseWidth: number,
+  baseDepth: number,
+) {
+  const n = Math.max(1, platformCount);
+  const s = Math.sqrt(n);
+  return {
+    width: Math.max(baseWidth, Math.round(baseWidth * s)),
+    depth: Math.max(baseDepth, Math.round(baseDepth * s)),
+  };
+}
+
+function connectionTargets(
+  resourceId: string,
+  connections: ResourceConnection[],
+): string[] {
+  const targets = new Set<string>();
+  for (const connection of connections) {
+    const [from, to] = connection.nodes;
+    if (from === resourceId) targets.add(to);
+    if (to === resourceId) targets.add(from);
+  }
+  return [...targets];
+}
+
+function emitNestedPack(
+  pack: NestedPack,
+  absX: number,
+  absY: number,
+  sizes: Map<string, MeshSize>,
+  fallback: MeshSize,
+  layoutItems: ResourceLayoutItem<string>[],
+  boxes: LayoutAabb[],
   iconAabb: (
     id: string,
     x: number,
@@ -131,63 +573,60 @@ function placeGroup(
     width: number,
     height: number,
   ) => LayoutAabb,
-): GroupPlacement {
-  const fallback: MeshSize = {
-    width: config.iconWidth,
-    height: config.iconHeight,
-  };
-  const boxes: LayoutAabb[] = [];
-  const items: ResourceLayoutItem<string>[] = [];
+): void {
+  const z = roundCoord(PLATFORM_Z + nestDepth(pack.path) * NEST_Z_STEP);
 
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  let x = offsetX;
-  let y = 0;
-  let col = 0;
-  let rowHeight = 0;
+  layoutItems.push({
+    type: "group",
+    group: pack.path,
+    from: roundPos([absX, absY, z]),
+    to: roundPos([absX + pack.platformW, absY + pack.platformH, z]),
+  });
 
-  for (const resource of members) {
-    const size = sizeForAsset(resource.asset, sizes, fallback);
-    if (col >= config.groupCols) {
-      x = offsetX;
-      y += rowHeight + config.iconGap;
-      col = 0;
-      rowHeight = 0;
-    }
-
-    const pos: Pos = roundPos([x, y, config.iconZ]);
-    boxes.push(iconAabb(resource.id, x, y, size.width, size.height));
-    items.push({ type: "resource", ref: resource.id, pos });
-
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + size.width);
-    maxY = Math.max(maxY, y + size.height);
-
-    x += size.width + config.iconGap;
-    rowHeight = Math.max(rowHeight, size.height);
-    col += 1;
+  for (const child of pack.children) {
+    emitNestedPack(
+      child.pack,
+      absX + child.x,
+      absY + child.y,
+      sizes,
+      fallback,
+      layoutItems,
+      boxes,
+      iconAabb,
+    );
   }
 
-  if (members.length > 0) {
-    items.push({
-      type: "group",
-      from: roundPos([
-        minX - config.groupPad,
-        minY - config.groupPad,
-        config.platformZ,
-      ]),
-      to: roundPos([
-        maxX + config.groupPad,
-        maxY + config.groupPad,
-        config.platformZ,
-      ]),
+  if (!pack.leaf) return;
+
+  const contentOriginX = absX + PAD_LEFT;
+  const contentOriginY = absY + PAD_TOP;
+
+  for (let i = 0; i < pack.leaf.items.length; i += 1) {
+    const item = pack.leaf.items[i]!;
+    const resource = pack.leaf.resources[i];
+    if (!resource) continue;
+
+    const absoluteX = contentOriginX + item.x;
+    const absoluteY = contentOriginY + item.y;
+    const pos: Pos = roundPos([absoluteX, absoluteY, ICON_Z]);
+
+    layoutItems.push({
+      type: "resource",
+      ref: resource.id,
+      pos,
     });
-  }
 
-  return { boxes, items, maxX };
+    const footprint = sizeForAsset(resource.asset, sizes, fallback);
+    boxes.push(
+      iconAabb(
+        resource.id,
+        roundCoord(absoluteX),
+        roundCoord(absoluteY),
+        footprint.width,
+        footprint.height,
+      ),
+    );
+  }
 }
 
 export function layout({
@@ -197,45 +636,106 @@ export function layout({
   config = DEFAULT_LAYOUT_CONFIG,
 }: LayoutInput): LayoutOutput {
   const { pack, connectors: connectorConfig } = config;
-  const sizes = meshSizesFromGlb(glb);
   const { iconAabb, buildAllConnectorPaths } =
     createConnectorEngine(connectorConfig);
 
+  const sizes = meshSizesFromGlb(glb);
+  const fallback: MeshSize = {
+    width: pack.iconWidth,
+    height: pack.iconHeight,
+  };
+  const cloudBase = sizeForAsset("cloud", sizes, fallback);
+
+  const packable = resources.filter((resource) => !isInternetResource(resource));
+
+  const forest = buildGroupForest(packable);
+  const rootPacks = [...forest.values()]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((node) =>
+      packGroupNode(node, sizes, fallback, pack.iconGap, pack.groupGap),
+    );
+
+  const rootClusters: ClusterLayout[] = rootPacks.map((nested) => ({
+    name: nested.path,
+    cols: 0,
+    rows: 0,
+    W: 0,
+    H: 0,
+    platformW: nested.platformW,
+    platformH: nested.platformH,
+    items: [],
+    resources: [],
+  }));
+  const packed = packPlatforms(rootClusters, pack.groupGap);
+  const cloud = publicInternetFootprint(
+    Math.max(1, packed.placed.length),
+    cloudBase.width,
+    cloudBase.height,
+  );
+
+  const serviceOffsetX = cloud.width / 2 + PUBLIC_INTERNET_GAP;
+  const serviceOffsetY = -packed.totalHeight / 2;
+
   const layoutItems: ResourceLayoutItem<string>[] = [];
-  const byGroup = groupResources(resources);
-
   const boxes: LayoutAabb[] = [];
-  let groupOffsetX = 0;
 
-  for (const [, members] of [...byGroup.entries()].sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
-    const placed = placeGroup(members, groupOffsetX, pack, sizes, iconAabb);
-    boxes.push(...placed.boxes);
-    layoutItems.push(...placed.items);
-    if (members.length > 0) groupOffsetX = placed.maxX + pack.groupGap;
+  const cloudPos = roundPos([-cloud.width / 2, -cloud.depth / 2, PLATFORM_Z]);
+  layoutItems.push({
+    type: "group",
+    group: PUBLIC_INTERNET_LAYOUT_GROUP,
+    from: cloudPos,
+    to: roundPos([
+      cloudPos[0] + cloud.width,
+      cloudPos[1] + cloud.depth,
+      PLATFORM_Z,
+    ]),
+  });
+  boxes.push(
+    iconAabb(INTERNET_ID, cloudPos[0], cloudPos[1], cloud.width, cloud.depth),
+  );
+
+  for (let i = 0; i < packed.placed.length; i += 1) {
+    const placement = packed.placed[i]!;
+    const root = rootPacks[i]!;
+    emitNestedPack(
+      root,
+      placement.offsetX + serviceOffsetX,
+      placement.offsetY + serviceOffsetY,
+      sizes,
+      fallback,
+      layoutItems,
+      boxes,
+      iconAabb,
+    );
   }
 
-  const connectionRows = resources.map((resource) => {
-    const targets = new Set<string>();
-    for (const connection of connections) {
-      const [from, to] = connection.nodes;
-      if (from === resource.id) targets.add(to);
-      if (to === resource.id) targets.add(from);
-    }
-    return {
-      id: resource.id,
-      connections: [...targets],
-    };
-  });
+  const graphResources = [...packable, ...resources.filter(isInternetResource)];
 
-  const paths = buildAllConnectorPaths(boxes, connectionRows);
+  const paths = buildAllConnectorPaths(
+    boxes,
+    graphResources.map((resource) => ({
+      id: resource.id,
+      connections: connectionTargets(resource.id, connections),
+    })),
+  );
 
   for (const path of paths) {
+    let sourceId = path.sourceId;
+    let targetId = path.targetId;
+    let pathPoints = path.points;
+
+    const involvesInternet =
+      sourceId === INTERNET_ID || targetId === INTERNET_ID;
+    if (involvesInternet && sourceId !== INTERNET_ID) {
+      sourceId = INTERNET_ID;
+      targetId = path.sourceId;
+      pathPoints = [...path.points].reverse();
+    }
+
     layoutItems.push({
       type: "connector",
-      nodes: [path.sourceId, path.targetId] as [string, string],
-      path: path.points.map(
+      nodes: [sourceId, targetId],
+      path: pathPoints.map(
         (point): Pos => roundPos([point.x, point.y, pack.connectorZ]),
       ),
     });

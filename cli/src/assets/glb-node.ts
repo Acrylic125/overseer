@@ -75,6 +75,65 @@ export function ensureGlbNodeShims(): void {
   installed = true;
 }
 
+export type LayoutFootprint = {
+  width: number;
+  height: number;
+};
+
+export function threeMeshFootprint(mesh: THREE.Object3D): LayoutFootprint | null {
+  if (!(mesh instanceof THREE.Mesh)) return null;
+
+  mesh.geometry.computeBoundingBox();
+  const box = mesh.geometry.boundingBox;
+  if (!box) return null;
+
+  const dx = box.max.x - box.min.x;
+  const dy = box.max.y - box.min.y;
+  const dz = box.max.z - box.min.z;
+  const [width, height] = [dx, dy, dz].sort((a, b) => b - a);
+  if (!width || !height) return null;
+
+  return { width, height };
+}
+
+export function collectSceneFootprints(scene: THREE.Scene) {
+  const footprints = new Map<string, LayoutFootprint>();
+
+  scene.traverse((object) => {
+    if (!object.name) return;
+    const footprint = threeMeshFootprint(object);
+    if (!footprint) return;
+    footprints.set(object.name, footprint);
+  });
+
+  return footprints;
+}
+
+/** Persist layout footprints before meshopt quantizes accessor min/max away. */
+export async function embedLayoutFootprints(
+  glb: ArrayBuffer,
+  footprints: Map<string, LayoutFootprint>,
+): Promise<Uint8Array> {
+  const io = new NodeIO().registerExtensions([
+    EXTMeshoptCompression,
+    KHRMaterialsUnlit,
+    KHRMeshQuantization,
+  ]);
+
+  const document = await io.readBinary(new Uint8Array(glb));
+  for (const node of document.getRoot().listNodes()) {
+    const name = node.getName();
+    if (!name) continue;
+    const footprint = footprints.get(name);
+    if (!footprint) continue;
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    mesh.setExtras({ ...(mesh.getExtras() ?? {}), footprint });
+  }
+
+  return await io.writeBinary(document);
+}
+
 export async function exportSceneGlb(scene: THREE.Scene): Promise<ArrayBuffer> {
   ensureGlbNodeShims();
   const exporter = new GLTFExporter();

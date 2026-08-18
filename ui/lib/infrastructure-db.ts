@@ -5,6 +5,10 @@ import {
   infrastructureDbSchema,
   type InfrastructureDb,
 } from "@/lib/infrastructure-schema";
+import {
+  layoutOutputSchema,
+  layoutOutputToDb,
+} from "@/lib/layout-output-to-db";
 
 export * from "@/lib/infrastructure-schema";
 
@@ -44,16 +48,21 @@ export async function loadInfrastructureDb(): Promise<InfrastructureDb> {
     throw new Error(`Infrastructure database at ${dbPath} is not valid JSON.`);
   }
 
-  const parsed = infrastructureDbSchema.safeParse(json);
-  if (!parsed.success) {
-    const detail = parsed.error.issues
+  const legacy = infrastructureDbSchema.safeParse(json);
+  if (legacy.success) {
+    return legacy.data;
+  }
+
+  const layout = layoutOutputSchema.safeParse(json);
+  if (layout.success) {
+    return layoutOutputToDb(layout.data);
+  }
+
+  const detail = [...legacy.error.issues, ...layout.error.issues]
       .slice(0, 5)
       .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
       .join("; ");
-    throw new Error(
-      `Infrastructure database failed schema validation (${dbPath}): ${detail}`,
-    );
-  }
-
-  return parsed.data;
+  throw new Error(
+    `Infrastructure database failed schema validation (${dbPath}): ${detail}`,
+  );
 }
