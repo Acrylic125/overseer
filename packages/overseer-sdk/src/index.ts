@@ -3,7 +3,6 @@ export {
   DEFAULT_LAYOUT_CONFIG,
   GROUP_SEP,
   MAX_GROUP_DEPTH,
-  PUBLIC_INTERNET_LAYOUT_GROUP,
 } from "./layout.js";
 
 export {
@@ -49,7 +48,12 @@ export {
 } from "./core/internet.js";
 export { mergeResourceConnections } from "./core/connections.js";
 
-export type { ConnectorConfig, LayoutConfig, LayoutInput, PackConfig } from "./layout.js";
+export type {
+  ConnectorConfig,
+  LayoutConfig,
+  LayoutInput,
+  PackConfig,
+} from "./layout.js";
 export {
   connectionKey,
   normalizeConnectionNodes,

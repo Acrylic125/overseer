@@ -61,10 +61,12 @@ function computeBounds(
     maxZ = Math.max(maxZ, service.y + service.depth);
   }
 
-  minX = Math.min(minX, publicInternet.centerX - publicInternet.width / 2);
-  maxX = Math.max(maxX, publicInternet.centerX + publicInternet.width / 2);
-  minZ = Math.min(minZ, publicInternet.centerZ - publicInternet.depth / 2);
-  maxZ = Math.max(maxZ, publicInternet.centerZ + publicInternet.depth / 2);
+  if (publicInternet.width > 0 && publicInternet.depth > 0) {
+    minX = Math.min(minX, publicInternet.centerX - publicInternet.width / 2);
+    maxX = Math.max(maxX, publicInternet.centerX + publicInternet.width / 2);
+    minZ = Math.min(minZ, publicInternet.centerZ - publicInternet.depth / 2);
+    maxZ = Math.max(maxZ, publicInternet.centerZ + publicInternet.depth / 2);
+  }
 
   if (!Number.isFinite(minX)) {
     return {
@@ -140,7 +142,11 @@ export function layoutFromDb(
 
   const knownIds = new Set([
     ...db.resources.map((resource) => resource.id),
-    INTERNET_ID,
+    ...(db.static.publicInternet.size &&
+    db.static.publicInternet.size[0] > 0 &&
+    db.static.publicInternet.size[1] > 0
+      ? [INTERNET_ID]
+      : []),
   ]);
 
   const connectorPaths: ConnectorPath[] = db.connectors

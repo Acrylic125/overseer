@@ -1,5 +1,4 @@
 import { createConnectorEngine, type LayoutAabb } from "./connectors.js";
-import { INTERNET_ID, isInternetResource } from "./core/internet.js";
 import { meshSizesFromGlb, type MeshSize } from "./glb.js";
 import type {
   LayoutOutput,
@@ -88,9 +87,6 @@ export const DEFAULT_LAYOUT_CONFIG: LayoutConfig = {
   },
 };
 
-/** Layout group key for the public-internet cloud pad (not a resource group). */
-export const PUBLIC_INTERNET_LAYOUT_GROUP = "__public_internet__";
-
 /** Path separator for nested groups (`root/mid/leaf`, max 3 segments). */
 export const GROUP_SEP = "/";
 export const MAX_GROUP_DEPTH = 3;
@@ -109,7 +105,7 @@ const ICON_Z = roundCoord(0.01);
 const CONNECTOR_Z = roundCoord(0);
 const NEST_Z_STEP = 0.002;
 
-const PUBLIC_INTERNET_GAP = 4;
+const INTERNET_RESOURCE_ID = "internet:public";
 
 function sizeForAsset(
   asset: string,
@@ -195,7 +191,7 @@ function ensureGroupNode(
 function buildGroupForest(resources: Resource[]): Map<string, GroupNode> {
   const roots = new Map<string, GroupNode>();
   for (const resource of resources) {
-    if (isInternetResource(resource)) continue;
+    if (resource.id === INTERNET_RESOURCE_ID) continue;
     const segments = splitGroupPath(resource.group);
     const path = (segments.length > 0 ? segments : ["default"]).join(GROUP_SEP);
     const node = ensureGroupNode(
@@ -532,19 +528,6 @@ function nestDepth(path: string): number {
   return Math.max(0, path.split(GROUP_SEP).length - 1);
 }
 
-function publicInternetFootprint(
-  platformCount: number,
-  baseWidth: number,
-  baseDepth: number,
-) {
-  const n = Math.max(1, platformCount);
-  const s = Math.sqrt(n);
-  return {
-    width: Math.max(baseWidth, Math.round(baseWidth * s)),
-    depth: Math.max(baseDepth, Math.round(baseDepth * s)),
-  };
-}
-
 function connectionTargets(
   resourceId: string,
   connections: ResourceConnection[],
@@ -552,8 +535,10 @@ function connectionTargets(
   const targets = new Set<string>();
   for (const connection of connections) {
     const [from, to] = connection.nodes;
-    if (from === resourceId) targets.add(to);
-    if (to === resourceId) targets.add(from);
+    if (from === to) continue;
+    if (from === INTERNET_RESOURCE_ID || to === INTERNET_RESOURCE_ID) continue;
+    if (from === resourceId && to !== resourceId) targets.add(to);
+    if (to === resourceId && from !== resourceId) targets.add(from);
   }
   return [...targets];
 }
@@ -644,9 +629,10 @@ export function layout({
     width: pack.iconWidth,
     height: pack.iconHeight,
   };
-  const cloudBase = sizeForAsset("cloud", sizes, fallback);
 
-  const packable = resources.filter((resource) => !isInternetResource(resource));
+  const packable = resources.filter(
+    (resource) => resource.id !== INTERNET_RESOURCE_ID,
+  );
 
   const forest = buildGroupForest(packable);
   const rootPacks = [...forest.values()]
@@ -667,39 +653,18 @@ export function layout({
     resources: [],
   }));
   const packed = packPlatforms(rootClusters, pack.groupGap);
-  const cloud = publicInternetFootprint(
-    Math.max(1, packed.placed.length),
-    cloudBase.width,
-    cloudBase.height,
-  );
 
-  const serviceOffsetX = cloud.width / 2 + PUBLIC_INTERNET_GAP;
   const serviceOffsetY = -packed.totalHeight / 2;
 
   const layoutItems: ResourceLayoutItem<string>[] = [];
   const boxes: LayoutAabb[] = [];
-
-  const cloudPos = roundPos([-cloud.width / 2, -cloud.depth / 2, PLATFORM_Z]);
-  layoutItems.push({
-    type: "group",
-    group: PUBLIC_INTERNET_LAYOUT_GROUP,
-    from: cloudPos,
-    to: roundPos([
-      cloudPos[0] + cloud.width,
-      cloudPos[1] + cloud.depth,
-      PLATFORM_Z,
-    ]),
-  });
-  boxes.push(
-    iconAabb(INTERNET_ID, cloudPos[0], cloudPos[1], cloud.width, cloud.depth),
-  );
 
   for (let i = 0; i < packed.placed.length; i += 1) {
     const placement = packed.placed[i]!;
     const root = rootPacks[i]!;
     emitNestedPack(
       root,
-      placement.offsetX + serviceOffsetX,
+      placement.offsetX,
       placement.offsetY + serviceOffsetY,
       sizes,
       fallback,
@@ -709,41 +674,44 @@ export function layout({
     );
   }
 
-  const graphResources = [...packable, ...resources.filter(isInternetResource)];
-
   const paths = buildAllConnectorPaths(
     boxes,
-    graphResources.map((resource) => ({
+    packable.map((resource) => ({
       id: resource.id,
       connections: connectionTargets(resource.id, connections),
     })),
   );
 
   for (const path of paths) {
-    let sourceId = path.sourceId;
-    let targetId = path.targetId;
-    let pathPoints = path.points;
-
-    const involvesInternet =
-      sourceId === INTERNET_ID || targetId === INTERNET_ID;
-    if (involvesInternet && sourceId !== INTERNET_ID) {
-      sourceId = INTERNET_ID;
-      targetId = path.sourceId;
-      pathPoints = [...path.points].reverse();
+    if (path.sourceId === path.targetId) continue;
+    if (
+      path.sourceId === INTERNET_RESOURCE_ID ||
+      path.targetId === INTERNET_RESOURCE_ID
+    ) {
+      continue;
     }
 
     layoutItems.push({
       type: "connector",
-      nodes: [sourceId, targetId],
-      path: pathPoints.map(
+      nodes: [path.sourceId, path.targetId],
+      path: path.points.map(
         (point): Pos => roundPos([point.x, point.y, pack.connectorZ]),
       ),
     });
   }
 
+  const visibleConnections = connections.filter((connection) => {
+    const [from, to] = connection.nodes;
+    if (from === to) return false;
+    if (from === INTERNET_RESOURCE_ID || to === INTERNET_RESOURCE_ID) {
+      return false;
+    }
+    return true;
+  });
+
   return {
-    resources,
-    connections,
+    resources: packable,
+    connections: visibleConnections,
     layout: layoutItems,
   };
 }

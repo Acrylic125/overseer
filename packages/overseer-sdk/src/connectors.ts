@@ -1,5 +1,14 @@
 import type { ConnectorConfig } from "./layout.js";
 
+/**
+ * Orthogonal connector routing for the layout plane (x/y).
+ * Ported from `ui/lib/graph/connector-paths.ts` (UI uses x/z on the ground).
+ */
+
+const MAX_BFS_VISITS = 20_000;
+const DENSE_SPACING_MAX_SERVICES = 120;
+const BOX_GRID_CELL = 2;
+
 export type LayoutAabb = {
   id: string;
   minX: number;
@@ -11,10 +20,6 @@ export type LayoutAabb = {
 };
 
 type Pt = { x: number; y: number };
-
-type SegmentObstacle = { a: Pt; b: Pt };
-type Axis = "x" | "y";
-type Dir = { x: -1 | 0 | 1; y: -1 | 0 | 1 };
 
 export type RoutedConnectorPath = {
   id: string;
@@ -28,34 +33,106 @@ type ConnectionRow = {
   connections: string[];
 };
 
-type ConnectorPair = {
-  source: LayoutAabb;
-  target: LayoutAabb;
-  sourceDir: Dir;
-  targetDir: Dir;
-};
+type SegmentObstacle = { a: Pt; b: Pt };
+type Dir = { x: 1 | -1 | 0; y: 1 | -1 | 0 };
 
-type RouteContext = {
+class BoxGrid {
+  readonly cellSize: number;
+  private readonly cells = new Map<string, LayoutAabb[]>();
+
+  constructor(boxes: LayoutAabb[], cellSize = BOX_GRID_CELL) {
+    this.cellSize = cellSize;
+    for (const box of boxes) {
+      const x0 = Math.floor(box.minX / cellSize);
+      const x1 = Math.floor(box.maxX / cellSize);
+      const y0 = Math.floor(box.minY / cellSize);
+      const y1 = Math.floor(box.maxY / cellSize);
+      for (let gx = x0; gx <= x1; gx += 1) {
+        for (let gy = y0; gy <= y1; gy += 1) {
+          const key = `${gx},${gy}`;
+          const list = this.cells.get(key);
+          if (list) list.push(box);
+          else this.cells.set(key, [box]);
+        }
+      }
+    }
+  }
+
+  queryRect(
+    minX: number,
+    maxX: number,
+    minY: number,
+    maxY: number,
+  ): LayoutAabb[] {
+    const x0 = Math.floor(minX / this.cellSize);
+    const x1 = Math.floor(maxX / this.cellSize);
+    const y0 = Math.floor(minY / this.cellSize);
+    const y1 = Math.floor(maxY / this.cellSize);
+    const seen = new Set<string>();
+    const out: LayoutAabb[] = [];
+
+    for (let gx = x0; gx <= x1; gx += 1) {
+      for (let gy = y0; gy <= y1; gy += 1) {
+        const list = this.cells.get(`${gx},${gy}`);
+        if (!list) continue;
+        for (const box of list) {
+          if (seen.has(box.id)) continue;
+          if (
+            box.maxX < minX ||
+            box.minX > maxX ||
+            box.maxY < minY ||
+            box.minY > maxY
+          ) {
+            continue;
+          }
+          seen.add(box.id);
+          out.push(box);
+        }
+      }
+    }
+
+    return out;
+  }
+
+  queryPoint(px: number, py: number, radius: number): LayoutAabb[] {
+    return this.queryRect(px - radius, px + radius, py - radius, py + radius);
+  }
+}
+
+type WalkSpace = {
   boxes: LayoutAabb[];
-  sourceId: string;
-  targetId: string;
-  config: ConnectorConfig;
-  priorSegments: SegmentObstacle[];
+  index: BoxGrid;
+  excludeIds: Set<string>;
+  segments: SegmentObstacle[];
+  clearance: number;
+  sep: number;
+  step: number;
 };
 
-function clamp(value: number, min: number, max: number): number {
+function boxesNear(
+  space: WalkSpace,
+  px: number,
+  py: number,
+  radius: number,
+): LayoutAabb[] {
+  const hits = space.index.queryPoint(px, py, radius);
+  if (space.excludeIds.size === 0) return hits;
+  return hits.filter((box) => !space.excludeIds.has(box.id));
+}
+
+function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function same(a: number, b: number, epsilon = 1e-4): boolean {
-  return Math.abs(a - b) < epsilon;
+function same(a: number, b: number, eps = 1e-4) {
+  return Math.abs(a - b) < eps;
 }
 
-function isVertical(a: Pt, b: Pt): boolean {
-  return same(a.x, b.x);
+function isCardinalSegment(a: Pt, b: Pt) {
+  return same(a.x, b.x) || same(a.y, b.y);
 }
 
-function iconAabb(
+export function iconAabb(
   id: string,
   x: number,
   y: number,
@@ -73,290 +150,211 @@ function iconAabb(
   };
 }
 
-function distPointToAabb(point: Pt, box: LayoutAabb): number {
-  const x = clamp(point.x, box.minX, box.maxX);
-  const y = clamp(point.y, box.minY, box.maxY);
-  return Math.hypot(point.x - x, point.y - y);
+function distPointToAabb(px: number, py: number, box: LayoutAabb) {
+  const cx = clamp(px, box.minX, box.maxX);
+  const cy = clamp(py, box.minY, box.maxY);
+  return Math.hypot(px - cx, py - cy);
 }
 
-function distPointToSegment(point: Pt, a: Pt, b: Pt): number {
+function distPointToSegment(px: number, py: number, a: Pt, b: Pt) {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
-  const lengthSquared = abx * abx + aby * aby;
-
-  if (lengthSquared < 1e-12) {
-    return Math.hypot(point.x - a.x, point.y - a.y);
-  }
-
-  const t = clamp(
-    ((point.x - a.x) * abx + (point.y - a.y) * aby) / lengthSquared,
-    0,
-    1,
-  );
-
-  return Math.hypot(point.x - (a.x + abx * t), point.y - (a.y + aby * t));
+  const len2 = abx * abx + aby * aby;
+  if (len2 < 1e-12) return Math.hypot(px - a.x, py - a.y);
+  const t = clamp(((px - a.x) * abx + (py - a.y) * aby) / len2, 0, 1);
+  return Math.hypot(px - (a.x + abx * t), py - (a.y + aby * t));
 }
 
-function simplifyPath(points: Pt[]): Pt[] {
-  if (points.length === 0) return [];
-
-  const deduped: Pt[] = [points[0]!];
-  for (let i = 1; i < points.length; i += 1) {
-    const prev = deduped[deduped.length - 1]!;
-    const current = points[i]!;
-    if (same(prev.x, current.x) && same(prev.y, current.y)) continue;
-    deduped.push(current);
-  }
-
-  if (deduped.length <= 2) return deduped;
-
-  const simplified: Pt[] = [deduped[0]!];
-  for (let i = 1; i < deduped.length - 1; i += 1) {
-    const prev = simplified[simplified.length - 1]!;
-    const current = deduped[i]!;
-    const next = deduped[i + 1]!;
-
-    const sameX = same(prev.x, current.x) && same(current.x, next.x);
-    const sameY = same(prev.y, current.y) && same(current.y, next.y);
-    if (sameX || sameY) continue;
-
-    simplified.push(current);
-  }
-  simplified.push(deduped[deduped.length - 1]!);
-  return simplified;
-}
-
-function cardinalToward(from: Pt, to: Pt): Dir {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    return { x: (Math.sign(dx) || 1) as -1 | 1, y: 0 };
-  }
-
-  return { x: 0, y: (Math.sign(dy) || 1) as -1 | 1 };
-}
-
-function faceKey(id: string, dir: Dir): string {
-  return `${id}|${dir.x},${dir.y}`;
-}
-
-function pairKey(a: string, b: string): string {
-  return [a, b].sort().join("|");
-}
-
-function incrementCount(map: Map<string, number>, key: string): void {
-  map.set(key, (map.get(key) ?? 0) + 1);
-}
-
-function faceTangent(dir: Dir): Dir {
-  return dir.x !== 0 ? { x: 0, y: 1 } : { x: 1, y: 0 };
-}
-
-function faceExit(box: LayoutAabb, dir: Dir, jut: number): Pt {
-  if (dir.x !== 0) {
-    return {
-      x: (dir.x > 0 ? box.maxX : box.minX) + dir.x * jut,
-      y: box.cy,
-    };
-  }
-
-  return {
-    x: box.cx,
-    y: (dir.y > 0 ? box.maxY : box.minY) + dir.y * jut,
-  };
-}
-
-function offsetPort(
-  point: Pt,
-  dir: Dir,
-  box: LayoutAabb,
-  slot: number,
-  slotCount: number,
-  portSep: number,
-): Pt {
-  if (slotCount <= 1) return point;
-
-  const tangent = faceTangent(dir);
-  const midpoint = (slotCount - 1) / 2;
-  const inset = 0.1;
-  const available =
-    tangent.x !== 0
-      ? Math.max(0, box.maxX - box.minX - inset * 2)
-      : Math.max(0, box.maxY - box.minY - inset * 2);
-  const desired = (slotCount - 1) * portSep;
-  const actualSep =
-    desired <= available ? portSep : available / (slotCount - 1);
-  const delta = (slot - midpoint) * actualSep;
-
-  if (dir.x !== 0) {
-    return {
-      x: point.x,
-      y: clamp(point.y + tangent.y * delta, box.minY + inset, box.maxY - inset),
-    };
-  }
-
-  return {
-    x: clamp(point.x + tangent.x * delta, box.minX + inset, box.maxX - inset),
-    y: point.y,
-  };
-}
-
-function segmentDirection(a: Pt, b: Pt): Axis | null {
-  if (same(a.x, b.x) && same(a.y, b.y)) return null;
-  return isVertical(a, b) ? "y" : "x";
-}
-
-function pointHitsBox(point: Pt, box: LayoutAabb, clearance: number): boolean {
-  return distPointToAabb(point, box) < clearance;
-}
-
-function pointHitsSegments(
-  point: Pt,
-  direction: Axis | null,
-  segments: SegmentObstacle[],
-  spacing: number,
-): boolean {
-  for (const segment of segments) {
-    if (distPointToSegment(point, segment.a, segment.b) >= spacing) continue;
-    if (!direction) return true;
-    const segmentAxis = segmentDirection(segment.a, segment.b);
-    if (segmentAxis === direction) return true;
+function blockedBySegments(
+  px: number,
+  py: number,
+  moveDir: Dir | null,
+  space: WalkSpace,
+) {
+  for (const seg of space.segments) {
+    const dist = distPointToSegment(px, py, seg.a, seg.b);
+    if (dist >= space.sep) continue;
+    const sdx = seg.b.x - seg.a.x;
+    const sdy = seg.b.y - seg.a.y;
+    const segAlongX = Math.abs(sdx) >= Math.abs(sdy);
+    if (!moveDir) return true;
+    const movingAlongX = moveDir.x !== 0;
+    if (movingAlongX === segAlongX) return true;
   }
   return false;
 }
 
-function segmentIsClear(a: Pt, b: Pt, ctx: RouteContext): boolean {
-  const direction = segmentDirection(a, b);
-  const length = Math.hypot(b.x - a.x, b.y - a.y);
-  const steps = Math.max(1, Math.ceil(length / ctx.config.step));
+function isWalkable(
+  px: number,
+  py: number,
+  space: WalkSpace,
+  moveDir: Dir | null = null,
+) {
+  for (const box of boxesNear(space, px, py, space.clearance)) {
+    if (distPointToAabb(px, py, box) < space.clearance) return false;
+  }
+  return !blockedBySegments(px, py, moveDir, space);
+}
 
-  for (let i = 1; i <= steps; i += 1) {
-    const t = i / steps;
-    const point = {
-      x: a.x + (b.x - a.x) * t,
-      y: a.y + (b.y - a.y) * t,
-    };
+function finalizeOrthogonal(points: Pt[]): Pt[] {
+  if (points.length === 0) return points;
 
-    for (const box of ctx.boxes) {
-      if (box.id === ctx.sourceId || box.id === ctx.targetId) continue;
-      if (pointHitsBox(point, box, ctx.config.clearance)) return false;
+  const orth: Pt[] = [points[0]!];
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = orth[orth.length - 1]!;
+    const cur = points[i]!;
+    if (!isCardinalSegment(prev, cur)) {
+      orth.push({ x: cur.x, y: prev.y });
     }
-
-    if (
-      pointHitsSegments(point, direction, ctx.priorSegments, ctx.config.portSep)
-    ) {
-      return false;
+    const last = orth[orth.length - 1]!;
+    if (!same(last.x, cur.x) || !same(last.y, cur.y)) {
+      orth.push(cur);
     }
   }
 
-  return true;
+  if (orth.length <= 2) return orth;
+
+  const out: Pt[] = [orth[0]!];
+  for (let i = 1; i < orth.length - 1; i += 1) {
+    const prev = out[out.length - 1]!;
+    const cur = orth[i]!;
+    const next = orth[i + 1]!;
+    const colX = same(prev.x, cur.x) && same(cur.x, next.x);
+    const colY = same(prev.y, cur.y) && same(cur.y, next.y);
+    if (colX || colY) continue;
+    out.push(cur);
+  }
+  out.push(orth[orth.length - 1]!);
+  return out;
 }
 
-function pathIsClear(points: Pt[], ctx: RouteContext): boolean {
-  const simplified = simplifyPath(points);
-  for (let i = 0; i < simplified.length - 1; i += 1) {
-    if (!segmentIsClear(simplified[i]!, simplified[i + 1]!, ctx)) return false;
+function segmentDir(a: Pt, b: Pt): Dir | null {
+  if (same(a.x, b.x) && same(a.y, b.y)) return null;
+  if (same(a.x, b.x)) return { x: 0, y: (Math.sign(b.y - a.y) || 1) as 1 | -1 };
+  if (same(a.y, b.y)) return { x: (Math.sign(b.x - a.x) || 1) as 1 | -1, y: 0 };
+  return null;
+}
+
+function pathClear(points: Pt[], space: WalkSpace) {
+  const orth = finalizeOrthogonal(points);
+  for (let i = 0; i < orth.length - 1; i += 1) {
+    const a = orth[i]!;
+    const b = orth[i + 1]!;
+    const dir = segmentDir(a, b);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const n = Math.max(1, Math.ceil(len / space.step));
+    for (let s = 1; s <= n; s += 1) {
+      const t = s / n;
+      const px = a.x + (b.x - a.x) * t;
+      const py = a.y + (b.y - a.y) * t;
+      if (!isWalkable(px, py, space, dir)) return false;
+    }
   }
   return true;
 }
 
-function collectBlockingBoxes(
-  candidates: Pt[][],
-  ctx: RouteContext,
+function pathClearOfBoxes(points: Pt[], space: WalkSpace) {
+  return pathClear(points, { ...space, segments: [] });
+}
+
+function obstaclesNearPath(
+  exit: Pt,
+  entry: Pt,
+  index: BoxGrid,
+  excludeIds: Set<string>,
+  pad: number,
 ): LayoutAabb[] {
-  const blockers = new Map<string, LayoutAabb>();
-
-  for (const candidate of candidates) {
-    const simplified = simplifyPath(candidate);
-    for (let i = 0; i < simplified.length - 1; i += 1) {
-      const a = simplified[i]!;
-      const b = simplified[i + 1]!;
-      const minX = Math.min(a.x, b.x) - ctx.config.clearance;
-      const maxX = Math.max(a.x, b.x) + ctx.config.clearance;
-      const minY = Math.min(a.y, b.y) - ctx.config.clearance;
-      const maxY = Math.max(a.y, b.y) + ctx.config.clearance;
-
-      for (const box of ctx.boxes) {
-        if (box.id === ctx.sourceId || box.id === ctx.targetId) continue;
-        const overlaps =
-          box.maxX >= minX &&
-          box.minX <= maxX &&
-          box.maxY >= minY &&
-          box.minY <= maxY;
-        if (overlaps) blockers.set(box.id, box);
-      }
-    }
-  }
-
-  return [...blockers.values()];
+  const minX = Math.min(exit.x, entry.x) - pad;
+  const maxX = Math.max(exit.x, entry.x) + pad;
+  const minY = Math.min(exit.y, entry.y) - pad;
+  const maxY = Math.max(exit.y, entry.y) + pad;
+  return index
+    .queryRect(minX, maxX, minY, maxY)
+    .filter((box) => !excludeIds.has(box.id));
 }
 
-function detourLines(
-  exit: Pt,
-  entry: Pt,
-  blockingBoxes: LayoutAabb[],
-  config: ConnectorConfig,
-): { xs: number[]; ys: number[] } {
-  const minX = Math.min(exit.x, entry.x);
-  const maxX = Math.max(exit.x, entry.x);
-  const minY = Math.min(exit.y, entry.y);
-  const maxY = Math.max(exit.y, entry.y);
-  const basePad = config.clearance + config.jut + config.lane;
-
-  let left = minX - basePad;
-  let right = maxX + basePad;
-  let top = minY - basePad;
-  let bottom = maxY + basePad;
-
-  for (const box of blockingBoxes) {
-    left = Math.min(left, box.minX - basePad);
-    right = Math.max(right, box.maxX + basePad);
-    top = Math.min(top, box.minY - basePad);
-    bottom = Math.max(bottom, box.maxY + basePad);
-  }
-
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (let step = 1; step <= config.detourSteps; step += 1) {
-    const offset = step * config.lane;
-    xs.push(left - offset, right + offset);
-    ys.push(top - offset, bottom + offset);
-  }
-
-  return { xs, ys };
+function laneOffsets(max: number): number[] {
+  const out: number[] = [];
+  for (let k = 1; k <= max; k += 1) out.push(k);
+  for (let k = 1; k <= max; k += 1) out.push(-k);
+  return out;
 }
 
-function directCandidates(exit: Pt, entry: Pt): Pt[][] {
-  return [
-    [exit, { x: entry.x, y: exit.y }, entry],
-    [exit, { x: exit.x, y: entry.y }, entry],
-  ];
-}
-
-function detourCandidates(
-  exit: Pt,
-  entry: Pt,
-  xs: number[],
-  ys: number[],
-): Pt[][] {
+function candidateRoutes(exit: Pt, entry: Pt, lane: number, detourSteps: number): Pt[][] {
   const candidates: Pt[][] = [];
+  const lanes = laneOffsets(detourSteps);
 
-  for (const y of ys) {
-    candidates.push([exit, { x: exit.x, y }, { x: entry.x, y }, entry]);
-  }
+  candidates.push([exit, { x: entry.x, y: exit.y }, entry]);
+  candidates.push([exit, { x: exit.x, y: entry.y }, entry]);
 
-  for (const x of xs) {
-    candidates.push([exit, { x, y: exit.y }, { x, y: entry.y }, entry]);
-  }
+  for (const k of lanes) {
+    const dy = k * lane;
+    const dx = k * lane;
 
-  for (const y of ys) {
-    for (const x of xs) {
+    const yFromExit = exit.y + dy;
+    candidates.push([
+      exit,
+      { x: exit.x, y: yFromExit },
+      { x: entry.x, y: yFromExit },
+      entry,
+    ]);
+
+    const yFromEntry = entry.y + dy;
+    candidates.push([
+      exit,
+      { x: exit.x, y: yFromEntry },
+      { x: entry.x, y: yFromEntry },
+      entry,
+    ]);
+
+    const yBelow = Math.max(exit.y, entry.y) + Math.abs(dy);
+    const yAbove = Math.min(exit.y, entry.y) - Math.abs(dy);
+    if (k > 0) {
       candidates.push([
         exit,
-        { x: exit.x, y },
-        { x, y },
-        { x, y: entry.y },
+        { x: exit.x, y: yBelow },
+        { x: entry.x, y: yBelow },
+        entry,
+      ]);
+    } else {
+      candidates.push([
+        exit,
+        { x: exit.x, y: yAbove },
+        { x: entry.x, y: yAbove },
+        entry,
+      ]);
+    }
+
+    const xFromExit = exit.x + dx;
+    candidates.push([
+      exit,
+      { x: xFromExit, y: exit.y },
+      { x: xFromExit, y: entry.y },
+      entry,
+    ]);
+
+    const xFromEntry = entry.x + dx;
+    candidates.push([
+      exit,
+      { x: xFromEntry, y: exit.y },
+      { x: xFromEntry, y: entry.y },
+      entry,
+    ]);
+
+    const xRight = Math.max(exit.x, entry.x) + Math.abs(dx);
+    const xLeft = Math.min(exit.x, entry.x) - Math.abs(dx);
+    if (k > 0) {
+      candidates.push([
+        exit,
+        { x: xRight, y: exit.y },
+        { x: xRight, y: entry.y },
+        entry,
+      ]);
+    } else {
+      candidates.push([
+        exit,
+        { x: xLeft, y: exit.y },
+        { x: xLeft, y: entry.y },
         entry,
       ]);
     }
@@ -365,120 +363,587 @@ function detourCandidates(
   return candidates;
 }
 
-function chooseRoute(exit: Pt, entry: Pt, ctx: RouteContext): Pt[] {
-  const direct = directCandidates(exit, entry);
-
-  for (const candidate of direct) {
-    const simplified = simplifyPath(candidate);
-    if (pathIsClear(simplified, ctx)) return simplified;
+function pickFirstClear(
+  candidates: Pt[][],
+  space: WalkSpace,
+  boxesOnly: boolean,
+  maxTries: number,
+): Pt[] | null {
+  let tries = 0;
+  for (const raw of candidates) {
+    if (tries >= maxTries) break;
+    tries += 1;
+    const path = finalizeOrthogonal(raw);
+    const clear = boxesOnly
+      ? pathClearOfBoxes(path, space)
+      : pathClear(path, space);
+    if (clear) return path;
   }
-
-  const blockers = collectBlockingBoxes(direct, ctx);
-  const { xs, ys } = detourLines(exit, entry, blockers, ctx.config);
-
-  for (const candidate of detourCandidates(exit, entry, xs, ys)) {
-    const simplified = simplifyPath(candidate);
-    if (pathIsClear(simplified, ctx)) return simplified;
-  }
-
-  return simplifyPath([exit, { x: entry.x, y: exit.y }, entry]);
+  return null;
 }
 
-function segmentsFromPath(points: Pt[]): SegmentObstacle[] {
-  const segments: SegmentObstacle[] = [];
-  const simplified = simplifyPath(points);
-
-  for (let i = 0; i < simplified.length - 1; i += 1) {
-    const a = simplified[i]!;
-    const b = simplified[i + 1]!;
-    if (same(a.x, b.x) && same(a.y, b.y)) continue;
-    segments.push({ a, b });
+function collapseToCleanBends(path: Pt[], space: WalkSpace): Pt[] {
+  let pts = finalizeOrthogonal(path);
+  let changed = true;
+  while (changed && pts.length > 3) {
+    changed = false;
+    for (let i = 0; i < pts.length - 2; i += 1) {
+      const a = pts[i]!;
+      for (let j = i + 2; j < pts.length; j += 1) {
+        const c = pts[j]!;
+        const elbows = [
+          finalizeOrthogonal([a, { x: c.x, y: a.y }, c]),
+          finalizeOrthogonal([a, { x: a.x, y: c.y }, c]),
+        ];
+        for (const elbow of elbows) {
+          if (!pathClear(elbow, space)) continue;
+          const trial = finalizeOrthogonal([
+            ...pts.slice(0, i),
+            ...elbow,
+            ...pts.slice(j + 1),
+          ]);
+          if (trial.length < pts.length && pathClear(trial, space)) {
+            pts = trial;
+            changed = true;
+            break;
+          }
+        }
+        if (changed) break;
+      }
+      if (changed) break;
+    }
   }
-
-  return segments;
+  return pts;
 }
 
-function buildPairs(
-  boxes: LayoutAabb[],
-  connections: ConnectionRow[],
-): ConnectorPair[] {
-  const boxById = new Map(boxes.map((box) => [box.id, box]));
-  const seen = new Set<string>();
-  const pairs: ConnectorPair[] = [];
+function bfsAroundBoxes(
+  exit: Pt,
+  entry: Pt,
+  space: WalkSpace,
+  avoidSegments: boolean,
+  lane: number,
+): Pt[] | null {
+  const step = lane;
+  const margin = Math.max(
+    10,
+    Math.hypot(entry.x - exit.x, entry.y - exit.y) + 6,
+  );
+  const minX = Math.min(exit.x, entry.x) - margin;
+  const maxX = Math.max(exit.x, entry.x) + margin;
+  const minY = Math.min(exit.y, entry.y) - margin;
+  const maxY = Math.max(exit.y, entry.y) + margin;
 
-  for (const row of connections) {
-    const source = boxById.get(row.id);
-    if (!source) continue;
+  const snap = (v: number) => Math.round(v / step) * step;
+  const start: Pt = { x: snap(exit.x), y: snap(exit.y) };
+  const goal: Pt = { x: snap(entry.x), y: snap(entry.y) };
 
-    for (const targetId of row.connections) {
-      const target = boxById.get(targetId);
-      if (!target) continue;
+  const walkSpace: WalkSpace = avoidSegments
+    ? space
+    : { ...space, segments: [] };
 
-      const key = pairKey(source.id, target.id);
-      if (seen.has(key)) continue;
-      seen.add(key);
+  const key = (p: Pt) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+  const inBounds = (p: Pt) =>
+    p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+  const okBox = (p: Pt) =>
+    boxesNear(walkSpace, p.x, p.y, walkSpace.clearance).every(
+      (box) => distPointToAabb(p.x, p.y, box) >= walkSpace.clearance,
+    );
+  const ok = (p: Pt, dir: Dir | null) => {
+    if (!inBounds(p)) return false;
+    return isWalkable(p.x, p.y, walkSpace, dir);
+  };
 
-      const sourceCenter = { x: source.cx, y: source.cy };
-      const targetCenter = { x: target.cx, y: target.cy };
+  if (!okBox(start) || !okBox(goal)) return null;
 
-      pairs.push({
-        source,
-        target,
-        sourceDir: cardinalToward(sourceCenter, targetCenter),
-        targetDir: cardinalToward(targetCenter, sourceCenter),
-      });
+  type Node = { pt: Pt; dir: Dir | null };
+  const dirs: Dir[] = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+  ];
+  const came = new Map<string, string | null>();
+  const camePt = new Map<string, Pt>();
+  const q: Node[] = [{ pt: start, dir: null }];
+  came.set(key(start), null);
+  camePt.set(key(start), start);
+
+  let found: Pt | null = null;
+  const goalR = step * 0.51;
+  let visits = 0;
+
+  while (q.length > 0) {
+    if (visits >= MAX_BFS_VISITS) return null;
+    visits += 1;
+    const cur = q.shift()!;
+    if (
+      Math.abs(cur.pt.x - goal.x) <= goalR &&
+      Math.abs(cur.pt.y - goal.y) <= goalR
+    ) {
+      found = cur.pt;
+      break;
+    }
+    for (const dir of dirs) {
+      const next = {
+        x: cur.pt.x + dir.x * step,
+        y: cur.pt.y + dir.y * step,
+      };
+      const k = key(next);
+      if (came.has(k)) continue;
+      if (!ok(next, dir)) continue;
+      came.set(k, key(cur.pt));
+      camePt.set(k, next);
+      const node = { pt: next, dir };
+      const straight =
+        cur.dir && cur.dir.x === dir.x && cur.dir.y === dir.y;
+      if (straight) q.unshift(node);
+      else q.push(node);
     }
   }
 
-  return pairs;
+  if (!found) return null;
+
+  const gridPath: Pt[] = [];
+  let ck: string | null = key(found);
+  while (ck) {
+    gridPath.push(camePt.get(ck)!);
+    ck = came.get(ck) ?? null;
+  }
+  gridPath.reverse();
+
+  return collapseToCleanBends(
+    finalizeOrthogonal([exit, ...gridPath, entry]),
+    walkSpace,
+  );
+}
+
+function hullDetour(
+  exit: Pt,
+  entry: Pt,
+  boxes: LayoutAabb[],
+  space: WalkSpace,
+): Pt[] | null {
+  if (boxes.length === 0) {
+    return finalizeOrthogonal([exit, { x: entry.x, y: exit.y }, entry]);
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  const pad = space.clearance + space.step;
+  for (const box of boxes) {
+    minX = Math.min(minX, box.minX - pad);
+    maxX = Math.max(maxX, box.maxX + pad);
+    minY = Math.min(minY, box.minY - pad);
+    maxY = Math.max(maxY, box.maxY + pad);
+  }
+
+  const candidates: Pt[][] = [
+    [exit, { x: exit.x, y: minY }, { x: entry.x, y: minY }, entry],
+    [exit, { x: exit.x, y: maxY }, { x: entry.x, y: maxY }, entry],
+    [exit, { x: minX, y: exit.y }, { x: minX, y: entry.y }, entry],
+    [exit, { x: maxX, y: exit.y }, { x: maxX, y: entry.y }, entry],
+    [
+      exit,
+      { x: exit.x, y: minY },
+      { x: minX, y: minY },
+      { x: minX, y: entry.y },
+      entry,
+    ],
+    [
+      exit,
+      { x: exit.x, y: maxY },
+      { x: maxX, y: maxY },
+      { x: maxX, y: entry.y },
+      entry,
+    ],
+    [
+      exit,
+      { x: exit.x, y: minY },
+      { x: maxX, y: minY },
+      { x: maxX, y: entry.y },
+      entry,
+    ],
+    [
+      exit,
+      { x: exit.x, y: maxY },
+      { x: minX, y: maxY },
+      { x: minX, y: entry.y },
+      entry,
+    ],
+  ];
+
+  return pickFirstClear(
+    candidates,
+    { ...space, boxes, segments: [] },
+    true,
+    candidates.length,
+  );
+}
+
+function outerRingDetour(
+  exit: Pt,
+  entry: Pt,
+  boxes: LayoutAabb[],
+  space: WalkSpace,
+  clearance: number,
+): Pt[] | null {
+  if (boxes.length === 0) {
+    return finalizeOrthogonal([exit, { x: entry.x, y: exit.y }, entry]);
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  const pad = clearance + space.step * 2;
+  for (const box of boxes) {
+    minX = Math.min(minX, box.minX - pad);
+    maxX = Math.max(maxX, box.maxX + pad);
+    minY = Math.min(minY, box.minY - pad);
+    maxY = Math.max(maxY, box.maxY + pad);
+  }
+
+  minX = Math.min(minX, exit.x - pad, entry.x - pad);
+  maxX = Math.max(maxX, exit.x + pad, entry.x + pad);
+  minY = Math.min(minY, exit.y - pad, entry.y - pad);
+  maxY = Math.max(maxY, exit.y + pad, entry.y + pad);
+
+  const candidates: Pt[][] = [
+    [exit, { x: exit.x, y: minY }, { x: entry.x, y: minY }, entry],
+    [exit, { x: exit.x, y: maxY }, { x: entry.x, y: maxY }, entry],
+    [exit, { x: minX, y: exit.y }, { x: minX, y: entry.y }, entry],
+    [exit, { x: maxX, y: exit.y }, { x: maxX, y: entry.y }, entry],
+  ];
+
+  return pickFirstClear(
+    candidates,
+    { ...space, boxes, clearance, segments: [] },
+    true,
+    candidates.length,
+  );
+}
+
+function outerCornerPath(
+  exit: Pt,
+  entry: Pt,
+  boxes: LayoutAabb[],
+  space: WalkSpace,
+): Pt[] | null {
+  if (boxes.length === 0) return null;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  const pad = space.clearance + space.step * 2;
+  for (const box of boxes) {
+    minX = Math.min(minX, box.minX - pad);
+    maxX = Math.max(maxX, box.maxX + pad);
+    minY = Math.min(minY, box.minY - pad);
+    maxY = Math.max(maxY, box.maxY + pad);
+  }
+  minX = Math.min(minX, exit.x, entry.x) - pad;
+  maxX = Math.max(maxX, exit.x, entry.x) + pad;
+  minY = Math.min(minY, exit.y, entry.y) - pad;
+  maxY = Math.max(maxY, exit.y, entry.y) + pad;
+
+  const corners: Pt[] = [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: minX, y: maxY },
+    { x: maxX, y: maxY },
+  ];
+
+  const guard: WalkSpace = { ...space, boxes, segments: [] };
+
+  for (const a of corners) {
+    for (const b of corners) {
+      if (a === b) continue;
+      const path = finalizeOrthogonal([exit, a, b, entry]);
+      if (pathClearOfBoxes(path, guard)) return path;
+    }
+  }
+  return null;
+}
+
+function faceTangent(out: Dir): Dir {
+  if (out.x !== 0) return { x: 0, y: 1 };
+  return { x: 1, y: 0 };
+}
+
+function segmentsFromPoints(points: Pt[]): SegmentObstacle[] {
+  const segs: SegmentObstacle[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    if (same(a.x, b.x) && same(a.y, b.y)) continue;
+    segs.push({ a: { ...a }, b: { ...b } });
+  }
+  return segs;
+}
+
+function cardinalToward(from: Pt, to: Pt): Dir {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { x: (Math.sign(dx) || 1) as 1 | -1, y: 0 };
+  }
+  return { x: 0, y: (Math.sign(dy) || 1) as 1 | -1 };
+}
+
+function offsetJut(
+  jut: Pt,
+  out: Dir,
+  box: LayoutAabb,
+  slot: number,
+  slotCount: number,
+  portSep: number,
+): Pt {
+  if (slotCount <= 1) return jut;
+  const tangent = faceTangent(out);
+  const mid = (slotCount - 1) / 2;
+  const inset = 0.1;
+  const avail =
+    tangent.x !== 0
+      ? Math.max(0, box.maxX - box.minX - inset * 2)
+      : Math.max(0, box.maxY - box.minY - inset * 2);
+  const desired = (slotCount - 1) * portSep;
+  const sep = desired <= avail ? portSep : avail / (slotCount - 1);
+  const delta = (slot - mid) * sep;
+  const ox = jut.x + tangent.x * delta;
+  const oy = jut.y + tangent.y * delta;
+  if (out.x !== 0) {
+    return {
+      x: jut.x,
+      y: clamp(oy, box.minY + inset, box.maxY - inset),
+    };
+  }
+  return {
+    x: clamp(ox, box.minX + inset, box.maxX - inset),
+    y: jut.y,
+  };
+}
+
+function faceExit(box: LayoutAabb, out: Dir, jut: number): Pt {
+  if (out.x !== 0) {
+    return {
+      x: (out.x > 0 ? box.maxX : box.minX) + out.x * jut,
+      y: box.cy,
+    };
+  }
+  return {
+    x: box.cx,
+    y: (out.y > 0 ? box.maxY : box.minY) + out.y * jut,
+  };
+}
+
+function walkConnectorPath(
+  exit: Pt,
+  entry: Pt,
+  boxes: LayoutAabb[],
+  index: BoxGrid,
+  excludeIds: Set<string>,
+  segments: SegmentObstacle[],
+  config: ConnectorConfig,
+): Pt[] {
+  const bfsMargin = Math.max(
+    10,
+    Math.hypot(entry.x - exit.x, entry.y - exit.y) + 6,
+  );
+  const pad = Math.max(
+    config.clearance + config.lane * (config.detourSteps + 2) + config.jut + 1,
+    bfsMargin + config.clearance,
+  );
+  const searchObstacles = obstaclesNearPath(
+    exit,
+    entry,
+    index,
+    excludeIds,
+    pad,
+  );
+  const trackSpacing = segments.length > 0;
+
+  const fullSpace: WalkSpace = {
+    boxes,
+    index,
+    excludeIds,
+    segments: trackSpacing ? segments : [],
+    clearance: config.clearance,
+    sep: config.portSep,
+    step: config.step,
+  };
+  const searchSpace: WalkSpace = {
+    boxes: searchObstacles,
+    index,
+    excludeIds,
+    segments: trackSpacing ? segments : [],
+    clearance: config.clearance,
+    sep: config.portSep,
+    step: config.step,
+  };
+
+  const candidates = candidateRoutes(
+    exit,
+    entry,
+    config.lane,
+    config.detourSteps,
+  );
+
+  if (trackSpacing) {
+    const spaced = pickFirstClear(
+      candidates,
+      fullSpace,
+      false,
+      config.detourSteps,
+    );
+    if (spaced) return spaced;
+  }
+
+  const boxesOnly = pickFirstClear(
+    candidates,
+    fullSpace,
+    true,
+    candidates.length,
+  );
+  if (boxesOnly) return boxesOnly;
+
+  const bfsBoxes = bfsAroundBoxes(exit, entry, searchSpace, false, config.lane);
+  if (bfsBoxes && pathClearOfBoxes(bfsBoxes, fullSpace)) return bfsBoxes;
+
+  const hull = hullDetour(exit, entry, searchObstacles, fullSpace);
+  if (hull && pathClearOfBoxes(hull, fullSpace)) return hull;
+
+  const ring = outerRingDetour(
+    exit,
+    entry,
+    searchObstacles,
+    fullSpace,
+    config.clearance,
+  );
+  if (ring) return ring;
+
+  const bfsWide = bfsAroundBoxes(exit, entry, fullSpace, false, config.lane);
+  if (bfsWide && pathClearOfBoxes(bfsWide, fullSpace)) return bfsWide;
+
+  const corner = outerCornerPath(exit, entry, searchObstacles, fullSpace);
+  if (corner) return corner;
+
+  if (boxes.length === 0) {
+    return finalizeOrthogonal([exit, { x: entry.x, y: exit.y }, entry]);
+  }
+
+  for (let extra = 2; extra <= 64; extra *= 2) {
+    const grown = outerCornerPath(exit, entry, searchObstacles, {
+      ...fullSpace,
+      clearance: config.clearance + config.lane * extra,
+    });
+    if (grown) return grown;
+  }
+
+  const last = outerRingDetour(
+    exit,
+    entry,
+    searchObstacles,
+    fullSpace,
+    config.clearance + config.lane * 128,
+  );
+  if (last) return last;
+
+  return finalizeOrthogonal([exit, { x: entry.x, y: exit.y }, entry]);
 }
 
 function buildConnectorPath(
-  pair: ConnectorPair,
+  source: LayoutAabb,
+  target: LayoutAabb,
   boxes: LayoutAabb[],
+  index: BoxGrid,
   priorSegments: SegmentObstacle[],
-  config: ConnectorConfig,
-  slots: {
-    sourceSlot: number;
-    sourceCount: number;
-    targetSlot: number;
-    targetCount: number;
+  portSlots: {
+    fromSlot: number;
+    fromCount: number;
+    toSlot: number;
+    toCount: number;
   },
+  config: ConnectorConfig,
 ): RoutedConnectorPath {
-  const start = { x: pair.source.cx, y: pair.source.cy };
-  const end = { x: pair.target.cx, y: pair.target.cy };
+  const centerFrom: Pt = { x: source.cx, y: source.cy };
+  const centerTo: Pt = { x: target.cx, y: target.cy };
+  const excludeIds = new Set([source.id, target.id]);
 
-  const exit = offsetPort(
-    faceExit(pair.source, pair.sourceDir, config.jut),
-    pair.sourceDir,
-    pair.source,
-    slots.sourceSlot,
-    slots.sourceCount,
+  const outFrom = cardinalToward(centerFrom, centerTo);
+  const outTo = cardinalToward(centerTo, centerFrom);
+
+  let exit = faceExit(source, outFrom, config.jut);
+  let entry = faceExit(target, outTo, config.jut);
+
+  exit = offsetJut(
+    exit,
+    outFrom,
+    source,
+    portSlots.fromSlot,
+    portSlots.fromCount,
     config.portSep,
   );
-  const entry = offsetPort(
-    faceExit(pair.target, pair.targetDir, config.jut),
-    pair.targetDir,
-    pair.target,
-    slots.targetSlot,
-    slots.targetCount,
+  entry = offsetJut(
+    entry,
+    outTo,
+    target,
+    portSlots.toSlot,
+    portSlots.toCount,
     config.portSep,
   );
 
-  const route = chooseRoute(exit, entry, {
+  const mid = walkConnectorPath(
+    exit,
+    entry,
     boxes,
-    sourceId: pair.source.id,
-    targetId: pair.target.id,
-    config,
+    index,
+    excludeIds,
     priorSegments,
-  });
+    config,
+  );
+
+  let route = mid;
+  if (
+    route.length === 0 ||
+    !same(route[0]!.x, exit.x) ||
+    !same(route[0]!.y, exit.y)
+  ) {
+    route = [exit, ...route];
+  }
+  const last = route[route.length - 1]!;
+  if (!same(last.x, entry.x) || !same(last.y, entry.y)) {
+    route = [...route, entry];
+  }
+
+  const orthMid = finalizeOrthogonal(route);
+  const guard: WalkSpace = {
+    boxes,
+    index,
+    excludeIds,
+    segments: [],
+    clearance: config.clearance,
+    sep: config.portSep,
+    step: config.step,
+  };
+  const safeMid = pathClearOfBoxes(orthMid, guard)
+    ? orthMid
+    : walkConnectorPath(exit, entry, boxes, index, excludeIds, [], config);
+
+  const points = finalizeOrthogonal([centerFrom, ...safeMid, centerTo]);
 
   return {
-    id: `${pair.source.id}->${pair.target.id}`,
-    sourceId: pair.source.id,
-    targetId: pair.target.id,
-    points: simplifyPath([start, ...route, end]),
+    id: `${source.id}->${target.id}`,
+    sourceId: source.id,
+    targetId: target.id,
+    points,
   };
+}
+
+function faceKey(id: string, out: Dir): string {
+  return `${id}|${out.x},${out.y}`;
 }
 
 export function createConnectorEngine(config: ConnectorConfig): {
@@ -492,37 +957,83 @@ export function createConnectorEngine(config: ConnectorConfig): {
     boxes: LayoutAabb[],
     connections: ConnectionRow[],
   ): RoutedConnectorPath[] {
-    const pairs = buildPairs(boxes, connections);
-    const faceDegree = new Map<string, number>();
+    const byId = new Map(boxes.map((box) => [box.id, box]));
+    const seen = new Set<string>();
+    const pairs: {
+      source: LayoutAabb;
+      target: LayoutAabb;
+      outFrom: Dir;
+      outTo: Dir;
+    }[] = [];
 
-    for (const pair of pairs) {
-      incrementCount(faceDegree, faceKey(pair.source.id, pair.sourceDir));
-      incrementCount(faceDegree, faceKey(pair.target.id, pair.targetDir));
+    for (const row of connections) {
+      const source = byId.get(row.id);
+      if (!source) continue;
+      for (const targetId of row.connections) {
+        const target = byId.get(targetId);
+        if (!target) continue;
+        const key = [source.id, target.id].sort().join("|");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const centerFrom = { x: source.cx, y: source.cy };
+        const centerTo = { x: target.cx, y: target.cy };
+        pairs.push({
+          source,
+          target,
+          outFrom: cardinalToward(centerFrom, centerTo),
+          outTo: cardinalToward(centerTo, centerFrom),
+        });
+      }
     }
 
-    const faceUsage = new Map<string, number>();
+    const faceDegree = new Map<string, number>();
+    for (const { source, target, outFrom, outTo } of pairs) {
+      const fromFace = faceKey(source.id, outFrom);
+      const toFace = faceKey(target.id, outTo);
+      faceDegree.set(fromFace, (faceDegree.get(fromFace) ?? 0) + 1);
+      faceDegree.set(toFace, (faceDegree.get(toFace) ?? 0) + 1);
+    }
+    const faceUsed = new Map<string, number>();
+
+    const trackSpacing = boxes.length <= DENSE_SPACING_MAX_SERVICES;
+    const index = new BoxGrid(boxes);
     const priorSegments: SegmentObstacle[] = [];
     const paths: RoutedConnectorPath[] = [];
 
     for (let i = 0; i < pairs.length; i += 1) {
-      const pair = pairs[i]!;
-      const sourceFace = faceKey(pair.source.id, pair.sourceDir);
-      const targetFace = faceKey(pair.target.id, pair.targetDir);
-      const sourceSlot = faceUsage.get(sourceFace) ?? 0;
-      const targetSlot = faceUsage.get(targetFace) ?? 0;
+      const { source, target, outFrom, outTo } = pairs[i]!;
+      const fromFace = faceKey(source.id, outFrom);
+      const toFace = faceKey(target.id, outTo);
+      const fromSlot = faceUsed.get(fromFace) ?? 0;
+      const toSlot = faceUsed.get(toFace) ?? 0;
+      faceUsed.set(fromFace, fromSlot + 1);
+      faceUsed.set(toFace, toSlot + 1);
 
-      faceUsage.set(sourceFace, sourceSlot + 1);
-      faceUsage.set(targetFace, targetSlot + 1);
-
-      const path = buildConnectorPath(pair, boxes, priorSegments, config, {
-        sourceSlot,
-        sourceCount: faceDegree.get(sourceFace) ?? 1,
-        targetSlot,
-        targetCount: faceDegree.get(targetFace) ?? 1,
-      });
-
+      const path = buildConnectorPath(
+        source,
+        target,
+        boxes,
+        index,
+        trackSpacing ? priorSegments : [],
+        {
+          fromSlot,
+          fromCount: faceDegree.get(fromFace) ?? 1,
+          toSlot,
+          toCount: faceDegree.get(toFace) ?? 1,
+        },
+        config,
+      );
       paths.push(path);
-      priorSegments.push(...segmentsFromPath(path.points.slice(1, -1)));
+
+      if (trackSpacing) {
+        if (path.points.length >= 4) {
+          priorSegments.push(
+            ...segmentsFromPoints(path.points.slice(1, -1)),
+          );
+        } else if (path.points.length >= 2) {
+          priorSegments.push(...segmentsFromPoints(path.points));
+        }
+      }
     }
 
     return paths;

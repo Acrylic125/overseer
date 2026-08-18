@@ -11,7 +11,6 @@ import {
   type ScrapeStepFn,
 } from "@acrylic125/overseer-sdk";
 import { config as loadEnv } from "dotenv";
-
 import { elapsed, log } from "../cli/log.js";
 import {
   ARTIFACT_ASSETS_GLB,
@@ -49,7 +48,10 @@ async function scrapeProviders() {
   for (const provider of providers.cloudflare) {
     try {
       entries.push(
-        ...(await cloudflareProvider.scan(provider, onStep(provider.namespace))),
+        ...(await cloudflareProvider.scan(
+          provider,
+          onStep(provider.namespace),
+        )),
       );
     } catch (error) {
       warnings.push(

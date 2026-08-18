@@ -93,7 +93,10 @@ export function useStreamedScene({
   );
 
   const showPublicInternet = useMemo(
-    () => footprintInWindow(publicInternet, streamWindow),
+    () =>
+      publicInternet.width > 0 &&
+      publicInternet.depth > 0 &&
+      footprintInWindow(publicInternet, streamWindow),
     [publicInternet, streamWindow],
   );
 

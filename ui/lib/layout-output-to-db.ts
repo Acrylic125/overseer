@@ -159,6 +159,13 @@ export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
   const publicInternetGroup = groupItems.find(
     (item) => item.group === PUBLIC_INTERNET_LAYOUT_GROUP,
   );
+  const hasInternet = output.resources.some(
+    (resource) => resource.id === SDK_INTERNET_ID,
+  ) || output.connections.some(
+    (connection) =>
+      connection.nodes[0] === SDK_INTERNET_ID ||
+      connection.nodes[1] === SDK_INTERNET_ID,
+  );
   const publicInternet = {
     id: INTERNET_ID as "internet",
     pos: publicInternetGroup
@@ -173,7 +180,9 @@ export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
           Math.max(publicInternetGroup.to[0] - publicInternetGroup.from[0], 1),
           Math.max(publicInternetGroup.to[1] - publicInternetGroup.from[1], 1),
         ] as Size)
-      : ([4, 2] as Size),
+      : hasInternet
+        ? ([4, 2] as Size)
+        : ([0, 0] as Size),
   };
 
   const resources: Resource[] = [];
