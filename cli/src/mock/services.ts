@@ -215,10 +215,7 @@ function buildService(
 }
 
 /** Build scanned resources across nested groups for layout stress tests. */
-export function createMockServices(seed = 42): {
-  resources: Resource[];
-  connections: ResourceConnection[];
-} {
+export function createMockServices(seed = 42) {
   const rand = mulberry32(seed);
   const groups = buildGroups(rand);
   const membership = allocateMembership(rand, groups);

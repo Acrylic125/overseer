@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Overseer CLI — init providers, bake assets, and run the scan pipeline",
+  "description": "Overseer CLI — configure env, bake assets, and run the scan pipeline",
   "scripts": {
     "cli": "tsx src/cli.ts",
     "start": "tsx src/cli.ts",
-    "init": "tsx src/cli.ts init",
+    "env": "tsx src/cli.ts env",
     "scan": "tsx src/cli.ts scan",
     "assets": "tsx src/cli.ts assets",
     "mock": "tsx src/cli.ts mock",

@@ -55,7 +55,7 @@ pnpm install
 
 ```bash
 pnpm cli
-pnpm init
+pnpm env
 pnpm scan
 pnpm scan --skip-assets
 pnpm scan --dir ./out

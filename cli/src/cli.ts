@@ -2,15 +2,15 @@ import { select } from "@inquirer/prompts";
 
 import { parseCliFlags } from "./cli/flags.js";
 import { log, red } from "./cli/log.js";
-import { runInit } from "./commands/init.js";
-import { runMock } from "./commands/mock.js";
+import { runEnv } from "./commands/env.js";
+import { runMock } from "./mock/command.js";
 import { runScanPipeline } from "./commands/scan.js";
 import { precomputeAssets } from "./pipeline/precompute.js";
 
 function printUsage(): void {
   console.log(`Usage:
   pnpm cli                      Interactive menu
-  pnpm cli init                 Configure providers in cli/.env
+  pnpm cli env                  Configure providers in cli/.env
   pnpm cli scan [--dir <path>]  Full pipeline → <dir>/…
   pnpm cli scan --skip-assets [--dir <path>]
   pnpm cli assets [--dir <path>]  Bake assets.glb (+ gradient PNG)
@@ -53,8 +53,8 @@ async function runInteractive(): Promise<void> {
       message: "OVERSEER — Command",
       choices: [
         {
-          name: "init",
-          value: "init" as const,
+          name: "env",
+          value: "env" as const,
           description: "Configure providers in cli/.env",
         },
         {
@@ -85,8 +85,8 @@ async function runInteractive(): Promise<void> {
       break;
     }
 
-    if (command === "init") {
-      await runInit();
+    if (command === "env") {
+      await runEnv();
       continue;
     }
 
@@ -120,8 +120,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "init") {
-    await runInit();
+  if (command === "env") {
+    await runEnv();
     return;
   }
 

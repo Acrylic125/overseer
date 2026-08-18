@@ -2,21 +2,21 @@ import { readFile } from "node:fs/promises";
 
 import { layout } from "@acrylic125/overseer-sdk";
 
-import { createMockServices } from "../mock.js";
-import { writeInfrastructureDb } from "../pipeline/output.js";
 import { elapsed, log } from "../cli/log.js";
+import { writeInfrastructureDb } from "../pipeline/output.js";
 import {
   ARTIFACT_ASSETS_GLB,
   artifactPath,
   resolveOutDir,
 } from "../paths.js";
+import { createMockServices } from "./services.js";
 
 export type MockOptions = {
   outDir?: string;
 };
 
 /** Synthetic infrastructure.json — same layout/output path as live scan. */
-export async function runMock(options: MockOptions = {}): Promise<void> {
+export async function runMock(options: MockOptions = {}) {
   const outDir = resolveOutDir(options.outDir);
 
   log.banner();
@@ -38,7 +38,7 @@ export async function runMock(options: MockOptions = {}): Promise<void> {
     });
     await writeInfrastructureDb({
       layout: packed,
-      warnings: ["Generated from cli/src/mock.ts"],
+      warnings: ["Generated from cli/src/mock/"],
       outDir,
     });
 

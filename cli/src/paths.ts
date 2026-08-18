@@ -9,7 +9,6 @@ export const scanRoot = path.resolve(__dirname, "..");
 export const repoRoot = path.resolve(scanRoot, "..");
 
 export const envPath = path.join(scanRoot, ".env");
-export const uiEnvPath = path.join(repoRoot, "ui", ".env");
 
 /** SVG sources live under `cli/assets/` (inputs, not generated). */
 export const assetsRoot = path.join(scanRoot, "assets");
