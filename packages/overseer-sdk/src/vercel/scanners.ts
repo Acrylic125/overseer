@@ -359,7 +359,6 @@ export const projectScanner = {
   transform(item, { namespace }) {
     const projectId = item.project.id;
     const name = item.project.name;
-    const open = item.domains.length > 0;
     const environments = item.environments;
     return {
       id: resourceId("vercel", namespace, "project", projectId),
@@ -369,7 +368,6 @@ export const projectScanner = {
       service: "Project",
       asset: iconForKind("Project"),
       fields: {
-        "Is Open To Internet": open,
         ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
         ...(environments.length > 0
           ? { Environment: vercelEnvGroup(item.envs, environments) }

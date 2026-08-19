@@ -200,15 +200,13 @@ function buildService(
     fields:
       kind === "Worker"
         ? {
-            "Is Open To Internet": true,
             Domains: [`${base.name}.example.workers.dev`],
           }
         : kind === "R2"
           ? {
-              "Is Open To Internet": false,
               "S3 API URL": `https://mock.r2.cloudflarestorage.com/${base.name}`,
             }
-          : { "Is Open To Internet": false },
+          : {},
     alerts: [],
     tags: { namespace: base.group },
   };
@@ -271,7 +269,6 @@ export function createMockServices(seed = 42) {
     if (!openToInternet.has(service.id)) continue;
     internetLinks += 1;
     if (internetLinks > MAX_MOCK_INTERNET_LINKS) {
-      service.fields = { ...service.fields, "Is Open To Internet": false };
       continue;
     }
     pushConnection(connections, seenConnections, service.id, INTERNET_ID);

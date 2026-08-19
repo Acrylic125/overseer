@@ -233,15 +233,6 @@ function r2Domains(custom: R2CustomDomains) {
     .filter((domain): domain is string => Boolean(domain));
 }
 
-function r2OpenToInternet(
-  managed: R2ManagedDomains | undefined,
-  custom: R2CustomDomains | undefined,
-) {
-  const managedEnabled = managed?.enabled === true;
-  const customEnabled =
-    custom?.domains?.some((row) => row.enabled === true && row.domain) ?? false;
-  return managedEnabled || customEnabled;
-}
 
 async function r2Cors(
   client: CloudflareAccount["client"],
@@ -496,7 +487,6 @@ export const workerScanner = {
       service: "Worker",
       asset: iconForKind("Worker"),
       fields: {
-        "Is Open To Internet": item.domains.length > 0,
         ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
         ...(Object.keys(envFields).length > 0
           ? { Environment: { fields: envFields } }
@@ -541,7 +531,7 @@ export const durableObjectScanner = {
       url: `https://dash.cloudflare.com/${item.accountId}/workers/durable-objects/view/${encodeURIComponent(doId)}`,
       service: "Durable Object",
       asset: iconForKind("Durable Object"),
-      fields: { "Is Open To Internet": false },
+      fields: {},
       alerts: [],
       tags: { namespace },
     };
@@ -673,7 +663,7 @@ export const d1Scanner = {
       url: "",
       service: "D1",
       asset: iconForKind("D1"),
-      fields: { "Is Open To Internet": true },
+      fields: {},
       alerts: [],
       tags: { namespace },
     };
@@ -705,7 +695,6 @@ export const r2Scanner = {
     if (!name) return null;
     const domains = item.custom ? r2Domains(item.custom) : [];
     const cors = item.cors ? formatCors(item.cors) : [];
-    const open = r2OpenToInternet(item.managed, item.custom);
     const s3ApiUrl = `https://${item.accountId}.r2.cloudflarestorage.com/${name}`;
     return {
       id: idFor(namespace, item.accountId, "r2", name),
@@ -715,7 +704,6 @@ export const r2Scanner = {
       service: "R2",
       asset: iconForKind("R2"),
       fields: {
-        "Is Open To Internet": open,
         ...(domains.length > 0 ? { Domains: domains } : {}),
         "S3 API URL": s3ApiUrl,
         ...(cors.length > 0 ? { CORS: cors } : {}),
@@ -766,7 +754,7 @@ export const vectorizeScanner = {
       url: "",
       service: "Vectorize",
       asset: iconForKind("Vectorize"),
-      fields: { "Is Open To Internet": true },
+      fields: {},
       alerts: [],
       tags: { namespace },
     };
