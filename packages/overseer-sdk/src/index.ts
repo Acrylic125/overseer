@@ -16,13 +16,18 @@ export {
   vectorizeScanner,
   workerScanner,
   workflowScanner,
+  DEFAULT_POLICY as cloudflareDefaultPolicy,
 } from "./cloudflare/scanners.js";
 export {
   newCloudflareProvider,
   type CloudflareProviderConfig,
 } from "./cloudflare/provider.js";
 
-export { projectScanner, vercelScanners } from "./vercel/scanners.js";
+export {
+  projectScanner,
+  vercelScanners,
+  DEFAULT_POLICY as vercelDefaultPolicy,
+} from "./vercel/scanners.js";
 export {
   newVercelProvider,
   type VercelProviderConfig,

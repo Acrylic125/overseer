@@ -13,6 +13,7 @@ import { scanEntries } from "../core/scan.js";
 import type {
   FieldNode,
   ProviderResourceScanner,
+  ResourceAlert,
   ResourceClaims,
   ConnectionRequirement,
   ResourceFields,
@@ -34,7 +35,37 @@ import {
 import { workflowNodesToGraph } from "./workflow-graph.js";
 
 const DETAIL_CONCURRENCY = 3;
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const noopStep: ScrapeStepFn = () => {};
+
+export const DEFAULT_POLICY = {
+  onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [number, "warn" | "error"],
+};
+
+function sensitiveVarAlerts(
+  envs: WorkerEnv[],
+  policy: typeof DEFAULT_POLICY,
+) {
+  const alerts: ResourceAlert[] = [];
+  const now = Date.now();
+  const [thresholdDays, severity] =
+    policy.onAfterSensitiveVarLastUpdatedDays;
+
+  for (const env of envs) {
+    if (env.type !== "secret_text") continue;
+    if (!env.modifiedOn) continue;
+    const modified = Date.parse(env.modifiedOn);
+    if (Number.isNaN(modified)) continue;
+    const ageDays = (now - modified) / MS_PER_DAY;
+    if (ageDays < thresholdDays) continue;
+    alerts.push({
+      type: severity === "error" ? "error" : "warning",
+      message: `Secret "${env.key}" has not been updated in ${Math.floor(ageDays)} days`,
+    });
+  }
+
+  return alerts;
+}
 
 async function firstAccountId(client: Cloudflare) {
   const iterator = client.accounts
@@ -82,6 +113,7 @@ type WorkerEnv = {
   key: string;
   value: string;
   type: string;
+  modifiedOn?: string;
 };
 
 function extractEnv(binding: WorkerBinding) {
@@ -108,12 +140,14 @@ function mergeWorkerEnvs(bindings: WorkerBinding[], secrets: WorkerSecret[]) {
     const existing = byKey.get(secret.name);
     if (existing) {
       if (!existing.value && secret.text) existing.value = secret.text;
+      if (secret.modified_on) existing.modifiedOn = secret.modified_on;
       continue;
     }
     byKey.set(secret.name, {
       key: secret.name,
       value: secret.text ?? "",
       type: secret.type ?? "secret_text",
+      modifiedOn: secret.modified_on,
     });
   }
   return [...byKey.values()];
@@ -477,7 +511,8 @@ async function scrapeQueues(ctx: CloudflareAccount) {
 export const workerScanner = {
   type: "Worker",
   scrape: scrapeWorkers,
-  transform(item, { namespace }) {
+  policy: DEFAULT_POLICY,
+  transform(item, { namespace, policy = DEFAULT_POLICY }) {
     const envFields = workerEnvFields(item.envs);
     return {
       id: idFor(namespace, item.accountId, "worker", item.name),
@@ -492,7 +527,7 @@ export const workerScanner = {
           ? { Environment: { fields: envFields } }
           : {}),
       },
-      alerts: [],
+      alerts: sensitiveVarAlerts(item.envs, policy),
       tags: { namespace },
     };
   },
@@ -514,7 +549,8 @@ export const workerScanner = {
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeWorkers>>[number],
-  [CloudflareAccount]
+  [CloudflareAccount],
+  typeof DEFAULT_POLICY
 >;
 
 export const durableObjectScanner = {

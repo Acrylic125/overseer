@@ -13,6 +13,7 @@ import type {
   FieldGroup,
   FieldNode,
   ProviderResourceScanner,
+  ResourceAlert,
   ResourceFields,
 } from "../types.js";
 import { iconForKind } from "./icons.js";
@@ -25,9 +26,41 @@ import {
 } from "./schemas.js";
 
 const PROJECT_CONCURRENCY = 4;
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
 // Vercel always has these three built-in targets; custom environments are extra.
 const STANDARD_ENV_TARGETS = ["production", "preview", "development"] as const;
 const noopStep: ScrapeStepFn = () => {};
+
+export const DEFAULT_POLICY = {
+  onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [number, "warn" | "error"],
+};
+
+function sensitiveVarAlerts(
+  envs: VercelEnv[],
+  policy: typeof DEFAULT_POLICY,
+) {
+  const alerts: ResourceAlert[] = [];
+  const now = Date.now();
+  const [thresholdDays, severity] =
+    policy.onAfterSensitiveVarLastUpdatedDays;
+  const seen = new Set<string>();
+
+  for (const env of envs) {
+    const envType = env.type.toLowerCase();
+    if (envType !== "encrypted" && envType !== "sensitive") continue;
+    if (!env.updatedAt) continue;
+    if (seen.has(env.key)) continue;
+    seen.add(env.key);
+    const ageDays = (now - env.updatedAt) / MS_PER_DAY;
+    if (ageDays < thresholdDays) continue;
+    alerts.push({
+      type: severity === "error" ? "error" : "warning",
+      message: `Env var "${env.key}" has not been updated in ${Math.floor(ageDays)} days`,
+    });
+  }
+
+  return alerts;
+}
 
 type VercelEnv = {
   key: string;
@@ -35,6 +68,7 @@ type VercelEnv = {
   type: string;
   target: string[];
   gitBranch?: string;
+  updatedAt?: number;
 };
 
 async function vercelAccountSlug(client: Vercel, teamId?: string) {
@@ -75,6 +109,7 @@ function toEnv(row: VercelEnvRow, customEnvById: Map<string, string>): VercelEnv
     type: row.type ?? "plain",
     target: rowTargets(row, customEnvById),
     gitBranch: row.gitBranch,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -356,7 +391,8 @@ async function scrapeProjects(
 export const projectScanner = {
   type: "Project",
   scrape: scrapeProjects,
-  transform(item, { namespace }) {
+  policy: DEFAULT_POLICY,
+  transform(item, { namespace, policy = DEFAULT_POLICY }) {
     const projectId = item.project.id;
     const name = item.project.name;
     const environments = item.environments;
@@ -373,7 +409,7 @@ export const projectScanner = {
           ? { Environment: vercelEnvGroup(item.envs, environments) }
           : {}),
       },
-      alerts: [],
+      alerts: sensitiveVarAlerts(item.envs, policy),
       tags: { namespace },
     };
   },
@@ -392,7 +428,8 @@ export const projectScanner = {
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeProjects>>[number],
-  [string, string | undefined, ScrapeStepFn]
+  [string, string | undefined, ScrapeStepFn],
+  typeof DEFAULT_POLICY
 >;
 
 export const vercelScanners = [projectScanner];

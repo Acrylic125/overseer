@@ -27,6 +27,7 @@ export const workerSecretSchema = z
     name: z.string(),
     type: z.string().optional(),
     text: z.string().optional(),
+    modified_on: z.string().optional(),
   })
   .passthrough();
 

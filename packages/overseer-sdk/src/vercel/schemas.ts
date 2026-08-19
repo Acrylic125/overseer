@@ -7,6 +7,7 @@ export const vercelEnvRowSchema = z.object({
   target: z.union([z.string(), z.array(z.string())]).optional(),
   gitBranch: z.string().optional(),
   customEnvironmentIds: z.array(z.string()).optional(),
+  updatedAt: z.number().optional(),
 });
 
 export const vercelDomainRowSchema = z.object({
