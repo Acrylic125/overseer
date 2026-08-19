@@ -22,6 +22,14 @@ export const workerSettingsSchema = z.object({
   bindings: z.array(workerBindingSchema).optional(),
 });
 
+export const workerSecretSchema = z
+  .object({
+    name: z.string(),
+    type: z.string().optional(),
+    text: z.string().optional(),
+  })
+  .passthrough();
+
 export const r2CorsSchema = z.object({
   rules: z
     .array(
@@ -56,6 +64,7 @@ export const r2ManagedDomainsSchema = z.object({
 
 export type WorkerBinding = z.infer<typeof workerBindingSchema>;
 export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
+export type WorkerSecret = z.infer<typeof workerSecretSchema>;
 export type R2Cors = z.infer<typeof r2CorsSchema>;
 export type R2CustomDomains = z.infer<typeof r2CustomDomainsSchema>;
 export type R2ManagedDomains = z.infer<typeof r2ManagedDomainsSchema>;
@@ -107,6 +116,12 @@ export const workflowGraphSchema = z.object({
 
 export function parseWorkerSettings(value: object) {
   const parsed = workerSettingsSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return parsed.data;
+}
+
+export function parseWorkerSecret(value: object) {
+  const parsed = workerSecretSchema.safeParse(value);
   if (!parsed.success) return null;
   return parsed.data;
 }

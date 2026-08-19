@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   fieldNodeSchema,
+  resourceAlertSchema,
   type CategoryFields,
   type Connector,
   type Group,
@@ -20,7 +21,7 @@ const scanResourceSchema = z.object({
   service: z.string().min(1),
   asset: z.string().min(1),
   fields: z.record(z.string(), fieldNodeSchema).default({}),
-  alerts: z.array(z.unknown()).optional(),
+  alerts: z.array(resourceAlertSchema).optional(),
   tags: z.record(z.string(), z.string()).optional(),
 });
 
@@ -216,6 +217,9 @@ export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
       ...(resource.url ? { url: resource.url } : {}),
       fields: normalizeFields(resource.fields),
       pos: [pos[0], pos[1], 0],
+      ...(resource.alerts && resource.alerts.length > 0
+        ? { alerts: resource.alerts }
+        : {}),
     });
   }
 

@@ -20,6 +20,7 @@ alwaysApply: true
 - Prefer typesafe envs (e.g. Check for t3env use, and cloudflare env bindings)
 - In React, do not use `useEffect` to do state synchronization or asynchronous data fetching. Consider react query / trpc / server components / server actions / zustand before considering `useEffect`
 - Do not type wrap variables that are already known to be number (with Number), and boolean (Boolean). Only consider if it is totally necessary.
+- Inline Tailwind classes unless they are variants.
 
 ## Python
 - Prefer `uv`

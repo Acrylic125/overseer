@@ -175,4 +175,41 @@ export const infrastructureRouter = router({
         camera: fromScan.camera,
       };
     }),
+  alerts: publicProcedure
+    .input(
+      z
+        .object({
+          namespace: z.string().min(1).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input }) => {
+      const db = await loadInfrastructureDb();
+      const resources = input?.namespace
+        ? db.resources.filter((resource) =>
+            resource.id.startsWith(`${input.namespace}:`),
+          )
+        : db.resources;
+
+      const alerts = resources.flatMap((resource) => {
+        const resourceAlerts = resource.alerts;
+        if (!resourceAlerts) return [];
+        return resourceAlerts.map((alert, index) => ({
+          id: `${resource.id}:${index}`,
+          resourceId: resource.id,
+          resourceName: resource.name,
+          group: resource.group,
+          type: alert.type,
+          message: alert.message,
+        }));
+      });
+
+      alerts.sort((a, b) => {
+        if (a.type === b.type) return 0;
+        if (a.type === "error") return -1;
+        return 1;
+      });
+
+      return alerts;
+    }),
 });

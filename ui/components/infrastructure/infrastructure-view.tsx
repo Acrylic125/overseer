@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { InfrastructureCanvas } from "@/components/infrastructure/infrastructure-canvas";
+import { PageNav } from "@/components/page-nav";
 import { useTRPC } from "@/lib/trpc/client";
 
 export function InfrastructureView() {
@@ -17,24 +18,33 @@ export function InfrastructureView() {
 
   if (isPending) {
     return (
-      <div className="text-muted-foreground flex h-svh items-center justify-center text-sm">
-        Loading infrastructure…
+      <div className="relative h-svh">
+        <PageNav />
+        <div className="text-muted-foreground flex h-svh items-center justify-center text-sm">
+          Loading infrastructure…
+        </div>
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="text-destructive flex h-svh items-center justify-center px-6 text-center text-sm">
-        {error.message}
+      <div className="relative h-svh">
+        <PageNav />
+        <div className="text-destructive flex h-svh items-center justify-center px-6 text-center text-sm">
+          {error.message}
+        </div>
       </div>
     );
   }
 
   if (data.services.length === 0) {
     return (
-      <div className="text-muted-foreground flex h-svh flex-col items-center justify-center gap-2 px-6 text-center text-sm">
-        <p>No infrastructure found. Run a scan to populate the layout.</p>
+      <div className="relative h-svh">
+        <PageNav />
+        <div className="text-muted-foreground flex h-svh flex-col items-center justify-center gap-2 px-6 text-center text-sm">
+          <p>No infrastructure found. Run a scan to populate the layout.</p>
+        </div>
       </div>
     );
   }

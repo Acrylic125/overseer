@@ -26,6 +26,11 @@ import {
 } from "@/components/infrastructure/connector-callout";
 import { LookCrosshair } from "@/components/infrastructure/fly-controls";
 import { ServiceDetailSheet } from "@/components/infrastructure/service-detail-sheet";
+import {
+  overlayTabTriggerClass,
+  overlayTabsListClass,
+  PageNav,
+} from "@/components/page-nav";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cssToThreeColor } from "@/lib/css-color";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
@@ -234,31 +239,27 @@ export function InfrastructureCanvas({
         ) : null}
       </div>
 
-      <div className="absolute top-4 left-1/2 z-20 -translate-x-1/2">
-        <Tabs
-          value={viewMode}
-          onValueChange={(value) => {
-            if (value === "top" || value === "explore") {
-              setViewModeFromUi(value);
-            }
-          }}
-        >
-          <TabsList className="bg-black/55 text-white/55 backdrop-blur-sm">
-            <TabsTrigger
-              value="top"
-              className="px-3 text-white/55 hover:text-white data-active:bg-white/15 data-active:text-white"
-            >
-              Top View
-            </TabsTrigger>
-            <TabsTrigger
-              value="explore"
-              className="px-3 text-white/55 hover:text-white data-active:bg-white/15 data-active:text-white"
-            >
-              Explore
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
+      <PageNav
+        center={
+          <Tabs
+            value={viewMode}
+            onValueChange={(value) => {
+              if (value === "top" || value === "explore") {
+                setViewModeFromUi(value);
+              }
+            }}
+          >
+            <TabsList className={overlayTabsListClass}>
+              <TabsTrigger value="top" className={overlayTabTriggerClass}>
+                Top View
+              </TabsTrigger>
+              <TabsTrigger value="explore" className={overlayTabTriggerClass}>
+                Explore
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        }
+      />
 
       <LookCrosshair visible={viewMode === "explore" && lookLocked} />
 

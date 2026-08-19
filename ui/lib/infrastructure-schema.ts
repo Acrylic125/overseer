@@ -294,6 +294,12 @@ export function resolveSize(size?: Size | null): Size {
   return size ?? DEFAULT_SIZE;
 }
 
+export const resourceAlertSchema = z.object({
+  type: z.enum(["warning", "error"]),
+  message: z.string().min(1),
+});
+export type ResourceAlert = z.infer<typeof resourceAlertSchema>;
+
 export const resourceSchema = z.object({
   id: z.string().min(1),
   group: z.string().min(1),
@@ -302,6 +308,7 @@ export const resourceSchema = z.object({
   service: z.string().min(1),
   url: z.string().optional(),
   fields: z.record(z.string(), categoryFieldsSchema),
+  alerts: z.array(resourceAlertSchema).optional(),
   pos: posSchema,
   size: sizeSchema.optional(),
 });

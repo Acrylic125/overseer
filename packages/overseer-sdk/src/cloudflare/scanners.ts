@@ -10,8 +10,8 @@ import {
 import { envToClaims, parseEnvUrl, urlBaseMatchClaim } from "../core/claims.js";
 import { resourceId } from "../core/resource-id.js";
 import { scanEntries } from "../core/scan.js";
-import { redactSensitiveValue } from "../core/utils.js";
 import type {
+  FieldNode,
   ProviderResourceScanner,
   ResourceClaims,
   ConnectionRequirement,
@@ -22,12 +22,14 @@ import {
   parseR2Cors,
   parseR2CustomDomains,
   parseR2ManagedDomains,
+  parseWorkerSecret,
   parseWorkerSettings,
   parseWorkflowGraph,
   type R2Cors,
   type R2CustomDomains,
   type R2ManagedDomains,
   type WorkerBinding,
+  type WorkerSecret,
 } from "./schemas.js";
 import { workflowNodesToGraph } from "./workflow-graph.js";
 
@@ -76,6 +78,12 @@ function workerName(worker: { id?: string | null; name?: string | null }) {
   return worker.id ?? null;
 }
 
+type WorkerEnv = {
+  key: string;
+  value: string;
+  type: string;
+};
+
 function extractEnv(binding: WorkerBinding) {
   const type = binding.type;
   const key = binding.name;
@@ -88,25 +96,48 @@ function extractEnv(binding: WorkerBinding) {
   };
 }
 
-function workerEnvFields(bindings: WorkerBinding[]) {
-  const fields: ResourceFields = {};
+function mergeWorkerEnvs(bindings: WorkerBinding[], secrets: WorkerSecret[]) {
+  const byKey = new Map<string, WorkerEnv>();
   for (const binding of bindings) {
     const env = extractEnv(binding);
     if (!env) continue;
-    if (env.type === "secret_text") {
-      fields[env.key] = redactSensitiveValue(env.value);
+    byKey.set(env.key, env);
+  }
+  for (const secret of secrets) {
+    if (secret.type && secret.type !== "secret_text") continue;
+    const existing = byKey.get(secret.name);
+    if (existing) {
+      if (!existing.value && secret.text) existing.value = secret.text;
       continue;
     }
-    fields[env.key] = env.value;
+    byKey.set(secret.name, {
+      key: secret.name,
+      value: secret.text ?? "",
+      type: secret.type ?? "secret_text",
+    });
+  }
+  return [...byKey.values()];
+}
+
+function workerEnvValue(env: WorkerEnv): FieldNode {
+  if (env.type === "secret_text" && !env.value) return { type: "hidden" };
+  if (!env.value) return { type: "hidden" };
+  return { type: "secret", value: env.value };
+}
+
+function workerEnvFields(envs: WorkerEnv[]) {
+  const fields: ResourceFields = {};
+  for (const env of envs) {
+    fields[env.key] = workerEnvValue(env);
   }
   return fields;
 }
 
-function workerEnvValues(bindings: WorkerBinding[]) {
+function workerEnvValues(envs: WorkerEnv[]) {
   const values: string[] = [];
-  for (const binding of bindings) {
-    const env = extractEnv(binding);
-    if (!env) continue;
+  for (const env of envs) {
+    if (env.type === "secret_text" && !env.value) continue;
+    if (!env.value) continue;
     values.push(env.value);
   }
   return values;
@@ -231,6 +262,43 @@ async function r2Cors(
   }
 }
 
+async function scrapeWorkerSecrets(
+  ctx: CloudflareAccount,
+  scriptName: string,
+  bindings: WorkerBinding[],
+) {
+  // Settings omit secret_text values. The secrets API lists names and may return text.
+  const listed = await settled(
+    () =>
+      collect(
+        ctx.client.workers.scripts.secrets.list(scriptName, ctx.account),
+      ),
+    [],
+  );
+  const secrets: WorkerSecret[] = [];
+  for (const row of listed) {
+    const parsed = parseWorkerSecret(row);
+    if (parsed) secrets.push(parsed);
+  }
+
+  const envs = mergeWorkerEnvs(bindings, secrets);
+  const missing = envs.filter((env) => env.type === "secret_text" && !env.value);
+  await mapPool(missing, DETAIL_CONCURRENCY, async (env) => {
+    const got = await settled(
+      () =>
+        ctx.client.workers.scripts.secrets.get(env.key, {
+          account_id: ctx.accountId,
+          script_name: scriptName,
+        }),
+      null,
+    );
+    if (!got) return;
+    const parsed = parseWorkerSecret(got);
+    if (parsed?.text) env.value = parsed.text;
+  });
+  return envs;
+}
+
 async function scrapeWorkers(ctx: CloudflareAccount) {
   ctx.fn({ message: "Listing workers" });
   const listedWorkers = await collect(
@@ -240,9 +308,9 @@ async function scrapeWorkers(ctx: CloudflareAccount) {
     listedWorkers.length > 0
       ? []
       : await collect(ctx.client.workers.beta.workers.list(ctx.account));
-  const workerSettings: Record<
+  const workerDetails: Record<
     string,
-    ReturnType<typeof parseWorkerSettings>
+    { bindings: WorkerBinding[]; envs: WorkerEnv[] }
   > = {};
   const workerNames = [
     ...listedWorkers.map((worker) => workerName(worker)),
@@ -258,9 +326,11 @@ async function scrapeWorkers(ctx: CloudflareAccount) {
         ),
       null,
     );
-    if (!settings) return;
-    const parsed = parseWorkerSettings(settings);
-    if (parsed) workerSettings[name] = parsed;
+    const bindings = settings
+      ? (parseWorkerSettings(settings)?.bindings ?? [])
+      : [];
+    const envs = await scrapeWorkerSecrets(ctx, name, bindings);
+    workerDetails[name] = { bindings, envs };
   });
 
   ctx.fn({ message: "Listing worker domains" });
@@ -285,11 +355,13 @@ async function scrapeWorkers(ctx: CloudflareAccount) {
     if (hosts.length === 0 && workersSubdomain.subdomain) {
       hosts.push(`${name}.${workersSubdomain.subdomain}.workers.dev`);
     }
+    const details = workerDetails[name];
     items.push({
       accountId: ctx.accountId,
       name,
       domains: hosts,
-      bindings: workerSettings[name]?.bindings ?? [],
+      bindings: details?.bindings ?? [],
+      envs: details?.envs ?? [],
     });
   }
   return items;
@@ -415,6 +487,7 @@ export const workerScanner = {
   type: "Worker",
   scrape: scrapeWorkers,
   transform(item, { namespace }) {
+    const envFields = workerEnvFields(item.envs);
     return {
       id: idFor(namespace, item.accountId, "worker", item.name),
       group: namespace,
@@ -425,7 +498,9 @@ export const workerScanner = {
       fields: {
         "Is Open To Internet": item.domains.length > 0,
         ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
-        ...workerEnvFields(item.bindings),
+        ...(Object.keys(envFields).length > 0
+          ? { Environment: { fields: envFields } }
+          : {}),
       },
       alerts: [],
       tags: { namespace },
@@ -435,7 +510,7 @@ export const workerScanner = {
     const domains = item.domains;
     return {
       claims: [
-        ...envToClaims(workerEnvValues(item.bindings)),
+        ...envToClaims(workerEnvValues(item.envs)),
         ...bindingRefClaims(item.bindings, item.name),
       ],
       require: (claim) => {
