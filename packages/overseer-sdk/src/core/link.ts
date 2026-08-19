@@ -1,5 +1,5 @@
 import { pushConnection } from "./connections.js";
-import { parseEnvUrl } from "./env.js";
+import { parseEnvUrl } from "./claims.js";
 import type {
   ConnectionRequirement,
   Resource,

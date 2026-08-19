@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import {
-  fieldValueSchema,
+  fieldNodeSchema,
   type CategoryFields,
   type Connector,
   type Group,
@@ -12,12 +12,6 @@ import {
 } from "@/lib/infrastructure-schema";
 import { INTERNET_ID } from "@/lib/internet";
 
-const scanFieldValueSchema = z.union([
-  fieldValueSchema,
-  z.number(),
-  z.array(z.string()),
-]);
-
 const scanResourceSchema = z.object({
   id: z.string().min(1),
   group: z.string().min(1),
@@ -25,7 +19,7 @@ const scanResourceSchema = z.object({
   url: z.string().optional(),
   service: z.string().min(1),
   asset: z.string().min(1),
-  fields: z.record(z.string(), scanFieldValueSchema).default({}),
+  fields: z.record(z.string(), fieldNodeSchema).default({}),
   alerts: z.array(z.unknown()).optional(),
   tags: z.record(z.string(), z.string()).optional(),
 });
@@ -45,6 +39,7 @@ const layoutItemSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("connector"),
     nodes: z.tuple([z.string().min(1), z.string().min(1)]),
+    labels: z.tuple([z.string(), z.string()]).optional(),
     path: z.array(z.tuple([z.number(), z.number(), z.number()])).min(2),
   }),
   z.object({
@@ -72,7 +67,7 @@ function normalizeServiceId(id: string) {
 }
 
 function normalizeFields(
-  fields: Record<string, z.infer<typeof scanFieldValueSchema>>,
+  fields: Record<string, z.infer<typeof fieldNodeSchema>>,
 ): Record<string, CategoryFields> {
   if (Object.keys(fields).length === 0) return {};
   return { details: fields as CategoryFields };
@@ -90,6 +85,29 @@ function connectionKey(nodes: [string, string]) {
   return a <= b ? `${a}\0${b}` : `${b}\0${a}`;
 }
 
+function asEndpointLabel(value: string | null | undefined) {
+  if (!value) return null;
+  return value;
+}
+
+function labelsAlignedToNodes(
+  nodes: [string, string],
+  source: { nodes: [string, string]; labels: [string, string] },
+): [string | null, string | null] {
+  const sameOrder =
+    normalizeServiceId(source.nodes[0]) === normalizeServiceId(nodes[0]);
+  if (sameOrder) {
+    return [
+      asEndpointLabel(source.labels[0]),
+      asEndpointLabel(source.labels[1]),
+    ];
+  }
+  return [
+    asEndpointLabel(source.labels[1]),
+    asEndpointLabel(source.labels[0]),
+  ];
+}
+
 function labelsForConnection(
   nodes: [string, string],
   connections: LayoutOutputWire["connections"],
@@ -97,10 +115,7 @@ function labelsForConnection(
   const key = connectionKey(nodes);
   for (const connection of connections) {
     if (connectionKey(connection.nodes) !== key) continue;
-    return [
-      connection.labels[0] ? connection.labels[0] : null,
-      connection.labels[1] ? connection.labels[1] : null,
-    ];
+    return labelsAlignedToNodes(nodes, connection);
   }
   return undefined;
 }
@@ -198,6 +213,7 @@ export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
       name: resource.name,
       sourceType: sourceTypeFromId(resource.id, resource.service),
       service: resource.asset,
+      ...(resource.url ? { url: resource.url } : {}),
       fields: normalizeFields(resource.fields),
       pos: [pos[0], pos[1], 0],
     });
@@ -208,7 +224,12 @@ export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
       normalizeServiceId(item.nodes[0]),
       normalizeServiceId(item.nodes[1]),
     ];
-    const labels = labelsForConnection(item.nodes, output.connections);
+    const labels = item.labels
+      ? [
+          asEndpointLabel(item.labels[0]),
+          asEndpointLabel(item.labels[1]),
+        ]
+      : labelsForConnection(item.nodes, output.connections);
     const variant = connectionVariant(item.nodes, output.connections);
 
     return {

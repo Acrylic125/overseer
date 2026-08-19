@@ -1,8 +1,24 @@
 import { z } from "zod";
 
 /** Supported field value types (implicit from JS value, or explicit via `{ type }`). */
-export const fieldTypes = ["string", "bool", "date", "graph"] as const;
+export const fieldTypes = [
+  "string",
+  "bool",
+  "date",
+  "graph",
+  "hidden",
+  "secret",
+  "table",
+] as const;
 export type FieldType = (typeof fieldTypes)[number];
+
+export const fieldGroupTypes = [
+  "all",
+  "tab-single",
+  "dropdown-single",
+  "dropdown-multi",
+] as const;
+export type FieldGroupType = (typeof fieldGroupTypes)[number];
 
 /** Column span within the 2-col field grid (label | value). */
 export const FIELD_TYPE_SPAN: Record<FieldType, 1 | 2> = {
@@ -10,6 +26,9 @@ export const FIELD_TYPE_SPAN: Record<FieldType, 1 | 2> = {
   bool: 1,
   date: 1,
   graph: 2,
+  hidden: 1,
+  secret: 1,
+  table: 2,
 };
 
 export type FieldGraphEdge = [string, string];
@@ -35,12 +54,34 @@ export type FieldBoolValue = {
   value: boolean;
 };
 
+export type FieldHiddenValue = {
+  type: "hidden";
+};
+
+export type FieldSecretValue = {
+  type: "secret";
+  value: string;
+};
+
+export type FieldTableValue = {
+  type: "table";
+  columns: string[];
+  rows: string[][];
+};
+
 /** One resolved scalar after implicit/explicit typing. */
 export type ResolvedField =
   | { type: "string"; value: string }
   | { type: "bool"; value: boolean }
   | { type: "date"; value: string }
-  | { type: "graph"; vertices: string[]; edges: FieldGraphEdge[] };
+  | { type: "graph"; vertices: string[]; edges: FieldGraphEdge[] }
+  | { type: "hidden" }
+  | { type: "secret"; value: string }
+  | {
+      type: "table";
+      columns: string[];
+      rows: string[][];
+    };
 
 const fieldGraphSchema = z.object({
   type: z.literal("graph"),
@@ -63,11 +104,29 @@ const fieldBoolSchema = z.object({
   value: z.boolean(),
 });
 
+const fieldHiddenSchema = z.object({
+  type: z.literal("hidden"),
+});
+
+const fieldSecretSchema = z.object({
+  type: z.literal("secret"),
+  value: z.string(),
+});
+
+const fieldTableSchema = z.object({
+  type: z.literal("table"),
+  columns: z.array(z.string()),
+  rows: z.array(z.array(z.string())),
+});
+
 const explicitFieldSchema = z.discriminatedUnion("type", [
   fieldGraphSchema,
   fieldDateSchema,
   fieldStringSchema,
   fieldBoolSchema,
+  fieldHiddenSchema,
+  fieldSecretSchema,
+  fieldTableSchema,
 ]);
 
 /** Wire value: primitives (implicit), arrays (implicit items), or `{ type }` objects. */
@@ -80,6 +139,48 @@ export const fieldValueSchema = z.union([
 ]);
 
 export type FieldValue = z.infer<typeof fieldValueSchema>;
+
+export type FieldGroup =
+  | {
+      hideHeading?: boolean;
+      type?: "all";
+      fields: Record<string, FieldValue | FieldGroup>;
+    }
+  | {
+      hideHeading?: boolean;
+      type: "tab-single" | "dropdown-single" | "dropdown-multi";
+      fields: Record<string, FieldValue | FieldGroup>;
+      defaultShow?: string;
+    };
+
+export type FieldNode = FieldValue | FieldGroup;
+
+const fieldGroupSchema: z.ZodType<FieldGroup> = z.lazy(() =>
+  z.union([
+    z.object({
+      hideHeading: z.boolean().optional(),
+      type: z.literal("all").optional(),
+      fields: z.record(z.string(), fieldNodeSchema),
+    }),
+    z.object({
+      hideHeading: z.boolean().optional(),
+      type: z.enum(["tab-single", "dropdown-single", "dropdown-multi"]),
+      fields: z.record(z.string(), fieldNodeSchema),
+      defaultShow: z.string().optional(),
+    }),
+  ]),
+);
+
+export const fieldNodeSchema: z.ZodType<FieldNode> = z.lazy(() =>
+  z.union([fieldValueSchema, fieldGroupSchema]),
+);
+
+export function isFieldGroup(value: unknown): value is FieldGroup {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  return "fields" in value;
+}
 
 function resolveScalar(value: unknown): ResolvedField | null {
   if (typeof value === "boolean") {
@@ -121,6 +222,26 @@ function resolveScalar(value: unknown): ResolvedField | null {
         ? { type: "bool", value: parsed.data.value }
         : null;
     }
+    if (record.type === "hidden") {
+      const parsed = fieldHiddenSchema.safeParse(value);
+      return parsed.success ? { type: "hidden" } : null;
+    }
+    if (record.type === "secret") {
+      const parsed = fieldSecretSchema.safeParse(value);
+      return parsed.success
+        ? { type: "secret", value: parsed.data.value }
+        : null;
+    }
+    if (record.type === "table") {
+      const parsed = fieldTableSchema.safeParse(value);
+      return parsed.success
+        ? {
+            type: "table",
+            columns: parsed.data.columns,
+            rows: parsed.data.rows,
+          }
+        : null;
+    }
   }
   return null;
 }
@@ -132,6 +253,7 @@ function resolveScalar(value: unknown): ResolvedField | null {
 export function resolveFieldValue(
   value: unknown,
 ): ResolvedField | ResolvedField[] | null {
+  if (isFieldGroup(value)) return null;
   if (Array.isArray(value)) {
     const items: ResolvedField[] = [];
     for (const item of value) {
@@ -155,8 +277,8 @@ export function fieldSpan(resolved: ResolvedField | ResolvedField[]): 1 | 2 {
   return FIELD_TYPE_SPAN[resolved.type];
 }
 
-/** One category of fields: bare names → values (type implied or explicit). */
-export const categoryFieldsSchema = z.record(z.string(), fieldValueSchema);
+/** One category of fields: bare names → values or nested groups. */
+export const categoryFieldsSchema = z.record(z.string(), fieldNodeSchema);
 
 /** World / layout position: `[x, y, z]`. */
 export const posSchema = z.tuple([z.number(), z.number(), z.number()]);
@@ -178,6 +300,7 @@ export const resourceSchema = z.object({
   name: z.string().min(1),
   sourceType: z.string().min(1),
   service: z.string().min(1),
+  url: z.string().optional(),
   fields: z.record(z.string(), categoryFieldsSchema),
   pos: posSchema,
   size: sizeSchema.optional(),
@@ -293,7 +416,7 @@ export const infrastructureDbSchema = z.object({
   connectors: z.array(connectorSchema),
 });
 
-export type CategoryFields = z.infer<typeof categoryFieldsSchema>;
+export type CategoryFields = Record<string, FieldNode>;
 export type ServiceFields = Record<string, CategoryFields>;
 export type Resource = z.infer<typeof resourceSchema>;
 export type Group = z.infer<typeof groupSchema>;
@@ -301,35 +424,3 @@ export type ConnectorEndpointLabel = z.infer<typeof connectorEndpointLabelSchema
 export type ConnectorLabels = z.infer<typeof connectorLabelsSchema>;
 export type Connector = z.infer<typeof connectorSchema>;
 export type InfrastructureDb = z.infer<typeof infrastructureDbSchema>;
-
-const OPEN_TO_INTERNET_KEY = "Is Open To Internet";
-const OPEN_TO_INTERNET_KEY_LEGACY = "bool:Is Open To Internet";
-
-function readOpenToInternetFlag(fields: CategoryFields | undefined): unknown {
-  if (!fields) return undefined;
-  return fields[OPEN_TO_INTERNET_KEY] ?? fields[OPEN_TO_INTERNET_KEY_LEGACY];
-}
-
-/** True when any category has `Is Open To Internet` set. */
-export function isOpenToInternet(
-  fields: ServiceFields | null | undefined,
-): boolean {
-  if (!fields) return false;
-
-  for (const category of Object.values(fields)) {
-    const value = readOpenToInternetFlag(category);
-    if (typeof value === "boolean") return value;
-    if (Array.isArray(value)) {
-      if (value.some(Boolean)) return true;
-      continue;
-    }
-    if (value && typeof value === "object" && "type" in value) {
-      const resolved = resolveFieldValue(value);
-      if (resolved && !Array.isArray(resolved) && resolved.type === "bool") {
-        if (resolved.value) return true;
-      }
-    }
-  }
-
-  return false;
-}

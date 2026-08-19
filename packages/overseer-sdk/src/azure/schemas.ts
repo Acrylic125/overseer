@@ -3,6 +3,7 @@ import { z } from "zod";
 const passwordCredentialSchema = z.object({
   displayName: z.string().nullable().optional(),
   hint: z.string().nullable().optional(),
+  startDateTime: z.string().nullable().optional(),
   endDateTime: z.string().nullable().optional(),
 });
 

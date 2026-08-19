@@ -1,6 +1,11 @@
-import { access, constants as fsConstants, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  constants as fsConstants,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 
-import { redactSensitiveValue } from "../utils.js";
+import { redactSensitiveValue } from "@acrylic125/overseer-sdk";
 
 export type PendingEnvChange = {
   key: string;

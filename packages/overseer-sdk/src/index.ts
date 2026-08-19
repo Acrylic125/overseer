@@ -29,7 +29,11 @@ export {
 } from "./vercel/provider.js";
 
 export type { AzureApplication } from "./azure/schemas.js";
-export { azureScanners, entraScanner } from "./azure/scanners.js";
+export {
+  azureScanners,
+  entraScanner,
+  DEFAULT_POLICY as entraDefaultPolicy,
+} from "./azure/scanners.js";
 export {
   newAzureProvider,
   type AzureProviderConfig,
@@ -37,6 +41,7 @@ export {
 
 export { type ScrapeStepFn } from "./core/scrape-async.js";
 export { envToClaims, urlBaseMatchClaim } from "./core/claims.js";
+export { redactSensitiveValue } from "./core/utils.js";
 export { linkResources, type LinkEntry } from "./core/link.js";
 export { linkByReferences, scanEntries } from "./core/scan.js";
 export {
@@ -56,21 +61,28 @@ export type {
 } from "./layout.js";
 export {
   connectionKey,
+  isFieldGroup,
   normalizeConnectionNodes,
   resourceConnection,
+  table,
 } from "./types.js";
 export type {
   AssetsByProvider,
   ConnectionRequirement,
+  FieldGroup,
+  FieldNode,
   FieldValue,
   LayoutOutput,
   Pos,
   ProviderResourceScanner,
+  TransformContext,
+  ConnectionContext,
   Resource,
   ResourceAlert,
   ResourceClaims,
   ResourceConnection,
   ResourceConnectionHandler,
+  ResourceFields,
   ResourceId,
   ResourceLayoutItem,
   Tags,

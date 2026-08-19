@@ -2,18 +2,27 @@ import { ClientSecretCredential } from "@azure/identity";
 import { Client, PageIterator } from "@microsoft/microsoft-graph-client";
 import { TokenCredentialAuthenticationProvider } from "@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js";
 
-import { envToClaims, urlBaseMatchClaim } from "../core/claims.js";
-import { parseEnvUrl, type EnvVar } from "../core/env.js";
+import { envToClaims } from "../core/claims.js";
 import { resourceId } from "../core/resource-id.js";
+import { redactSensitiveValue } from "../core/utils.js";
 import { type ScrapeStepFn } from "../core/scrape-async.js";
-import type { FieldValue, ProviderResourceScanner } from "../types.js";
-import { iconForKind } from "./icons.js";
 import {
-  type AzureApplication,
-  parseApplicationsPage,
-} from "./schemas.js";
+  table,
+  type ProviderResourceScanner,
+  type ResourceAlert,
+} from "../types.js";
+import { iconForKind } from "./icons.js";
+import { type AzureApplication, parseApplicationsPage } from "./schemas.js";
 
 const noopStep: ScrapeStepFn = () => {};
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+export const DEFAULT_POLICY = {
+  onBeforeSecretExpireDays: [30, "warn"],
+  onAfterSecretExpire: "error",
+  onSecretNoExpiry: "warn",
+  onNoSecretRotationAfter: [180, "warn"],
+} as const;
 
 function redirectUris(app: AzureApplication) {
   const uris = new Set<string>();
@@ -27,25 +36,100 @@ function redirectUris(app: AzureApplication) {
   return [...uris];
 }
 
-function secretFields(credentials: AzureApplication["passwordCredentials"]) {
-  if (!credentials) return {};
-  const fields: Record<string, FieldValue | FieldValue[]> = {};
+function namedSecrets(credentials: AzureApplication["passwordCredentials"]) {
+  if (!credentials || credentials.length === 0) return [];
   const used = new Map<string, number>();
+  const secrets = [];
 
   for (const credential of credentials) {
     const base = credential.displayName?.trim() || "(no description)";
     const count = used.get(base) ?? 0;
     used.set(base, count + 1);
-    const key = count === 0 ? base : `${base} (${count + 1})`;
-    const hint = credential.hint;
-    const redacted = hint ? `${hint}******` : "******";
-    const expiry = credential.endDateTime;
-    fields[key] = expiry
-      ? [redacted, { type: "date", value: expiry }]
-      : redacted;
+    let name = base;
+    if (count > 0) {
+      name = `${base} (${count + 1})`;
+    }
+    secrets.push({ name, credential });
   }
 
-  return fields;
+  return secrets;
+}
+
+function policyAlertType(severity: "warn" | "error") {
+  if (severity === "error") return "error";
+  return "warning";
+}
+
+function dayLabel(days: number) {
+  if (days === 1) return "1 day";
+  return `${days} days`;
+}
+
+function secretAlerts(
+  credentials: AzureApplication["passwordCredentials"],
+  policy: typeof DEFAULT_POLICY,
+) {
+  const alerts: ResourceAlert[] = [];
+  const now = Date.now();
+
+  for (const { name, credential } of namedSecrets(credentials)) {
+    const end = credential.endDateTime
+      ? Date.parse(credential.endDateTime)
+      : Number.NaN;
+    if (!credential.endDateTime || Number.isNaN(end)) {
+      alerts.push({
+        type: policyAlertType(policy.onSecretNoExpiry),
+        message: `Secret "${name}" has no expiry date`,
+      });
+    } else if (end <= now) {
+      alerts.push({
+        type: policyAlertType(policy.onAfterSecretExpire),
+        message: `Secret "${name}" expired`,
+      });
+    } else {
+      const [beforeDays, beforeSeverity] = policy.onBeforeSecretExpireDays;
+      const daysUntil = (end - now) / MS_PER_DAY;
+      if (daysUntil <= beforeDays) {
+        alerts.push({
+          type: policyAlertType(beforeSeverity),
+          message: `Secret "${name}" expires in ${dayLabel(Math.ceil(daysUntil))}`,
+        });
+      }
+    }
+
+    const start = credential.startDateTime
+      ? Date.parse(credential.startDateTime)
+      : Number.NaN;
+    if (Number.isNaN(start)) continue;
+    const [rotationDays, rotationSeverity] = policy.onNoSecretRotationAfter;
+    const ageDays = (now - start) / MS_PER_DAY;
+    if (ageDays < rotationDays) continue;
+    alerts.push({
+      type: policyAlertType(rotationSeverity),
+      message: `Secret "${name}" has not been rotated in ${dayLabel(Math.floor(ageDays))}`,
+    });
+  }
+
+  return alerts;
+}
+
+function secretTable(credentials: AzureApplication["passwordCredentials"]) {
+  const secrets = namedSecrets(credentials);
+  if (secrets.length === 0) return null;
+  const rows: Array<Record<string, string>> = [];
+
+  for (const { name, credential } of secrets) {
+    rows.push({
+      Name: name,
+      Value: redactSensitiveValue(credential.hint ?? ""),
+      "Expires On": credential.endDateTime ?? "",
+    });
+  }
+
+  return table({
+    columns: ["Name", "Value", "Expires On"],
+    rows,
+  });
 }
 
 async function scrapeEntra(
@@ -90,14 +174,15 @@ async function scrapeEntra(
 
 export const entraScanner = {
   type: "Entra",
+  policy: DEFAULT_POLICY,
   scrape: scrapeEntra,
-  transform(item, namespace) {
+  transform(item, { namespace, policy = DEFAULT_POLICY }) {
     const objectId = item.application.id;
     const applicationId = item.application.appId;
     if (!objectId || !applicationId) return null;
     const name = item.application.displayName ?? applicationId;
     const uris = redirectUris(item.application);
-    const secrets = secretFields(item.application.passwordCredentials);
+    const secrets = secretTable(item.application.passwordCredentials);
     return {
       id: resourceId("azure", namespace, "entra", objectId),
       group: namespace,
@@ -109,26 +194,29 @@ export const entraScanner = {
         "Application (client) ID": applicationId,
         "Directory (tenant) ID": item.tenantId,
         ...(uris.length > 0 ? { "Redirect URIs": uris } : {}),
-        ...secrets,
+        ...(secrets ? { Secrets: secrets } : {}),
       },
-      alerts: [],
+      alerts: secretAlerts(item.application.passwordCredentials, policy),
       tags: { namespace },
     };
   },
   connection(item) {
     const uris = redirectUris(item.application);
-    const envs: EnvVar[] = uris.map((uri) => ({
-      key: uri,
-      value: uri,
-      type: "plain",
-    }));
+    const objectId = item.application.id;
+    const applicationId = item.application.appId;
+    const name =
+      item.application.displayName ?? applicationId ?? objectId ?? "";
     return {
-      claims: envToClaims(envs),
+      claims: envToClaims(uris),
       require: (claim) => {
-        for (const uri of uris) {
-          if (!urlBaseMatchClaim(uri, claim)) continue;
-          const label = parseEnvUrl(uri)?.hostname ?? uri;
-          return { type: "connected", label };
+        if (claim.type !== "ref") return false;
+        const value = claim.value.trim().toLowerCase();
+        if (!value) return false;
+        if (objectId && objectId.trim().toLowerCase() === value) {
+          return { type: "connected", label: name };
+        }
+        if (applicationId && applicationId.trim().toLowerCase() === value) {
+          return { type: "connected", label: name };
         }
         return false;
       },
@@ -136,7 +224,8 @@ export const entraScanner = {
   },
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeEntra>>[number],
-  [string, string, string, ScrapeStepFn]
+  [string, string, string, ScrapeStepFn],
+  typeof DEFAULT_POLICY
 >;
 
 export const azureScanners = [entraScanner];

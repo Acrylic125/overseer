@@ -13,7 +13,33 @@ export type FieldValue =
       type: "graph";
       vertices: string[];
       edges: [string, string][];
+    }
+  | { type: "hidden" }
+  | { type: "secret"; value: string }
+  | {
+      type: "table";
+      columns: string[];
+      rows: string[][];
     };
+
+export type FieldGroup =
+  | {
+      /** When true, the group key is not shown as a section heading. Defaults to false. */
+      hideHeading?: boolean;
+      type?: "all";
+      fields: Record<string, FieldValue | FieldValue[] | FieldGroup>;
+    }
+  | {
+      /** When true, the group key is not shown as a section heading. Defaults to false. */
+      hideHeading?: boolean;
+      type: "tab-single" | "dropdown-single" | "dropdown-multi";
+      fields: Record<string, FieldValue | FieldValue[] | FieldGroup>;
+      defaultShow?: string;
+    };
+
+export type FieldNode = FieldValue | FieldValue[] | FieldGroup;
+
+export type ResourceFields = Record<string, FieldNode>;
 
 export type ResourceAlert = {
   type: "warning" | "error";
@@ -33,11 +59,38 @@ export type Resource<
   name: string;
   url: string;
   service: string;
-  fields: Record<string, FieldValue | FieldValue[]>;
+  fields: ResourceFields;
   asset: AssetsByProvider;
   alerts: ResourceAlert[];
   tags: Tags<TTag>;
 };
+
+export function isFieldGroup(value: FieldNode): value is FieldGroup {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  return "fields" in value;
+}
+
+/** Object-row tables are easier to write; the wire format stores cells as lists. */
+export function table(input: {
+  columns: string[];
+  rows: Array<Record<string, string>>;
+}) {
+  const rows: string[][] = [];
+  for (const row of input.rows) {
+    const cells: string[] = [];
+    for (const column of input.columns) {
+      cells.push(row[column] ?? "");
+    }
+    rows.push(cells);
+  }
+  return {
+    type: "table" as const,
+    columns: input.columns,
+    rows,
+  };
+}
 
 export type ResourceClaims =
   | {
@@ -62,11 +115,28 @@ export type ResourceConnectionHandler = {
   require: (claim: ResourceClaims) => ConnectionRequirement;
 };
 
-export type ProviderResourceScanner<T, TScrapeArgs extends unknown[] = []> = {
+export type TransformContext<TPolicy = undefined> = {
+  namespace: string;
+  policy?: TPolicy;
+};
+
+export type ConnectionContext<TPolicy = undefined> = {
+  policy?: TPolicy;
+};
+
+export type ProviderResourceScanner<
+  T,
+  TScrapeArgs extends unknown[] = [],
+  TPolicy = undefined,
+> = {
   type: string;
   scrape: (...args: TScrapeArgs) => T[] | Promise<T[]>;
-  transform: (item: T, namespace: string) => Resource | null;
-  connection: (item: T) => ResourceConnectionHandler;
+  policy?: TPolicy;
+  transform: (item: T, ctx: TransformContext<TPolicy>) => Resource | null;
+  connection: (
+    item: T,
+    ctx: ConnectionContext<TPolicy>,
+  ) => ResourceConnectionHandler;
 };
 
 export type ResourceConnection = {
@@ -112,6 +182,8 @@ export type ResourceLayoutItem<TProviderKeys extends string> =
   | {
       type: "connector";
       nodes: [string, string];
+      /** `[source→target, target→source]`, aligned to `nodes`. */
+      labels: [string, string];
       path: Pos[];
     }
   | { type: "group"; group: string; from: Pos; to: Pos };

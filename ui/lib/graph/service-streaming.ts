@@ -1,6 +1,5 @@
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import { serviceWorldCenter } from "@/lib/graph/pack-layout";
-import { isOpenToInternet } from "@/lib/infrastructure-schema";
 import { INTERNET_ID } from "@/lib/internet";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
@@ -146,10 +145,7 @@ export function footprintInWindow(
 }
 
 function isLinkedToInternet(service: InfrastructureService): boolean {
-  return (
-    service.connections.includes(INTERNET_ID) ||
-    isOpenToInternet(service.fields)
-  );
+  return service.connections.includes(INTERNET_ID);
 }
 
 /** Direct neighbors of the selected service (both directions along connections). */

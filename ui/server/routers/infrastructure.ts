@@ -42,6 +42,8 @@ export type InfrastructureService = {
   id: string;
   type: string;
   name: string;
+  /** Console / dashboard URL from the scanner, when present. */
+  url?: string;
   /** Grid-cell origin (bottom-left of footprint) after packing. */
   x: number;
   y: number;
@@ -103,6 +105,7 @@ function enrichResource(
     id: resource.id,
     type: meta.icon,
     name: resource.name,
+    ...(resource.url ? { url: resource.url } : {}),
     group: resource.group,
     connections,
     species,

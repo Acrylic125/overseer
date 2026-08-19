@@ -7,11 +7,16 @@ import {
   settled,
   type ScrapeStepFn,
 } from "../core/scrape-async.js";
-import { envToClaims, urlBaseMatchClaim } from "../core/claims.js";
-import { envFields, parseEnvUrl, type EnvVar } from "../core/env.js";
+import { envToClaims, parseEnvUrl, urlBaseMatchClaim } from "../core/claims.js";
 import { resourceId } from "../core/resource-id.js";
 import { scanEntries } from "../core/scan.js";
-import type { FieldValue, ProviderResourceScanner, ResourceClaims, ConnectionRequirement } from "../types.js";
+import { redactSensitiveValue } from "../core/utils.js";
+import type {
+  ProviderResourceScanner,
+  ResourceClaims,
+  ConnectionRequirement,
+  ResourceFields,
+} from "../types.js";
 import { iconForKind } from "./icons.js";
 import {
   parseR2Cors,
@@ -30,7 +35,9 @@ const DETAIL_CONCURRENCY = 3;
 const noopStep: ScrapeStepFn = () => {};
 
 async function firstAccountId(client: Cloudflare) {
-  const iterator = client.accounts.list({ per_page: 1 })[Symbol.asyncIterator]();
+  const iterator = client.accounts
+    .list({ per_page: 1 })
+    [Symbol.asyncIterator]();
   const next = await iterator.next();
   if (next.done || !next.value?.id) {
     throw new Error("Cloudflare token has no accessible accounts");
@@ -81,13 +88,28 @@ function extractEnv(binding: WorkerBinding) {
   };
 }
 
-function workerEnvs(bindings: WorkerBinding[]) {
-  const envs: EnvVar[] = [];
+function workerEnvFields(bindings: WorkerBinding[]) {
+  const fields: ResourceFields = {};
   for (const binding of bindings) {
     const env = extractEnv(binding);
-    if (env) envs.push(env);
+    if (!env) continue;
+    if (env.type === "secret_text") {
+      fields[env.key] = redactSensitiveValue(env.value);
+      continue;
+    }
+    fields[env.key] = env.value;
   }
-  return envs;
+  return fields;
+}
+
+function workerEnvValues(bindings: WorkerBinding[]) {
+  const values: string[] = [];
+  for (const binding of bindings) {
+    const env = extractEnv(binding);
+    if (!env) continue;
+    values.push(env.value);
+  }
+  return values;
 }
 
 function bindingRefClaims(bindings: WorkerBinding[], workerName: string) {
@@ -211,13 +233,17 @@ async function r2Cors(
 
 async function scrapeWorkers(ctx: CloudflareAccount) {
   ctx.fn({ message: "Listing workers" });
-  const listedWorkers = await collect(ctx.client.workers.scripts.list(ctx.account));
+  const listedWorkers = await collect(
+    ctx.client.workers.scripts.list(ctx.account),
+  );
   const betaWorkers =
     listedWorkers.length > 0
       ? []
       : await collect(ctx.client.workers.beta.workers.list(ctx.account));
-  const workerSettings: Record<string, ReturnType<typeof parseWorkerSettings>> =
-    {};
+  const workerSettings: Record<
+    string,
+    ReturnType<typeof parseWorkerSettings>
+  > = {};
   const workerNames = [
     ...listedWorkers.map((worker) => workerName(worker)),
     ...betaWorkers.map((worker) => workerName(worker)),
@@ -357,7 +383,9 @@ async function scrapeR2(ctx: CloudflareAccount) {
       accountId: ctx.accountId,
       bucket,
       custom: custom ? (parseR2CustomDomains(custom) ?? undefined) : undefined,
-      managed: managed ? (parseR2ManagedDomains(managed) ?? undefined) : undefined,
+      managed: managed
+        ? (parseR2ManagedDomains(managed) ?? undefined)
+        : undefined,
       cors: cors ? (parseR2Cors(cors) ?? undefined) : undefined,
     };
   });
@@ -365,7 +393,9 @@ async function scrapeR2(ctx: CloudflareAccount) {
 
 async function scrapeVectorize(ctx: CloudflareAccount) {
   ctx.fn({ message: "Listing Vectorize indexes" });
-  const vectorize = await collect(ctx.client.vectorize.indexes.list(ctx.account));
+  const vectorize = await collect(
+    ctx.client.vectorize.indexes.list(ctx.account),
+  );
   return vectorize.map((index) => ({
     accountId: ctx.accountId,
     index,
@@ -384,8 +414,7 @@ async function scrapeQueues(ctx: CloudflareAccount) {
 export const workerScanner = {
   type: "Worker",
   scrape: scrapeWorkers,
-  transform(item, namespace) {
-    const envs = workerEnvs(item.bindings);
+  transform(item, { namespace }) {
     return {
       id: idFor(namespace, item.accountId, "worker", item.name),
       group: namespace,
@@ -396,7 +425,7 @@ export const workerScanner = {
       fields: {
         "Is Open To Internet": item.domains.length > 0,
         ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
-        ...envFields(envs),
+        ...workerEnvFields(item.bindings),
       },
       alerts: [],
       tags: { namespace },
@@ -406,7 +435,7 @@ export const workerScanner = {
     const domains = item.domains;
     return {
       claims: [
-        ...envToClaims(workerEnvs(item.bindings)),
+        ...envToClaims(workerEnvValues(item.bindings)),
         ...bindingRefClaims(item.bindings, item.name),
       ],
       require: (claim) => {
@@ -426,7 +455,7 @@ export const workerScanner = {
 export const durableObjectScanner = {
   type: "Durable Object",
   scrape: scrapeDurableObjects,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const doId = item.namespaceDo.id;
     if (!doId) return null;
     const name = item.namespaceDo.name ?? item.namespaceDo.class ?? doId;
@@ -434,7 +463,7 @@ export const durableObjectScanner = {
       id: idFor(namespace, item.accountId, "do", doId),
       group: namespace,
       name,
-      url: `https://dash.cloudflare.com/${item.accountId}/workers/durable-objects/${encodeURIComponent(doId)}`,
+      url: `https://dash.cloudflare.com/${item.accountId}/workers/durable-objects/view/${encodeURIComponent(doId)}`,
       service: "Durable Object",
       asset: iconForKind("Durable Object"),
       fields: { "Is Open To Internet": false },
@@ -447,8 +476,7 @@ export const durableObjectScanner = {
     const name = namespaceDo.name ?? namespaceDo.class ?? namespaceDo.id ?? "";
     const script = namespaceDo.script;
     const className = namespaceDo.class;
-    const classRef =
-      script && className ? `${script}:${className}` : null;
+    const classRef = script && className ? `${script}:${className}` : null;
     return {
       claims: [],
       require: (claim) =>
@@ -471,7 +499,7 @@ export const durableObjectScanner = {
 export const workflowScanner = {
   type: "Workflow",
   scrape: scrapeWorkflows,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const name = item.workflow.name;
     const workflowId = item.workflow.id;
     if (!name || !workflowId) return null;
@@ -481,7 +509,7 @@ export const workflowScanner = {
       item.graph?.workflow?.nodes ??
       item.graph?.nodes ??
       null;
-    const fields: Record<string, FieldValue | FieldValue[]> = {};
+    const fields: ResourceFields = {};
     if (nodes && nodes.length > 0) {
       fields.Steps = workflowNodesToGraph(nodes);
     }
@@ -520,7 +548,7 @@ export const workflowScanner = {
 export const kvScanner = {
   type: "KV",
   scrape: scrapeKv,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const kvId = item.kv.id;
     const title = item.kv.title ?? kvId;
     if (!kvId || !title) return null;
@@ -559,7 +587,7 @@ export const kvScanner = {
 export const d1Scanner = {
   type: "D1",
   scrape: scrapeD1,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const uuid = item.db.uuid;
     const name = item.db.name;
     if (!uuid || !name) return null;
@@ -597,7 +625,7 @@ export const d1Scanner = {
 export const r2Scanner = {
   type: "R2",
   scrape: scrapeR2,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const name = item.bucket.name;
     if (!name) return null;
     const domains = item.custom ? r2Domains(item.custom) : [];
@@ -653,7 +681,7 @@ export const r2Scanner = {
 export const vectorizeScanner = {
   type: "Vectorize",
   scrape: scrapeVectorize,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const name = item.index.name;
     if (!name) return null;
     return {
@@ -683,7 +711,7 @@ export const vectorizeScanner = {
 export const queueScanner = {
   type: "Queue",
   scrape: scrapeQueues,
-  transform(item, namespace) {
+  transform(item, { namespace }) {
     const name = item.queue.queue_name;
     const queueId = item.queue.queue_id ?? name;
     if (!name || !queueId) return null;

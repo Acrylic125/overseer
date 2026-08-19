@@ -7,16 +7,29 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   fieldSpan,
+  isFieldGroup,
   resolveFieldValue,
   type CategoryFields,
   type FieldGraphEdge,
+  type FieldGroup,
+  type FieldNode,
   type ResolvedField,
   type ServiceFields,
 } from "@/lib/infrastructure-schema";
@@ -166,6 +179,11 @@ function StringActions({ value }: { value: string }) {
   );
 }
 
+function redactSecret(value: string) {
+  if (value.length <= 5) return value;
+  return `${value.slice(0, 3)}******${value.slice(-3)}`;
+}
+
 function StringValue({ value }: { value: string }) {
   return (
     <div className="group relative min-w-0 w-full">
@@ -270,9 +288,7 @@ function layoutGraph(
 
   for (let d = 0; d <= maxDepth; d += 1) {
     const layer = layers.get(d) ?? [];
-    const widths = layer.map((id) =>
-      Math.max(MIN_W, id.length * CHAR_W + 24),
-    );
+    const widths = layer.map((id) => Math.max(MIN_W, id.length * CHAR_W + 24));
     const totalW =
       widths.reduce((sum, w) => sum + w, 0) +
       Math.max(0, layer.length - 1) * NODE_GAP_X;
@@ -330,10 +346,7 @@ function GraphValue({
     originY: number;
   } | null>(null);
 
-  const layout = useMemo(
-    () => layoutGraph(vertices, edges),
-    [vertices, edges],
-  );
+  const layout = useMemo(() => layoutGraph(vertices, edges), [vertices, edges]);
   const byId = useMemo(
     () => new Map(layout.nodes.map((node) => [node.id, node])),
     [layout.nodes],
@@ -387,11 +400,7 @@ function GraphValue({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      <svg
-        width="100%"
-        height="100%"
-        className="touch-none select-none"
-      >
+      <svg width="100%" height="100%" className="touch-none select-none">
         <g transform={`translate(${pan.x} ${pan.y})`}>
           {edges.map(([from, to], index) => {
             const a = byId.get(from);
@@ -439,6 +448,72 @@ function GraphValue({
   );
 }
 
+function TableValue({
+  columns,
+  rows,
+}: {
+  columns: string[];
+  rows: string[][];
+}) {
+  if (columns.length === 0) {
+    return <span className="text-muted-foreground">None</span>;
+  }
+
+  return (
+    <ScrollArea className="w-full min-w-0 overflow-hidden">
+      <div className="w-max min-w-full">
+        <table className="w-full min-w-full border-collapse text-xs">
+          <colgroup>
+            {columns.map((column) => (
+              <col key={column} className="w-36 max-w-36" />
+            ))}
+          </colgroup>
+          <thead>
+            <tr className="border-b border-border">
+              {columns.map((column) => (
+                <th
+                  key={column}
+                  className="max-w-36 px-2 py-1.5 text-left align-top font-medium wrap-break-word whitespace-normal text-muted-foreground"
+                >
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  className="px-2 py-1.5 text-muted-foreground"
+                  colSpan={columns.length}
+                >
+                  None
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr
+                  key={index}
+                  className="border-b border-border last:border-b-0"
+                >
+                  {columns.map((column, columnIndex) => (
+                    <td
+                      key={column}
+                      className="max-w-36 px-2 py-1.5 align-top wrap-break-word whitespace-normal font-mono text-foreground"
+                    >
+                      {row[columnIndex] ?? ""}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </ScrollArea>
+  );
+}
+
 function ScalarValue({ field }: { field: ResolvedField }) {
   switch (field.type) {
     case "bool":
@@ -446,12 +521,35 @@ function ScalarValue({ field }: { field: ResolvedField }) {
     case "date":
       return <DateValue value={field.value} />;
     case "graph":
-      return (
-        <GraphValue vertices={field.vertices} edges={field.edges} />
-      );
+      return <GraphValue vertices={field.vertices} edges={field.edges} />;
+    case "hidden":
+      return <HiddenValue />;
+    case "secret":
+      return <StringValue value={redactSecret(field.value)} />;
+    case "table":
+      return <TableValue columns={field.columns} rows={field.rows} />;
     case "string":
       return <StringValue value={field.value} />;
   }
+}
+
+function HiddenValue() {
+  return (
+    <div className="w-full relative inline-flex overflow-hidden rounded-md">
+      <span
+        className="px-2 py-0.5 font-mono text-xs tracking-[0.35em] text-foreground select-none"
+        aria-hidden
+      >
+        ***************
+      </span>
+      <span className="absolute inset-0 flex items-center justify-center bg-background/40 backdrop-blur-[3px]">
+        <span className="text-[10px] font-semibold tracking-[0.2em] text-foreground/80 uppercase">
+          HIDDEN
+        </span>
+      </span>
+      <span className="sr-only">Hidden</span>
+    </div>
+  );
 }
 
 function FieldRow({ name, raw }: { name: string; raw: unknown }) {
@@ -497,14 +595,349 @@ function FieldRow({ name, raw }: { name: string; raw: unknown }) {
   );
 }
 
-function FieldList({ fields }: { fields: CategoryFields }) {
+function groupType(group: FieldGroup) {
+  return group.type ?? "all";
+}
+
+function groupKeys(group: FieldGroup) {
+  return Object.keys(group.fields);
+}
+
+function defaultGroupKey(group: FieldGroup) {
+  const keys = groupKeys(group);
+  if (groupType(group) === "all") return keys[0] ?? "";
+  if ("defaultShow" in group && group.defaultShow) {
+    if (keys.includes(group.defaultShow)) return group.defaultShow;
+  }
+  return keys[0] ?? "";
+}
+
+function FieldNodeView({ name, value }: { name: string; value: FieldNode }) {
+  if (isFieldGroup(value)) {
+    return <FieldGroupView name={name} group={value} />;
+  }
   return (
     <div className="grid grid-cols-2 gap-x-3">
-      {Object.entries(fields).map(([name, value]) => (
-        <FieldRow key={name} name={name} raw={value} />
-      ))}
+      <FieldRow name={name} raw={value} />
     </div>
   );
+}
+
+function FieldList({ fields }: { fields: CategoryFields }) {
+  const entries = Object.entries(fields);
+  if (entries.length === 0) {
+    return <p className="py-2 text-muted-foreground">None</p>;
+  }
+
+  const nodes: ReactNode[] = [];
+  let scalarBatch: Array<[string, unknown]> = [];
+
+  function flushScalars() {
+    if (scalarBatch.length === 0) return;
+    const batch = scalarBatch;
+    scalarBatch = [];
+    nodes.push(
+      <div key={`scalars-${nodes.length}`} className="grid grid-cols-2 gap-x-3">
+        {batch.map(([name, value]) => (
+          <FieldRow key={name} name={name} raw={value} />
+        ))}
+      </div>,
+    );
+  }
+
+  for (const [name, value] of entries) {
+    if (isFieldGroup(value)) {
+      flushScalars();
+      nodes.push(<FieldGroupView key={name} name={name} group={value} />);
+      continue;
+    }
+    scalarBatch.push([name, value]);
+  }
+  flushScalars();
+
+  return <div className="flex flex-col gap-3">{nodes}</div>;
+}
+
+function EmptyGroupCard() {
+  return (
+    <Card size="sm">
+      <CardContent className="flex items-center justify-center py-6 text-center text-muted-foreground">
+        Nothing to show
+      </CardContent>
+    </Card>
+  );
+}
+
+function FieldGroupHeading({
+  name,
+  hidden,
+  action,
+}: {
+  name: string;
+  hidden: boolean;
+  action?: ReactNode;
+}) {
+  if (hidden && !action) return null;
+  return (
+    <div className="mb-2 flex items-center justify-between gap-2">
+      {hidden ? (
+        <span />
+      ) : (
+        <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          {formatCategoryTitle(name)}
+        </h4>
+      )}
+      {action}
+    </div>
+  );
+}
+
+function FieldGroupView({ name, group }: { name: string; group: FieldGroup }) {
+  const type = groupType(group);
+  const keys = groupKeys(group);
+  const hideHeading = group.hideHeading === true;
+  const initial = defaultGroupKey(group);
+
+  if (type === "all") {
+    return (
+      <div>
+        <FieldGroupHeading name={name} hidden={hideHeading} />
+        {keys.length === 0 ? (
+          <EmptyGroupCard />
+        ) : (
+          <FieldList fields={group.fields} />
+        )}
+      </div>
+    );
+  }
+
+  if (type === "tab-single") {
+    return (
+      <FieldGroupTabs
+        name={name}
+        group={group}
+        hideHeading={hideHeading}
+        initial={initial}
+      />
+    );
+  }
+
+  if (type === "dropdown-multi") {
+    return (
+      <FieldGroupDropdownMulti
+        name={name}
+        group={group}
+        hideHeading={hideHeading}
+        initial={initial}
+      />
+    );
+  }
+
+  return (
+    <FieldGroupDropdownSingle
+      name={name}
+      group={group}
+      hideHeading={hideHeading}
+      initial={initial}
+    />
+  );
+}
+
+function FieldGroupTabs({
+  name,
+  group,
+  hideHeading,
+  initial,
+}: {
+  name: string;
+  group: FieldGroup;
+  hideHeading: boolean;
+  initial: string;
+}) {
+  const keys = groupKeys(group);
+  const [value, setValue] = useState(initial);
+  const active = keys.includes(value) ? value : initial;
+
+  return (
+    <div>
+      <FieldGroupHeading name={name} hidden={hideHeading} />
+      {keys.length === 0 ? (
+        <EmptyGroupCard />
+      ) : (
+        <Tabs
+          value={active}
+          onValueChange={(next) => {
+            if (typeof next === "string") setValue(next);
+          }}
+          className="flex w-full flex-col gap-3"
+        >
+          <TabsList className="flex h-9 w-full shrink-0 items-stretch justify-stretch gap-0.5">
+            {keys.map((key) => (
+              <TabsTrigger
+                key={key}
+                value={key}
+                className="h-auto min-h-0 min-w-0 flex-1 px-2 py-1.5 text-xs"
+              >
+                {formatEnvTabLabel(key)}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {keys.map((key) => {
+            const nested = group.fields[key];
+            if (nested === undefined) return null;
+            return (
+              <TabsPanel key={key} value={key} className="w-full outline-none">
+                <FieldNodeView name={key} value={nested} />
+              </TabsPanel>
+            );
+          })}
+        </Tabs>
+      )}
+    </div>
+  );
+}
+
+function FieldGroupDropdownSingle({
+  name,
+  group,
+  hideHeading,
+  initial,
+}: {
+  name: string;
+  group: FieldGroup;
+  hideHeading: boolean;
+  initial: string;
+}) {
+  const keys = groupKeys(group);
+  const [value, setValue] = useState(initial);
+  const active = keys.includes(value) ? value : initial;
+  const nested = group.fields[active];
+
+  return (
+    <div>
+      <FieldGroupHeading
+        name={name}
+        hidden={hideHeading}
+        action={
+          keys.length === 0 ? undefined : (
+            <Select
+              value={active}
+              onValueChange={(next) => {
+                if (typeof next === "string") setValue(next);
+              }}
+            >
+              <SelectTrigger className="h-7 w-36 shrink-0 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup>
+                {keys.map((key) => (
+                  <SelectItem key={key} value={key}>
+                    {formatEnvTabLabel(key)}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          )
+        }
+      />
+      {nested === undefined ? (
+        <EmptyGroupCard />
+      ) : (
+        <FieldNodeView name={active} value={nested} />
+      )}
+    </div>
+  );
+}
+
+function FieldGroupDropdownMulti({
+  name,
+  group,
+  hideHeading,
+  initial,
+}: {
+  name: string;
+  group: FieldGroup;
+  hideHeading: boolean;
+  initial: string;
+}) {
+  const keys = groupKeys(group);
+  const [selected, setSelected] = useState<string[]>(
+    initial ? [initial] : keys,
+  );
+  const active = selected.filter((key) => keys.includes(key));
+
+  function toggle(key: string) {
+    setSelected((current) => {
+      if (current.includes(key)) {
+        return current.filter((item) => item !== key);
+      }
+      return [...current, key];
+    });
+  }
+
+  const label =
+    active.length === 0
+      ? "None"
+      : active.length === 1
+        ? formatEnvTabLabel(active[0]!)
+        : `${active.length} selected`;
+
+  return (
+    <div>
+      <FieldGroupHeading
+        name={name}
+        hidden={hideHeading}
+        action={
+          keys.length === 0 ? undefined : (
+            <details className="relative">
+              <summary className="inline-flex h-7 w-36 cursor-pointer list-none items-center justify-between gap-1.5 rounded-lg border border-input bg-background px-2.5 text-xs select-none [&::-webkit-details-marker]:hidden">
+                <span className="min-w-0 truncate">{label}</span>
+              </summary>
+              <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg border border-border bg-popover p-1 shadow-md">
+                {keys.map((key) => (
+                  <label
+                    key={key}
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={active.includes(key)}
+                      onChange={() => toggle(key)}
+                    />
+                    {formatEnvTabLabel(key)}
+                  </label>
+                ))}
+              </div>
+            </details>
+          )
+        }
+      />
+      {active.length === 0 ? (
+        <EmptyGroupCard />
+      ) : (
+        <div className="flex flex-col gap-3">
+          {active.map((key) => {
+            const nested = group.fields[key];
+            if (nested === undefined) return null;
+            return <FieldNodeView key={key} name={key} value={nested} />;
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function splitCategoryFields(fields: CategoryFields) {
+  const scalars: CategoryFields = {};
+  const groups: Array<[string, FieldGroup]> = [];
+  for (const [name, value] of Object.entries(fields)) {
+    if (isFieldGroup(value)) {
+      groups.push([name, value]);
+      continue;
+    }
+    scalars[name] = value;
+  }
+  return { scalars, groups };
 }
 
 function DetailSection({
@@ -512,7 +945,7 @@ function DetailSection({
   children,
 }: {
   title: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <section className="px-4">
@@ -627,8 +1060,26 @@ function ServiceDetailSheetBody({
         >
           {service.name}
         </h2>
-        <div className="pt-2">
+        <div className="flex items-center gap-2 pt-2">
           <Badge variant="secondary">{service.type}</Badge>
+          {service.url && looksLikeLink(service.url) ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="xs"
+              nativeButton={false}
+              render={
+                <a
+                  href={hrefForLink(service.url)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                />
+              }
+            >
+              <ExternalLinkIcon />
+              View
+            </Button>
+          ) : null}
         </div>
         <Button
           type="button"
@@ -648,14 +1099,23 @@ function ServiceDetailSheetBody({
         ) : (
           <>
             {envTabs.length > 0 ? <EnvironmentSection tabs={envTabs} /> : null}
-            {otherCategories.map(([category, fields]) => (
-              <DetailSection
-                key={category}
-                title={formatCategoryTitle(category)}
-              >
-                <FieldList fields={fields} />
-              </DetailSection>
-            ))}
+            {otherCategories.map(([category, fields]) => {
+              const { scalars, groups } = splitCategoryFields(fields);
+              return (
+                <div key={category} className="flex flex-col gap-6">
+                  {Object.keys(scalars).length > 0 ? (
+                    <DetailSection title={formatCategoryTitle(category)}>
+                      <FieldList fields={scalars} />
+                    </DetailSection>
+                  ) : null}
+                  {groups.map(([name, group]) => (
+                    <section key={name} className="px-4">
+                      <FieldGroupView name={name} group={group} />
+                    </section>
+                  ))}
+                </div>
+              );
+            })}
           </>
         )}
       </div>

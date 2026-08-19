@@ -543,6 +543,21 @@ function connectionTargets(
   return [...targets];
 }
 
+function labelsForPath(
+  sourceId: string,
+  targetId: string,
+  connections: ResourceConnection[],
+): [string, string] {
+  for (const connection of connections) {
+    const [from, to] = connection.nodes;
+    if (from === sourceId && to === targetId) return connection.labels;
+    if (from === targetId && to === sourceId) {
+      return [connection.labels[1], connection.labels[0]];
+    }
+  }
+  return ["", ""];
+}
+
 function emitNestedPack(
   pack: NestedPack,
   absX: number,
@@ -694,6 +709,7 @@ export function layout({
     layoutItems.push({
       type: "connector",
       nodes: [path.sourceId, path.targetId],
+      labels: labelsForPath(path.sourceId, path.targetId, connections),
       path: path.points.map(
         (point): Pos => roundPos([point.x, point.y, pack.connectorZ]),
       ),

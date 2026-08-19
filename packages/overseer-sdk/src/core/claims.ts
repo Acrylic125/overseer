@@ -1,11 +1,22 @@
-import { parseEnvUrl } from "./env.js";
-import type { EnvVar } from "./env.js";
 import type { ResourceClaims } from "../types.js";
 
-export function envToClaims(envs: EnvVar[]) {
+export function parseEnvUrl(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    if (trimmed.includes("://")) {
+      return new URL(trimmed);
+    }
+    return new URL(`https://${trimmed}`);
+  } catch {
+    return null;
+  }
+}
+
+export function envToClaims(values: string[]) {
   const claims: ResourceClaims[] = [];
-  for (const env of envs) {
-    const value = env.value.trim();
+  for (const raw of values) {
+    const value = raw.trim();
     if (!value) continue;
     const url = parseEnvUrl(value);
     if (url) {
