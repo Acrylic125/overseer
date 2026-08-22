@@ -19,7 +19,7 @@ export function InfrastructureView() {
   if (isPending) {
     return (
       <div className="relative h-svh">
-        <PageNav />
+        <PageNav searchValue="" onSearchChange={() => {}} />
         <div className="text-muted-foreground flex h-svh items-center justify-center text-sm">
           Loading infrastructure…
         </div>
@@ -30,7 +30,7 @@ export function InfrastructureView() {
   if (isError) {
     return (
       <div className="relative h-svh">
-        <PageNav />
+        <PageNav searchValue="" onSearchChange={() => {}} />
         <div className="text-destructive flex h-svh items-center justify-center px-6 text-center text-sm">
           {error.message}
         </div>
@@ -41,7 +41,7 @@ export function InfrastructureView() {
   if (data.services.length === 0) {
     return (
       <div className="relative h-svh">
-        <PageNav />
+        <PageNav searchValue="" onSearchChange={() => {}} />
         <div className="text-muted-foreground flex h-svh flex-col items-center justify-center gap-2 px-6 text-center text-sm">
           <p>No infrastructure found. Run a scan to populate the layout.</p>
         </div>

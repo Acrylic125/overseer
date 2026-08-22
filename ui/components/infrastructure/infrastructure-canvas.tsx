@@ -1,9 +1,11 @@
 "use client";
 
 import { Canvas } from "@react-three/fiber";
+import { useQuery } from "@tanstack/react-query";
 import {
   Suspense,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -38,6 +40,13 @@ import type { PackLayoutResult } from "@/lib/graph/pack-layout";
 import type { CameraFrame } from "@/lib/layout-from-db";
 import { SCENE } from "@/lib/infrastructure-styles";
 import { INTERNET_ID } from "@/lib/internet";
+import { isTypingTarget } from "@/lib/is-typing-target";
+import {
+  buildSearchCatalog,
+  countsFromAlerts,
+  evaluateSearch,
+} from "@/lib/search-ql";
+import { useTRPC } from "@/lib/trpc/client";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type { ViewMode };
@@ -50,17 +59,6 @@ type InfrastructureCanvasProps = {
   connectorPaths?: ConnectorPath[] | null;
   cameraFrame?: CameraFrame | null;
 };
-
-function isTypingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    tag === "SELECT" ||
-    target.isContentEditable
-  );
-}
 
 export function InfrastructureCanvas({
   services,
@@ -81,6 +79,31 @@ export function InfrastructureCanvas({
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(
     null,
   );
+  const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const trpc = useTRPC();
+  const { data: alerts } = useQuery(
+    trpc.infrastructure.alerts.queryOptions(undefined, {
+      retry: false,
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    }),
+  );
+  const alertCounts = useMemo(
+    () => countsFromAlerts(alerts ?? []),
+    [alerts],
+  );
+  const searchCatalog = useMemo(
+    () => buildSearchCatalog(services, alertCounts),
+    [services, alertCounts],
+  );
+  const searchMatchIds = useMemo(() => {
+    const result = evaluateSearch(deferredSearchQuery, searchCatalog);
+    if (!result.ok) {
+      return null;
+    }
+    return result.matchIds;
+  }, [deferredSearchQuery, searchCatalog]);
   const [lookLocked, setLookLocked] = useState(false);
   const [pinnedConnector, setPinnedConnector] = useState<ConnectorFocus | null>(
     null,
@@ -216,6 +239,7 @@ export function InfrastructureCanvas({
             connectorPaths={connectorPaths}
             viewMode={viewMode}
             selectedServiceId={selectedServiceId}
+            searchMatchIds={searchMatchIds}
             onSelectedServiceIdChange={handleSelectedServiceIdChange}
             onLookLockChange={setLookLocked}
             connectorFocus={connectorFocus}
@@ -240,7 +264,10 @@ export function InfrastructureCanvas({
       </div>
 
       <PageNav
-        center={
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchCatalog={searchCatalog}
+        left={
           <Tabs
             value={viewMode}
             onValueChange={(value) => {

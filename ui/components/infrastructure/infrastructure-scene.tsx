@@ -34,6 +34,7 @@ import type { PackLayoutResult } from "@/lib/graph/pack-layout";
 import type { CameraFrame } from "@/lib/layout-from-db";
 import { CELL_SIZE, SCENE } from "@/lib/infrastructure-styles";
 import { INTERNET_ID, isInternetService } from "@/lib/internet";
+import { composeFocusIds } from "@/lib/search-ql";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 type SceneProps = {
@@ -43,6 +44,7 @@ type SceneProps = {
   connectorPaths: ConnectorPath[] | null;
   viewMode: ViewMode;
   selectedServiceId: string | null;
+  searchMatchIds: Set<string> | null;
   onSelectedServiceIdChange: (id: string | null) => void;
   onLookLockChange: (locked: boolean) => void;
   connectorFocus: ConnectorFocus | null;
@@ -99,6 +101,7 @@ export function InfrastructureScene({
   connectorPaths,
   viewMode,
   selectedServiceId,
+  searchMatchIds,
   onSelectedServiceIdChange,
   onLookLockChange,
   connectorFocus,
@@ -133,10 +136,14 @@ export function InfrastructureScene({
     selectedServiceId,
     internetHubService,
   });
-  const relevantIds = useMemo(
+  const selectionIds = useMemo(
     () =>
       selectedServiceId ? linkedServiceIds(services, selectedServiceId) : null,
     [services, selectedServiceId],
+  );
+  const relevantIds = useMemo(
+    () => composeFocusIds({ searchMatchIds, selectionIds }),
+    [searchMatchIds, selectionIds],
   );
   const internetOpacity =
     relevantIds != null && !relevantIds.has(INTERNET_ID) ? 0.2 : 1;
