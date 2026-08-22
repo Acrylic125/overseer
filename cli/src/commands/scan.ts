@@ -1,15 +1,15 @@
 import { readFile } from "node:fs/promises";
 
 import {
+  azureScanners,
+  cloudflareScanners,
   layout,
   linkByReferences,
-  newAzureProvider,
-  newCloudflareProvider,
-  newInternetProvider,
-  newVercelProvider,
+  vercelScanners,
   type LinkEntry,
   type ScrapeStepFn,
 } from "@acrylic125/overseer-sdk";
+import Cloudflare from "cloudflare";
 import { config as loadEnv } from "dotenv";
 import { elapsed, log } from "../cli/log.js";
 import {
@@ -27,15 +27,23 @@ export type ScanPipelineOptions = {
   skipPrecompute?: boolean;
 };
 
+async function listCloudflareAccountIds(client: Cloudflare) {
+  const accountIds: string[] = [];
+  for await (const account of client.accounts.list()) {
+    if (account.id) accountIds.push(account.id);
+  }
+  if (accountIds.length === 0) {
+    throw new Error("Cloudflare token has no accessible accounts");
+  }
+  return accountIds;
+}
+
 async function scrapeProviders() {
   loadEnv({ path: envPath, quiet: true });
 
   const providers = envToProvider(process.env);
-  const cloudflareProvider = newCloudflareProvider();
-  const vercelProvider = newVercelProvider();
-  const azureProvider = newAzureProvider();
   const warnings: string[] = [];
-  const entries: LinkEntry[] = [...newInternetProvider().scan()];
+  const entries: LinkEntry[] = [];
 
   const onStep =
     (namespace: string): ScrapeStepFn =>
@@ -47,12 +55,31 @@ async function scrapeProviders() {
 
   for (const provider of providers.cloudflare) {
     try {
-      entries.push(
-        ...(await cloudflareProvider.scan(
-          provider,
-          onStep(provider.namespace),
-        )),
-      );
+      const client = new Cloudflare({ apiToken: provider.apiKey });
+      onStep(provider.namespace)({ message: "Listing accounts" });
+      const accountIds = await listCloudflareAccountIds(client);
+
+      for (const accountId of accountIds) {
+        try {
+          const accountStep: ScrapeStepFn = (step) => {
+            log.step(`${provider.namespace}/${accountId}: ${step.message}`);
+          };
+          const account = {
+            client,
+            accountId,
+            account: { account_id: accountId },
+            fn: accountStep,
+          };
+          for (const scanner of cloudflareScanners) {
+            const items = await scanner.scrape(account);
+            entries.push(...scanner.link(items, provider.namespace));
+          }
+        } catch (error) {
+          warnings.push(
+            `provider:${provider.namespace}/account:${accountId}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
     } catch (error) {
       warnings.push(
         `provider:${provider.namespace}: ${error instanceof Error ? error.message : String(error)}`,
@@ -62,9 +89,15 @@ async function scrapeProviders() {
 
   for (const provider of providers.vercel) {
     try {
-      entries.push(
-        ...(await vercelProvider.scan(provider, onStep(provider.namespace))),
-      );
+      const step = onStep(provider.namespace);
+      for (const scanner of vercelScanners) {
+        const items = await scanner.scrape(
+          provider.apiKey,
+          provider.teamId,
+          step,
+        );
+        entries.push(...scanner.link(items, provider.namespace));
+      }
     } catch (error) {
       warnings.push(
         `provider:${provider.namespace}: ${error instanceof Error ? error.message : String(error)}`,
@@ -74,9 +107,16 @@ async function scrapeProviders() {
 
   for (const provider of providers.azure) {
     try {
-      entries.push(
-        ...(await azureProvider.scan(provider, onStep(provider.namespace))),
-      );
+      const step = onStep(provider.namespace);
+      for (const scanner of azureScanners) {
+        const items = await scanner.scrape(
+          provider.tenantId,
+          provider.clientId,
+          provider.clientSecret,
+          step,
+        );
+        entries.push(...scanner.link(items, provider.namespace));
+      }
     } catch (error) {
       warnings.push(
         `provider:${provider.namespace}: ${error instanceof Error ? error.message : String(error)}`,

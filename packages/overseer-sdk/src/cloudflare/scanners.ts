@@ -7,9 +7,9 @@ import {
   settled,
   type ScrapeStepFn,
 } from "../core/scrape-async.js";
+import { bindScanner } from "../core/bind-scanner.js";
 import { envToClaims, parseEnvUrl, urlBaseMatchClaim } from "../core/claims.js";
 import { resourceId } from "../core/resource-id.js";
-import { scanEntries } from "../core/scan.js";
 import type {
   FieldNode,
   ProviderResourceScanner,
@@ -28,7 +28,6 @@ import {
   parseWorkflowGraph,
   type R2Cors,
   type R2CustomDomains,
-  type R2ManagedDomains,
   type WorkerBinding,
   type WorkerSecret,
 } from "./schemas.js";
@@ -36,20 +35,28 @@ import { workflowNodesToGraph } from "./workflow-graph.js";
 
 const DETAIL_CONCURRENCY = 3;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
-const noopStep: ScrapeStepFn = () => {};
 
-export const DEFAULT_POLICY = {
-  onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [number, "warn" | "error"],
+export const WORKER_DEFAULT_POLICY = {
+  onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [
+    number,
+    "warn" | "error",
+  ],
+};
+
+type CloudflareAccount = {
+  client: Cloudflare;
+  accountId: string;
+  account: { account_id: string };
+  fn: ScrapeStepFn;
 };
 
 function sensitiveVarAlerts(
   envs: WorkerEnv[],
-  policy: typeof DEFAULT_POLICY,
+  policy: typeof WORKER_DEFAULT_POLICY,
 ) {
   const alerts: ResourceAlert[] = [];
   const now = Date.now();
-  const [thresholdDays, severity] =
-    policy.onAfterSensitiveVarLastUpdatedDays;
+  const [thresholdDays, severity] = policy.onAfterSensitiveVarLastUpdatedDays;
 
   for (const env of envs) {
     if (env.type !== "secret_text") continue;
@@ -66,34 +73,6 @@ function sensitiveVarAlerts(
 
   return alerts;
 }
-
-async function firstAccountId(client: Cloudflare) {
-  const iterator = client.accounts
-    .list({ per_page: 1 })
-    [Symbol.asyncIterator]();
-  const next = await iterator.next();
-  if (next.done || !next.value?.id) {
-    throw new Error("Cloudflare token has no accessible accounts");
-  }
-  return next.value.id;
-}
-
-async function cloudflareAccount(
-  apiToken: string,
-  fn: ScrapeStepFn = noopStep,
-) {
-  const client = new Cloudflare({ apiToken });
-  fn({ message: "Resolving account" });
-  const accountId = await firstAccountId(client);
-  return {
-    client,
-    accountId,
-    account: { account_id: accountId },
-    fn,
-  };
-}
-
-type CloudflareAccount = Awaited<ReturnType<typeof cloudflareAccount>>;
 
 function idFor(
   namespace: string,
@@ -267,7 +246,6 @@ function r2Domains(custom: R2CustomDomains) {
     .filter((domain): domain is string => Boolean(domain));
 }
 
-
 async function r2Cors(
   client: CloudflareAccount["client"],
   bucketName: string,
@@ -295,9 +273,7 @@ async function scrapeWorkerSecrets(
   // Settings omit secret_text values. The secrets API lists names and may return text.
   const listed = await settled(
     () =>
-      collect(
-        ctx.client.workers.scripts.secrets.list(scriptName, ctx.account),
-      ),
+      collect(ctx.client.workers.scripts.secrets.list(scriptName, ctx.account)),
     [],
   );
   const secrets: WorkerSecret[] = [];
@@ -307,7 +283,9 @@ async function scrapeWorkerSecrets(
   }
 
   const envs = mergeWorkerEnvs(bindings, secrets);
-  const missing = envs.filter((env) => env.type === "secret_text" && !env.value);
+  const missing = envs.filter(
+    (env) => env.type === "secret_text" && !env.value,
+  );
   await mapPool(missing, DETAIL_CONCURRENCY, async (env) => {
     const got = await settled(
       () =>
@@ -511,8 +489,8 @@ async function scrapeQueues(ctx: CloudflareAccount) {
 export const workerScanner = {
   type: "Worker",
   scrape: scrapeWorkers,
-  policy: DEFAULT_POLICY,
-  transform(item, { namespace, policy = DEFAULT_POLICY }) {
+  policy: WORKER_DEFAULT_POLICY,
+  transform(item, namespace, policy = WORKER_DEFAULT_POLICY) {
     const envFields = workerEnvFields(item.envs);
     return {
       id: idFor(namespace, item.accountId, "worker", item.name),
@@ -550,13 +528,13 @@ export const workerScanner = {
 } satisfies ProviderResourceScanner<
   Awaited<ReturnType<typeof scrapeWorkers>>[number],
   [CloudflareAccount],
-  typeof DEFAULT_POLICY
+  typeof WORKER_DEFAULT_POLICY
 >;
 
 export const durableObjectScanner = {
   type: "Durable Object",
   scrape: scrapeDurableObjects,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const doId = item.namespaceDo.id;
     if (!doId) return null;
     const name = item.namespaceDo.name ?? item.namespaceDo.class ?? doId;
@@ -600,7 +578,7 @@ export const durableObjectScanner = {
 export const workflowScanner = {
   type: "Workflow",
   scrape: scrapeWorkflows,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const name = item.workflow.name;
     const workflowId = item.workflow.id;
     if (!name || !workflowId) return null;
@@ -649,7 +627,7 @@ export const workflowScanner = {
 export const kvScanner = {
   type: "KV",
   scrape: scrapeKv,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const kvId = item.kv.id;
     const title = item.kv.title ?? kvId;
     if (!kvId || !title) return null;
@@ -688,7 +666,7 @@ export const kvScanner = {
 export const d1Scanner = {
   type: "D1",
   scrape: scrapeD1,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const uuid = item.db.uuid;
     const name = item.db.name;
     if (!uuid || !name) return null;
@@ -726,7 +704,7 @@ export const d1Scanner = {
 export const r2Scanner = {
   type: "R2",
   scrape: scrapeR2,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const name = item.bucket.name;
     if (!name) return null;
     const domains = item.custom ? r2Domains(item.custom) : [];
@@ -780,7 +758,7 @@ export const r2Scanner = {
 export const vectorizeScanner = {
   type: "Vectorize",
   scrape: scrapeVectorize,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const name = item.index.name;
     if (!name) return null;
     return {
@@ -810,7 +788,7 @@ export const vectorizeScanner = {
 export const queueScanner = {
   type: "Queue",
   scrape: scrapeQueues,
-  transform(item, { namespace }) {
+  transform(item, namespace) {
     const name = item.queue.queue_name;
     const queueId = item.queue.queue_id ?? name;
     if (!name || !queueId) return null;
@@ -847,42 +825,12 @@ export const queueScanner = {
 >;
 
 export const cloudflareScanners = [
-  workerScanner,
-  durableObjectScanner,
-  workflowScanner,
-  kvScanner,
-  d1Scanner,
-  r2Scanner,
-  vectorizeScanner,
-  queueScanner,
+  bindScanner(workerScanner),
+  bindScanner(durableObjectScanner),
+  bindScanner(workflowScanner),
+  bindScanner(kvScanner),
+  bindScanner(d1Scanner),
+  bindScanner(r2Scanner),
+  bindScanner(vectorizeScanner),
+  bindScanner(queueScanner),
 ];
-
-export async function scanCloudflare(
-  apiToken: string,
-  namespace: string,
-  fn: ScrapeStepFn = noopStep,
-) {
-  const account = await cloudflareAccount(apiToken, fn);
-  const [workers, durableObjects, workflows, kv, d1, r2, vectorize, queues] =
-    await Promise.all([
-      workerScanner.scrape(account),
-      durableObjectScanner.scrape(account),
-      workflowScanner.scrape(account),
-      kvScanner.scrape(account),
-      d1Scanner.scrape(account),
-      r2Scanner.scrape(account),
-      vectorizeScanner.scrape(account),
-      queueScanner.scrape(account),
-    ]);
-
-  return [
-    ...scanEntries(workerScanner, workers, namespace),
-    ...scanEntries(durableObjectScanner, durableObjects, namespace),
-    ...scanEntries(workflowScanner, workflows, namespace),
-    ...scanEntries(kvScanner, kv, namespace),
-    ...scanEntries(d1Scanner, d1, namespace),
-    ...scanEntries(r2Scanner, r2, namespace),
-    ...scanEntries(vectorizeScanner, vectorize, namespace),
-    ...scanEntries(queueScanner, queues, namespace),
-  ];
-}

@@ -12,26 +12,17 @@ export {
   kvScanner,
   queueScanner,
   r2Scanner,
-  scanCloudflare,
   vectorizeScanner,
   workerScanner,
   workflowScanner,
-  DEFAULT_POLICY as cloudflareDefaultPolicy,
+  WORKER_DEFAULT_POLICY as cloudflareDefaultPolicy,
 } from "./cloudflare/scanners.js";
-export {
-  newCloudflareProvider,
-  type CloudflareProviderConfig,
-} from "./cloudflare/provider.js";
 
 export {
   projectScanner,
   vercelScanners,
   DEFAULT_POLICY as vercelDefaultPolicy,
 } from "./vercel/scanners.js";
-export {
-  newVercelProvider,
-  type VercelProviderConfig,
-} from "./vercel/provider.js";
 
 export type { AzureApplication } from "./azure/schemas.js";
 export {
@@ -39,23 +30,12 @@ export {
   entraScanner,
   DEFAULT_POLICY as entraDefaultPolicy,
 } from "./azure/scanners.js";
-export {
-  newAzureProvider,
-  type AzureProviderConfig,
-} from "./azure/provider.js";
 
+export { bindScanner, type BoundScanner } from "./core/bind-scanner.js";
 export { type ScrapeStepFn } from "./core/scrape-async.js";
 export { envToClaims, urlBaseMatchClaim } from "./core/claims.js";
 export { redactSensitiveValue } from "./core/utils.js";
-export { linkResources, type LinkEntry } from "./core/link.js";
-export { linkByReferences, scanEntries } from "./core/scan.js";
-export {
-  INTERNET_ID,
-  internetResource,
-  internetScanner,
-  isInternetResource,
-  newInternetProvider,
-} from "./core/internet.js";
+export { linkResources, linkResources as linkByReferences, type LinkEntry } from "./core/link.js";
 export { mergeResourceConnections } from "./core/connections.js";
 
 export type {
@@ -80,8 +60,6 @@ export type {
   LayoutOutput,
   Pos,
   ProviderResourceScanner,
-  TransformContext,
-  ConnectionContext,
   Resource,
   ResourceAlert,
   ResourceClaims,

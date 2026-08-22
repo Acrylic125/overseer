@@ -1,16 +1,11 @@
 import {
   connectionKey,
-  INTERNET_ID,
-  internetResource,
   resourceConnection,
   type Resource,
   type ResourceConnection,
 } from "@acrylic125/overseer-sdk";
 
 import { iconServiceForCfKind } from "./icons.js";
-
-/** Cap open-to-internet workers so mock connector routing stays responsive. */
-const MAX_MOCK_INTERNET_LINKS = 64;
 
 const SERVICE_COUNT = 10000;
 /** Rough target for distinct group paths that can hold services. */
@@ -157,7 +152,11 @@ function buildGroups(rand: () => number): MockGroup[] {
     const root = pick(rand, GROUP_NAMES);
     const mid = pick(rand, GROUP_NAMES);
     const leaf = pick(rand, GROUP_NAMES);
-    for (const group of [`${root}`, `${root}/${mid}`, `${root}/${mid}/${leaf}`]) {
+    for (const group of [
+      `${root}`,
+      `${root}/${mid}`,
+      `${root}/${mid}/${leaf}`,
+    ]) {
       if (used.has(group)) continue;
       used.add(group);
       groups.push({
@@ -221,7 +220,6 @@ export function createMockServices(seed = 42) {
   const connections: ResourceConnection[] = [];
   const seenConnections = new Set<string>();
   const kindCursor = groups.map(() => 0);
-  const openToInternet = new Set<string>();
 
   for (let i = 0; i < SERVICE_COUNT; i += 1) {
     const groupIndex = membership[i]!;
@@ -240,9 +238,6 @@ export function createMockServices(seed = 42) {
       name: `${label}-${kind.toLowerCase()}-${String(n).padStart(5, "0")}`,
       group: template.group,
     });
-    if (kind === "Worker") {
-      openToInternet.add(service.id);
-    }
     services.push(service);
   }
 
@@ -264,18 +259,8 @@ export function createMockServices(seed = 42) {
     }
   }
 
-  let internetLinks = 0;
-  for (const service of services) {
-    if (!openToInternet.has(service.id)) continue;
-    internetLinks += 1;
-    if (internetLinks > MAX_MOCK_INTERNET_LINKS) {
-      continue;
-    }
-    pushConnection(connections, seenConnections, service.id, INTERNET_ID);
-  }
-
   return {
-    resources: [internetResource(), ...services],
+    resources: services,
     connections,
   };
 }

@@ -13,6 +13,7 @@ alwaysApply: true
 - Only use comments as a way to give context to why the code is there (e.g. Limitations, Reasoning). Do not use it as a way to describe the code.
 - Group common files by business domain unless otherwise specified
 - When generating LLM prompts in code, keep it direct.
+- Do not import and re-export. This includes creating indexes to import and export.
 
 ## TypeScript
 - Prefer `pnpm`

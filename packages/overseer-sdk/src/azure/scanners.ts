@@ -6,6 +6,7 @@ import { envToClaims } from "../core/claims.js";
 import { resourceId } from "../core/resource-id.js";
 import { redactSensitiveValue } from "../core/utils.js";
 import { type ScrapeStepFn } from "../core/scrape-async.js";
+import { bindScanner } from "../core/bind-scanner.js";
 import {
   table,
   type ProviderResourceScanner,
@@ -176,7 +177,7 @@ export const entraScanner = {
   type: "Entra",
   policy: DEFAULT_POLICY,
   scrape: scrapeEntra,
-  transform(item, { namespace, policy = DEFAULT_POLICY }) {
+  transform(item, namespace, policy = DEFAULT_POLICY) {
     const objectId = item.application.id;
     const applicationId = item.application.appId;
     if (!objectId || !applicationId) return null;
@@ -228,4 +229,4 @@ export const entraScanner = {
   typeof DEFAULT_POLICY
 >;
 
-export const azureScanners = [entraScanner];
+export const azureScanners = [bindScanner(entraScanner)];

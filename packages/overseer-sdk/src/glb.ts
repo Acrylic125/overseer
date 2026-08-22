@@ -63,7 +63,9 @@ function parseGlbJson(bytes: Uint8Array): GltfJson {
     throw new Error("GLB JSON chunk is truncated");
   }
 
-  return JSON.parse(new TextDecoder().decode(bytes.subarray(jsonStart, jsonEnd))) as GltfJson;
+  return JSON.parse(
+    new TextDecoder().decode(bytes.subarray(jsonStart, jsonEnd)),
+  ) as GltfJson;
 }
 
 function footprintFromMinMax(min: number[], max: number[]): MeshSize | null {
@@ -119,20 +121,28 @@ function footprintFromAccessors(
   if (!Number.isFinite(minX)) return null;
   const size = footprintFromMinMax([minX, minY, minZ], [maxX, maxY, maxZ]);
   if (!size) return null;
-  if (size.width > MAX_ACCESSOR_FOOTPRINT || size.height > MAX_ACCESSOR_FOOTPRINT) {
+  if (
+    size.width > MAX_ACCESSOR_FOOTPRINT ||
+    size.height > MAX_ACCESSOR_FOOTPRINT
+  ) {
     return null;
   }
   return size;
 }
 
-function meshFootprint(mesh: GltfMesh, accessors: GltfAccessor[]): MeshSize | null {
+function meshFootprint(
+  mesh: GltfMesh,
+  accessors: GltfAccessor[],
+): MeshSize | null {
   const fromExtras = footprintFromExtras(mesh);
   if (fromExtras) return fromExtras;
   return footprintFromAccessors(mesh, accessors);
 }
 
 /** Layout footprints for named meshes in a baked assets GLB. */
-export function meshSizesFromGlb(glb: Uint8Array | ArrayBuffer): Map<string, MeshSize> {
+export function meshSizesFromGlb(
+  glb: Uint8Array | ArrayBuffer,
+): Map<string, MeshSize> {
   const json = parseGlbJson(asBytes(glb));
   const accessors = json.accessors ?? [];
   const meshes = json.meshes ?? [];

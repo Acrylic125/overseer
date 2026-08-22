@@ -9,6 +9,7 @@ import {
   settled,
   type ScrapeStepFn,
 } from "../core/scrape-async.js";
+import { bindScanner } from "../core/bind-scanner.js";
 import type {
   FieldGroup,
   FieldNode,
@@ -32,17 +33,16 @@ const STANDARD_ENV_TARGETS = ["production", "preview", "development"] as const;
 const noopStep: ScrapeStepFn = () => {};
 
 export const DEFAULT_POLICY = {
-  onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [number, "warn" | "error"],
+  onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [
+    number,
+    "warn" | "error",
+  ],
 };
 
-function sensitiveVarAlerts(
-  envs: VercelEnv[],
-  policy: typeof DEFAULT_POLICY,
-) {
+function sensitiveVarAlerts(envs: VercelEnv[], policy: typeof DEFAULT_POLICY) {
   const alerts: ResourceAlert[] = [];
   const now = Date.now();
-  const [thresholdDays, severity] =
-    policy.onAfterSensitiveVarLastUpdatedDays;
+  const [thresholdDays, severity] = policy.onAfterSensitiveVarLastUpdatedDays;
   const seen = new Set<string>();
 
   for (const env of envs) {
@@ -102,7 +102,10 @@ function rowTargets(row: VercelEnvRow, customEnvById: Map<string, string>) {
   return [...targets];
 }
 
-function toEnv(row: VercelEnvRow, customEnvById: Map<string, string>): VercelEnv {
+function toEnv(
+  row: VercelEnvRow,
+  customEnvById: Map<string, string>,
+): VercelEnv {
   return {
     key: row.key,
     value: row.value ?? "",
@@ -113,10 +116,7 @@ function toEnv(row: VercelEnvRow, customEnvById: Map<string, string>): VercelEnv
   };
 }
 
-function dedupeEnvs(
-  rows: VercelEnvRow[],
-  customEnvById: Map<string, string>,
-) {
+function dedupeEnvs(rows: VercelEnvRow[], customEnvById: Map<string, string>) {
   const seen = new Set<string>();
   const envs: VercelEnv[] = [];
   for (const row of rows) {
@@ -289,7 +289,7 @@ async function scrapeProjects(
 ) {
   const client = new Vercel({
     bearerToken: apiKey,
-    retryConfig: { strategy: "none" },
+    retryConfig: { strategy: "backoff" },
   });
 
   fn({ message: "Resolving account" });
@@ -350,9 +350,7 @@ async function scrapeProjects(
       scrapeCustomEnvironments(client, project.id, teamId, listedCustomEnvs),
     ]);
 
-    const customEnvById = new Map(
-      customEnvs.map((env) => [env.id, env.slug]),
-    );
+    const customEnvById = new Map(customEnvs.map((env) => [env.id, env.slug]));
 
     const parsedEnvs = [
       ...projectEnvs
@@ -392,7 +390,7 @@ export const projectScanner = {
   type: "Project",
   scrape: scrapeProjects,
   policy: DEFAULT_POLICY,
-  transform(item, { namespace, policy = DEFAULT_POLICY }) {
+  transform(item, namespace, policy = DEFAULT_POLICY) {
     const projectId = item.project.id;
     const name = item.project.name;
     const environments = item.environments;
@@ -432,4 +430,4 @@ export const projectScanner = {
   typeof DEFAULT_POLICY
 >;
 
-export const vercelScanners = [projectScanner];
+export const vercelScanners = [bindScanner(projectScanner)];

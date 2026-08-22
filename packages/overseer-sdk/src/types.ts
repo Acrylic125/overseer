@@ -115,15 +115,6 @@ export type ResourceConnectionHandler = {
   require: (claim: ResourceClaims) => ConnectionRequirement;
 };
 
-export type TransformContext<TPolicy = undefined> = {
-  namespace: string;
-  policy?: TPolicy;
-};
-
-export type ConnectionContext<TPolicy = undefined> = {
-  policy?: TPolicy;
-};
-
 export type ProviderResourceScanner<
   T,
   TScrapeArgs extends unknown[] = [],
@@ -132,11 +123,8 @@ export type ProviderResourceScanner<
   type: string;
   scrape: (...args: TScrapeArgs) => T[] | Promise<T[]>;
   policy?: TPolicy;
-  transform: (item: T, ctx: TransformContext<TPolicy>) => Resource | null;
-  connection: (
-    item: T,
-    ctx: ConnectionContext<TPolicy>,
-  ) => ResourceConnectionHandler;
+  transform: (item: T, namespace: string, policy?: TPolicy) => Resource | null;
+  connection: (item: T) => ResourceConnectionHandler;
 };
 
 export type ResourceConnection = {
