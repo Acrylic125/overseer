@@ -4,6 +4,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
+import { isTypingTarget } from "@/lib/is-typing-target";
+
 /** World units / second at the reference height. */
 const MOVE_SPEED = 28;
 const BOOST_MULTIPLIER = 3;
@@ -55,6 +57,10 @@ export function TopViewControls({ onPick }: TopViewControlsProps) {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) {
+        keys.current.clear();
+        return;
+      }
       if (event.repeat) {
         if (
           ["KeyW", "KeyA", "KeyS", "KeyD", "KeyR"].includes(
@@ -178,6 +184,11 @@ export function TopViewControls({ onPick }: TopViewControlsProps) {
         MAX_HEIGHT,
       );
       zoomFactor.current = 1;
+    }
+
+    if (isTypingTarget(document.activeElement)) {
+      keys.current.clear();
+      return;
     }
 
     const pressed = keys.current;

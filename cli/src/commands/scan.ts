@@ -29,8 +29,17 @@ export type ScanPipelineOptions = {
 
 async function listCloudflareAccountIds(client: Cloudflare) {
   const accountIds: string[] = [];
-  for await (const account of client.accounts.list()) {
-    if (account.id) accountIds.push(account.id);
+  const seen = new Set<string>();
+  for (let page = 1; ; page += 1) {
+    const result = await client.accounts.list({ page });
+    let added = 0;
+    for (const account of result.result) {
+      if (!account.id || seen.has(account.id)) continue;
+      seen.add(account.id);
+      accountIds.push(account.id);
+      added += 1;
+    }
+    if (added === 0) break;
   }
   if (accountIds.length === 0) {
     throw new Error("Cloudflare token has no accessible accounts");
@@ -70,9 +79,16 @@ async function scrapeProviders() {
             account: { account_id: accountId },
             fn: accountStep,
           };
-          for (const scanner of cloudflareScanners) {
-            const items = await scanner.scrape(account);
-            entries.push(...scanner.link(items, provider.namespace));
+          const scanners = [...cloudflareScanners];
+          while (scanners.length > 0) {
+            const batch = scanners.splice(0, 3);
+            const linkedGroups = await Promise.all(
+              batch.map(async (scanner) => {
+                const items = await scanner.scrape(account);
+                return scanner.link(items, provider.namespace);
+              }),
+            );
+            entries.push(...linkedGroups.flat());
           }
         } catch (error) {
           warnings.push(

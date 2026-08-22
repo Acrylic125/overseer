@@ -4,6 +4,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
+import { isTypingTarget } from "@/lib/is-typing-target";
+
 const MOVE_SPEED = 8;
 const LOOK_SENSITIVITY = 0.0022;
 const DRAG_MOVE_SENSITIVITY = 0.012;
@@ -94,6 +96,10 @@ export function FlyControls({
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) {
+        keys.current.clear();
+        return;
+      }
       // Ignore OS key-repeat; Set already holds the code.
       if (event.repeat) {
         if (
@@ -273,6 +279,11 @@ export function FlyControls({
       camera.position.addScaledVector(forward, pan.y * DRAG_MOVE_SENSITIVITY);
       pan.x = 0;
       pan.y = 0;
+    }
+
+    if (isTypingTarget(document.activeElement)) {
+      keys.current.clear();
+      return;
     }
 
     const pressed = keys.current;
