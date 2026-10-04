@@ -1,0 +1,72 @@
+# Local test environment. Manage instances with the local-test-env skill helper so each
+# one gets its own project name, volumes and Docker-assigned localhost port.
+services:
+  mock-providers:
+    build: ./local-test/mock-providers
+    image: overseer-mock-providers:${LOCAL_TEST_INSTANCE:-dev}
+    volumes:
+      - mock-certs:/certs
+    networks: [providers]
+
+  vercel:
+    build: ./local-test/vercel
+    image: overseer-vercel-emulator:${LOCAL_TEST_INSTANCE:-dev}
+    networks: [providers]
+
+  scan:
+    build:
+      context: .
+      target: cli
+    image: overseer-cli:${LOCAL_TEST_INSTANCE:-dev}
+    restart: "no"
+    environment:
+      CLOUDFLARE_BASE_URL: http://mock-providers:8080/client/v4
+      PROVIDER_CF_acme_API_KEY: local-test-cloudflare-token
+      PROVIDER_VERCEL_acme_API_KEY: local-test-vercel-token
+      PROVIDER_VERCEL_acme_API_URL: http://vercel:4000
+      PROVIDER_AZURE_acme_TENANT_ID: 11111111-1111-1111-1111-111111111111
+      PROVIDER_AZURE_acme_CLIENT_ID: 33333333-3333-3333-3333-333333333333
+      PROVIDER_AZURE_acme_CLIENT_SECRET: local-test-azure-secret
+      PROVIDER_AZURE_acme_AUTHORITY_HOST: https://mock-providers:8443
+      PROVIDER_AZURE_acme_GRAPH_URL: https://mock-providers:8443
+      NODE_EXTRA_CA_CERTS: /certs/cert.pem
+    volumes:
+      - graph-data:/data
+      - scan-cache:/app/cli/.overseer
+      - mock-certs:/certs:ro
+    # Only the internal network: a missed endpoint override fails instead of reaching a real provider.
+    networks: [providers]
+    depends_on:
+      mock-providers:
+        condition: service_healthy
+      vercel:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: .
+      target: ui
+    image: overseer-ui:${LOCAL_TEST_INSTANCE:-dev}
+    environment:
+      OVERSEER_GRAPH_PATH: /data/graph.json
+    volumes:
+      - graph-data:/data:ro
+    ports:
+      - target: 3000
+        host_ip: 127.0.0.1
+        protocol: tcp
+        app_protocol: http
+    networks: [web]
+    depends_on:
+      scan:
+        condition: service_completed_successfully
+
+networks:
+  providers:
+    internal: true
+  web: {}
+
+volumes:
+  mock-certs: {}
+  graph-data: {}
+  scan-cache: {}

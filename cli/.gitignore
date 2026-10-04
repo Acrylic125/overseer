@@ -5,3 +5,4 @@ dist/
 data.json
 .DS_Store
 _generated/
+.overseer/

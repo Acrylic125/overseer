@@ -145,9 +145,6 @@ function groupFromBounds(group: string, from: Pos, to: Pos): Group {
 
 /** Convert SDK scan output (`resources` + `connections` + `layout`) into UI db shape. */
 export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
-  const resourcesById = new Map(
-    output.resources.map((resource) => [resource.id, resource]),
-  );
   const resourcePos = new Map<string, Pos>();
   const groupItems: Array<
     z.infer<typeof layoutItemSchema> & { type: "group" }
@@ -228,7 +225,7 @@ export function layoutOutputToDb(output: LayoutOutputWire): InfrastructureDb {
       normalizeServiceId(item.nodes[0]),
       normalizeServiceId(item.nodes[1]),
     ];
-    const labels = item.labels
+    const labels: Connector["labels"] = item.labels
       ? [
           asEndpointLabel(item.labels[0]),
           asEndpointLabel(item.labels[1]),

@@ -9,6 +9,8 @@
     "start": "tsx src/cli.ts",
     "env": "tsx src/cli.ts env",
     "scan": "tsx src/cli.ts scan",
+    "sync": "tsx src/cli.ts sync",
+    "graph": "tsx src/cli.ts graph",
     "assets": "tsx src/cli.ts assets",
     "mock": "tsx src/cli.ts mock",
     "typecheck": "tsc --noEmit"

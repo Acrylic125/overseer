@@ -1,14 +1,16 @@
-/** Shared CLI flag parsing for scan / assets / mock. */
+/** Shared CLI flag parsing for scan / sync / graph / assets / mock. */
 export type CliFlags = {
   dir?: string;
   skipAssets: boolean;
-  /** Remaining non-flag args (legacy positional paths ignored when --dir is set). */
+  force: boolean;
+  /** Non-flag args. For scan/sync these are scope filters. */
   positionals: string[];
 };
 
 export function parseCliFlags(argv: string[]): CliFlags {
   let dir: string | undefined;
   let skipAssets = false;
+  let force = false;
   const positionals: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -30,11 +32,15 @@ export function parseCliFlags(argv: string[]): CliFlags {
       skipAssets = true;
       continue;
     }
+    if (arg === "--force") {
+      force = true;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown flag: ${arg}`);
     }
     positionals.push(arg);
   }
 
-  return { dir, skipAssets, positionals };
+  return { dir, skipAssets, force, positionals };
 }

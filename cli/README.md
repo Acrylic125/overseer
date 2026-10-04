@@ -2,17 +2,52 @@
 
 Unified CLI for provider setup, asset baking, and the infrastructure pipeline.
 
-Providers: Cloudflare (`PROVIDER_CF_<ns>_API_KEY`) and Vercel
-(`PROVIDER_VERCEL_<ns>_API_KEY`, optional `PROVIDER_VERCEL_<ns>_TEAM_ID`).
+Providers: Cloudflare (`PROVIDER_CF_<ns>_API_KEY`), Vercel
+(`PROVIDER_VERCEL_<ns>_API_KEY`, optional `PROVIDER_VERCEL_<ns>_TEAM_ID`) and
+Azure (`PROVIDER_AZURE_<ns>_TENANT_ID` / `_CLIENT_ID` / `_CLIENT_SECRET`).
 
 ## Pipeline
 
-`scan` runs four steps end-to-end:
+`scan` runs three steps:
 
 1. **Precompute** — bake icons, platform, and shapes into `assets.glb`
-2. **Service scan** — each provider scanner scrapes and transforms its own resources, then `linkResources` matches claims to connection requirements.
-3. **Layout** — pack platforms, icons, connectors
-4. **Output** — write `infrastructure.json` (v2)
+2. **Sync** — scrape only the scopes that are stale, into `cli/.overseer/cache/`
+3. **Link** — resolve references across every cached scope and write `graph.json`
+
+Layout is not part of the scan. The UI lays out `graph.json` per lens
+(Apps / Traffic / Accounts) when it is viewed.
+
+### Scopes and the cache
+
+A scope is one scanner for one account: `cloudflare:prod/<accountId>/worker`.
+Each scope is cached as its own file with a TTL (Workers 1h, everything else 6h).
+A sync skips scopes that are still fresh, so changing one thing only re-scrapes
+what you ask for:
+
+```bash
+pnpm cli sync cloudflare:prod/worker          # just Workers in one namespace
+pnpm cli sync vercel --force                  # every Vercel scope, ignore TTL
+pnpm cli graph                                # relink from cache, no network
+```
+
+Workers additionally skip their settings/secrets calls when `modified_on` is
+unchanged since the last scrape.
+
+Secret values are redacted at scrape time (`abc******xyz`, values under 12
+characters are fully masked), so neither the cache nor `graph.json` contain them.
+
+### Chains across services
+
+Every resource declares what it **exposes** (hostnames, ids, names) and what it
+**references** (env values, bindings, DNS targets, redirect URIs). Linking
+produces directed, typed edges (`dns`, `route`, `binding`, `env`, `auth`).
+Cloudflare DNS hostnames front the services behind them, so a chain reads:
+
+```
+Vercel project --env--> api.acme.com (DNS) --dns--> Worker --binding--> D1
+```
+
+## Output
 
 All artifacts land flat in `./_generated` (cwd), or in `--dir <path>`:
 
@@ -20,30 +55,12 @@ All artifacts land flat in `./_generated` (cwd), or in `--dir <path>`:
 _generated/
   assets.glb
   platform-gradient.png
-  infrastructure.json
+  graph.json
 ```
 
-## infrastructure.json v2
-
-```ts
-type Pos = [number, number, number]; // x, y, z
-type Size = [number, number];        // width, depth — omit → [1, 1]
-
-{
-  version: 2,
-  scannedAt: string,
-  warnings: string[],
-  services: [{ …identity, pos: Pos, size?: Size }],
-  pads: [
-    { type: "platform", id, group, parent?, pos, size? },
-    { type: "shape", id, shape, group, parent?, label?, pos, size? },
-  ],
-  connectors: [{ from, to, path: Pos[] }],
-}
-```
-
-Nest platforms with `parent` (pad id). Scene bake (bounds/camera/segments) is
-derived in the UI at load time — not stored.
+`graph.json` is validated by `graphSnapshotSchema` from the SDK:
+`resources`, `edges`, `changes` (added/modified since the previous scrape of
+each scope), `removed`, `scopes`, `warnings`.
 
 ## Setup
 
@@ -56,23 +73,37 @@ pnpm install
 ```bash
 pnpm cli
 pnpm env
-pnpm scan
-pnpm scan --skip-assets
-pnpm scan --dir ./out
-pnpm assets
-pnpm assets --dir ../ui/public
-pnpm mock
+pnpm scan [filters] [--force] [--skip-assets] [--dir <path>]
+pnpm sync [filters] [--force] [--dir <path>]
+pnpm graph [--dir <path>]
+pnpm assets [--dir <path>]
+pnpm mock [--dir <path>]
 ```
 
 Copy into the UI when developing the Next app:
 
 ```bash
 pnpm assets --dir ../ui/public
-pnpm mock --dir ../ui/public
+pnpm scan --skip-assets --dir ../ui/public   # or: pnpm mock --dir ../ui/public
 ```
 
-Verbose provider API logs:
+## Using the SDK directly
 
-```bash
-OVERSEER_DEBUG=1 pnpm scan
+```ts
+import { fileCache, overseer } from "@acrylic125/overseer-sdk";
+import { cloudflare } from "@acrylic125/overseer-sdk/cloudflare";
+import { vercel } from "@acrylic125/overseer-sdk/vercel";
+
+const o = overseer({
+  cache: fileCache(".overseer/cache"),
+  providers: [
+    cloudflare({ namespace: "prod", apiToken }),
+    vercel({ namespace: "web", apiToken: vercelToken }),
+  ],
+});
+
+await o.sync({ only: ["cloudflare:prod/worker"] });
+const graph = await o.graph();
+graph.downstream("cf:prod:<account>:worker:api");
+graph.path(fromId, toId);
 ```

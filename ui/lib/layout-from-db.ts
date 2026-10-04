@@ -85,13 +85,20 @@ function computeBounds(
   };
 }
 
-function computeCamera(): CameraFrame {
-  const height = Math.min(42, Math.max(20, 50 * 0.65));
-  return {
-    position: [0, height, 0],
-    span: 100,
-    far: Math.hypot(50 * 1.6, height) * 1.35,
-  };
+function computeCamera(bounds: PackLayoutResult["bounds"], services: InfrastructureService[]): CameraFrame {
+  let x = bounds.centerX;
+  let z = bounds.centerZ;
+  let height = Math.max(24, Math.min(60, Math.max(bounds.width, bounds.depth) * 1.6));
+  if (Math.max(bounds.width, bounds.depth) > 100) {
+    const nearest = services.reduce((best, service) => {
+      const distance = (item: InfrastructureService) => Math.hypot(item.x - x, item.y - z);
+      return distance(service) < distance(best) ? service : best;
+    }, services[0]!);
+    x = nearest.x + nearest.width / 2;
+    z = nearest.y + nearest.depth / 2;
+    height = 40;
+  }
+  return { position: [x, height, z], span: 100, far: Math.hypot(80, height) * 1.35 };
 }
 
 /**
@@ -175,12 +182,13 @@ export function layoutFromDb(
     depth: h,
   };
 
+  const bounds = computeBounds(platforms, placed, publicInternet);
   return {
     services: placed,
     platforms,
     publicInternet,
-    bounds: computeBounds(platforms, placed, publicInternet),
+    bounds,
     connectorPaths,
-    camera: computeCamera(),
+    camera: computeCamera(bounds, placed),
   };
 }

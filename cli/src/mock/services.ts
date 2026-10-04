@@ -1,9 +1,4 @@
-import {
-  connectionKey,
-  resourceConnection,
-  type Resource,
-  type ResourceConnection,
-} from "@acrylic125/overseer-sdk";
+import type { Edge, GraphSnapshot, Resource } from "@acrylic125/overseer-sdk";
 
 import { iconServiceForCfKind } from "./icons.js";
 
@@ -93,19 +88,8 @@ type MockGroup = {
   kinds: ServiceKind[];
 };
 
-function pushConnection(
-  connections: ResourceConnection[],
-  seen: Set<string>,
-  from: string,
-  to: string,
-) {
-  if (from === to) return;
-  const connection = resourceConnection(from, to, "", "");
-  const key = connectionKey(connection.nodes);
-  if (seen.has(key)) return;
-  seen.add(key);
-  connections.push(connection);
-}
+/** Share of mock resources flagged as changed so diff mode has something to show. */
+const CHANGED_RATIO = 0.01;
 
 function mulberry32(seed: number) {
   let t = seed >>> 0;
@@ -217,8 +201,8 @@ export function createMockServices(seed = 42) {
   const groups = buildGroups(rand);
   const membership = allocateMembership(rand, groups);
   const services: Resource[] = [];
-  const connections: ResourceConnection[] = [];
-  const seenConnections = new Set<string>();
+  const edges: Edge[] = [];
+  const seenEdges = new Set<string>();
   const kindCursor = groups.map(() => 0);
 
   for (let i = 0; i < SERVICE_COUNT; i += 1) {
@@ -255,12 +239,34 @@ export function createMockServices(seed = 42) {
     for (let d = 0; d < degree; d += 1) {
       const target = pick(rand, pool);
       if (target.id === source.id) continue;
-      pushConnection(connections, seenConnections, source.id, target.id);
+      const key = `${source.id}\0${target.id}`;
+      if (seenEdges.has(key)) continue;
+      seenEdges.add(key);
+      edges.push({
+        from: source.id,
+        to: target.id,
+        kind: "binding",
+        label: target.name,
+        alerts: [],
+      });
     }
   }
 
+  const changes: GraphSnapshot["changes"] = {};
+  for (const service of services) {
+    const roll = rand();
+    if (roll < CHANGED_RATIO / 2) changes[service.id] = "added";
+    else if (roll < CHANGED_RATIO) changes[service.id] = "modified";
+  }
+
   return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    warnings: ["Generated from cli/src/mock/"],
+    scopes: [{ scope: "mock", scrapedAt: new Date().toISOString() }],
     resources: services,
-    connections,
-  };
+    changes,
+    removed: [{ id: "mock:removed", name: "legacy-worker", scope: "mock" }],
+    edges,
+  } satisfies GraphSnapshot;
 }

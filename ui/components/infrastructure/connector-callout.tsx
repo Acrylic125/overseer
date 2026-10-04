@@ -136,11 +136,11 @@ function serviceForEndpoint(
     depth: 1,
     group: "",
     connections: [],
+    dependsOn: [],
     species: "microservice",
     category: "compute",
     health: "healthy",
     zone: "compute",
-    metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
     color: "#111827",
     fields: {},
   };

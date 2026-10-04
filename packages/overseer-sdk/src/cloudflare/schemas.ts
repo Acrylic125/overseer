@@ -63,6 +63,15 @@ export const r2ManagedDomainsSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+export const dnsRecordSchema = z
+  .object({
+    name: z.string(),
+    type: z.string(),
+    content: z.string().optional(),
+    proxied: z.boolean().optional(),
+  })
+  .passthrough();
+
 export type WorkerBinding = z.infer<typeof workerBindingSchema>;
 export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
 export type WorkerSecret = z.infer<typeof workerSecretSchema>;
@@ -141,6 +150,12 @@ export function parseR2CustomDomains(value: object) {
 
 export function parseR2ManagedDomains(value: object) {
   const parsed = r2ManagedDomainsSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return parsed.data;
+}
+
+export function parseDnsRecord(value: object) {
+  const parsed = dnsRecordSchema.safeParse(value);
   if (!parsed.success) return null;
   return parsed.data;
 }

@@ -24,6 +24,7 @@ export const SERVICE_TYPES: Record<string, ServiceTypeMeta> = {
   "cf-worker-kv": { icon: "cf-worker-kv", type: "database" },
   "cf-d1": { icon: "cf-d1", type: "database" },
   "cf-vectorize": { icon: "cf-vectorize", type: "database" },
+  "cf-dns": { icon: "cf-dns", type: "integration" },
   r2: { icon: "r2", type: "storage" },
   vercel: { icon: "vercel", type: "compute" },
   "azure-entra": { icon: "azure-entra", type: "integration" },

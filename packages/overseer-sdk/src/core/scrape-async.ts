@@ -1,6 +1,6 @@
 export type ScrapeStepFn = (step: { message: string }) => void;
 
-export async function collect<T>(iterable: AsyncIterable<T>, maxItems = 250) {
+export async function collect<T>(iterable: AsyncIterable<T>, maxItems = Infinity) {
   const items: T[] = [];
   for await (const item of iterable) {
     items.push(item);

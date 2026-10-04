@@ -148,12 +148,11 @@ function isLinkedToInternet(service: InfrastructureService): boolean {
   return service.connections.includes(INTERNET_ID);
 }
 
-/** Direct neighbors of the selected service (both directions along connections). */
-export function linkedServiceIds(
+/** The selected service plus its full upstream and downstream dependency chains. */
+export function tracedServiceIds(
   all: InfrastructureService[],
   selectedId: string,
 ): Set<string> {
-  const byId = new Map(all.map((service) => [service.id, service]));
   const relevant = new Set<string>([selectedId]);
 
   if (selectedId === INTERNET_ID) {
@@ -163,15 +162,34 @@ export function linkedServiceIds(
     return relevant;
   }
 
-  const selected = byId.get(selectedId);
-  if (selected) {
-    for (const id of selected.connections) relevant.add(id);
-    if (isLinkedToInternet(selected)) relevant.add(INTERNET_ID);
+  const byId = new Map(all.map((service) => [service.id, service]));
+  const dependents = new Map<string, string[]>();
+  for (const service of all) {
+    for (const target of service.dependsOn) {
+      const list = dependents.get(target) ?? [];
+      list.push(service.id);
+      dependents.set(target, list);
+    }
   }
 
-  for (const service of all) {
-    if (service.connections.includes(selectedId)) relevant.add(service.id);
-  }
+  const walk = (next: (id: string) => string[]) => {
+    const seen = new Set([selectedId]);
+    const queue = [selectedId];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      for (const neighbour of next(id)) {
+        if (seen.has(neighbour)) continue;
+        seen.add(neighbour);
+        relevant.add(neighbour);
+        queue.push(neighbour);
+      }
+    }
+  };
+  walk((id) => byId.get(id)?.dependsOn ?? []);
+  walk((id) => dependents.get(id) ?? []);
+
+  const selected = byId.get(selectedId);
+  if (selected && isLinkedToInternet(selected)) relevant.add(INTERNET_ID);
 
   return relevant;
 }
@@ -200,14 +218,7 @@ export function expandWithLinkedServices(
     out.push(service);
   };
 
-  ensure(selectedId);
-  const selected = byId.get(selectedId);
-  if (!selected) return out;
-
-  for (const id of selected.connections) ensure(id);
-  for (const service of all) {
-    if (service.connections.includes(selectedId)) ensure(service.id);
-  }
+  for (const id of tracedServiceIds(all, selectedId)) ensure(id);
 
   return out;
 }

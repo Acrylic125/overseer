@@ -1,18 +1,27 @@
 import { createConnectorEngine, type LayoutAabb } from "./connectors.js";
+import type { Edge } from "./core/schemas.js";
 import { meshSizesFromGlb, type MeshSize } from "./glb.js";
-import type {
-  LayoutOutput,
-  Pos,
-  Resource,
-  ResourceConnection,
-  ResourceLayoutItem,
+import {
+  connectionKey,
+  resourceConnection,
+  type LayoutOutput,
+  type Pos,
+  type Resource,
+  type ResourceConnection,
+  type ResourceLayoutItem,
 } from "./types.js";
+
+export const layoutLenses = ["application", "traffic", "ownership"] as const;
+export type LayoutLens = (typeof layoutLenses)[number];
 
 export type LayoutInput = {
   resources: Resource[];
-  connections: ResourceConnection[];
+  edges: Edge[];
   glb: Uint8Array | ArrayBuffer;
+  /** Which dimension becomes the platforms. Defaults to `application`. */
+  lens?: LayoutLens;
   config?: LayoutConfig;
+  previous?: LayoutOutput;
 };
 
 export const POS_PRECISION = 0.0001;
@@ -106,6 +115,154 @@ const CONNECTOR_Z = roundCoord(0);
 const NEST_Z_STEP = 0.002;
 
 const INTERNET_RESOURCE_ID = "internet:public";
+
+const SHARED_GROUP = "Shared";
+const UNCONNECTED_GROUP = "Unconnected";
+
+// Numeric prefixes keep tiers ordered left to right when platforms sort by name.
+const TRAFFIC_TIERS: Array<[string, string[]]> = [
+  ["1 · Entry", ["DNS"]],
+  ["2 · Compute", ["Project", "Worker", "Workflow", "Durable Object"]],
+  ["3 · Messaging", ["Queue"]],
+  ["4 · Data", ["D1", "KV", "R2", "Vectorize"]],
+  ["5 · Identity", ["Entra"]],
+];
+const OTHER_TIER = "6 · Other";
+
+function groupSegment(name: string) {
+  return name.split(GROUP_SEP).join("-").trim() || UNCONNECTED_GROUP;
+}
+
+function trafficGroup(resource: Resource) {
+  for (const [tier, services] of TRAFFIC_TIERS) {
+    if (services.includes(resource.service)) return tier;
+  }
+  return OTHER_TIER;
+}
+
+function ownershipGroup(resource: Resource) {
+  const provider = resource.tags.provider ?? resource.id.split(":")[0] ?? "unknown";
+  return [provider, resource.tags.account, resource.tags.namespace ?? resource.group].filter(Boolean).map((part) => groupSegment(part!)).join(GROUP_SEP);
+}
+
+/**
+ * An application is everything reachable from a root (a resource nothing points
+ * at, e.g. a DNS hostname or a frontend). Resources reached from several roots
+ * are shared; cycles with no root fall back to their connected component.
+ */
+export function applicationGroups(resources: Resource[], edges: Edge[]) {
+  const byId = new Map<string, Resource>(resources.map((resource) => [resource.id, resource]));
+  const outgoing = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  const neighbours = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    const out = outgoing.get(edge.from) ?? [];
+    out.push(edge.to);
+    outgoing.set(edge.from, out);
+    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
+    for (const [a, b] of [
+      [edge.from, edge.to],
+      [edge.to, edge.from],
+    ] as const) {
+      const list = neighbours.get(a) ?? [];
+      list.push(b);
+      neighbours.set(a, list);
+    }
+  }
+
+  const roots = resources
+    .filter((resource) => !inDegree.get(resource.id) && outgoing.has(resource.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const apps = new Map<string, Set<string>>();
+  for (const root of roots) {
+    const seen = new Set<string>([root.id]);
+    const queue: string[] = [root.id];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const set = apps.get(id) ?? new Set<string>();
+      set.add(root.id);
+      apps.set(id, set);
+      for (const next of outgoing.get(id) ?? []) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  const groups = new Map<string, string>();
+  for (const resource of resources) {
+    if (groups.has(resource.id)) continue;
+    const owners = apps.get(resource.id);
+    if (owners && owners.size === 1) {
+      groups.set(resource.id, groupSegment(byId.get([...owners][0]!)?.name ?? resource.name));
+      continue;
+    }
+    if (owners && owners.size > 1) {
+      groups.set(resource.id, SHARED_GROUP);
+      continue;
+    }
+    if (!neighbours.has(resource.id)) {
+      groups.set(resource.id, UNCONNECTED_GROUP);
+      continue;
+    }
+
+    const component: Resource[] = [];
+    const seen = new Set<string>([resource.id]);
+    const queue: string[] = [resource.id];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const member = byId.get(id);
+      if (member && !apps.has(id)) component.push(member);
+      for (const next of neighbours.get(id) ?? []) {
+        if (seen.has(next) || apps.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    const name = component
+      .map((member) => member.name)
+      .sort((a, b) => a.localeCompare(b))[0];
+    for (const member of component) {
+      groups.set(member.id, groupSegment(name ?? UNCONNECTED_GROUP));
+    }
+  }
+  return groups;
+}
+
+function groupsForLens(lens: LayoutLens, resources: Resource[], edges: Edge[]) {
+  if (lens === "application") return applicationGroups(resources, edges);
+  const groups = new Map<string, string>();
+  for (const resource of resources) {
+    if (lens === "traffic") groups.set(resource.id, trafficGroup(resource));
+    else groups.set(resource.id, ownershipGroup(resource));
+  }
+  return groups;
+}
+
+function connectionsFromEdges(edges: Edge[]) {
+  const connections: ResourceConnection[] = [];
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    if (edge.from === edge.to) continue;
+    const key = connectionKey([edge.from, edge.to]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const failing = edge.alerts.some((alert) => alert.type === "error");
+    connections.push(
+      resourceConnection(
+        edge.from,
+        edge.to,
+        edge.label,
+        "",
+        failing ? "error" : undefined,
+      ),
+    );
+  }
+  return connections;
+}
 
 function sizeForAsset(
   asset: string,
@@ -302,6 +459,25 @@ function packCluster(
   };
 }
 
+function packPlatformsInRow(
+  clusters: ClusterLayout[],
+  platformGap: number,
+): PackGridResult {
+  const placed: PlacedCluster[] = [];
+  let cursorX = 0;
+  let totalHeight = 0;
+  for (const cluster of clusters) {
+    placed.push({ cluster, offsetX: cursorX, offsetY: 0 });
+    cursorX += cluster.platformW + platformGap;
+    totalHeight = Math.max(totalHeight, cluster.platformH);
+  }
+  return {
+    placed,
+    totalWidth: Math.max(0, cursorX - platformGap),
+    totalHeight,
+  };
+}
+
 function packPlatforms(
   clusters: ClusterLayout[],
   platformGap: number,
@@ -337,7 +513,34 @@ function packDomainCluster(
   sizes: Map<string, MeshSize>,
   fallback: MeshSize,
   iconGap: number,
+  previous?: LayoutOutput,
 ): ClusterLayout {
+  const oldGroup = previous?.layout.find((item) => item.type === "group" && item.group === name);
+  if (oldGroup?.type === "group") {
+    const oldResources = new Map(previous!.resources.map((resource) => [resource.id, resource]));
+    const positions = new Map(previous!.layout.flatMap((item) => item.type === "resource" ? [[item.ref, item.pos] as const] : []));
+    const ordered = [...resources].sort((a, b) => a.id.localeCompare(b.id));
+    const items: ClusterItem[] = [];
+    let width = oldGroup.to[0] - oldGroup.from[0] - PAD_LEFT - PAD_RIGHT;
+    let height = oldGroup.to[1] - oldGroup.from[1] - PAD_TOP - PAD_BOTTOM;
+    let nextY = height + iconGap;
+    for (const resource of ordered) {
+      const old = oldResources.get(resource.id);
+      const pos = positions.get(resource.id);
+      if (pos && old?.group === name && old.asset === resource.asset) {
+        items.push({ x: pos[0] - oldGroup.from[0] - PAD_LEFT, y: pos[1] - oldGroup.from[1] - PAD_TOP });
+      } else {
+        const size = sizeForAsset(resource.asset, sizes, fallback);
+        items.push({ x: 0, y: nextY });
+        width = Math.max(width, size.width);
+        height = nextY + size.height;
+        nextY = height + iconGap;
+      }
+    }
+    return { name, cols: 1, rows: ordered.length, W: width, H: height,
+      platformW: width + PAD_LEFT + PAD_RIGHT, platformH: height + PAD_TOP + PAD_BOTTOM,
+      items, resources: ordered };
+  }
   const byAsset = new Map<string, Resource[]>();
   for (const resource of resources) {
     const list = byAsset.get(resource.asset) ?? [];
@@ -437,16 +640,17 @@ function packGroupNode(
   fallback: MeshSize,
   iconGap: number,
   platformGap: number,
+  previous?: LayoutOutput,
 ): NestedPack {
   const childPacks = [...node.children.values()]
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((child) =>
-      packGroupNode(child, sizes, fallback, iconGap, platformGap),
+      packGroupNode(child, sizes, fallback, iconGap, platformGap, previous),
     );
 
   const leaf =
     node.resources.length > 0
-      ? packDomainCluster(node.path, node.resources, sizes, fallback, iconGap)
+      ? packDomainCluster(node.path, node.resources, sizes, fallback, iconGap, node.children.size === 0 ? previous : undefined)
       : null;
 
   if (childPacks.length === 0) {
@@ -526,21 +730,6 @@ function packGroupNode(
 
 function nestDepth(path: string): number {
   return Math.max(0, path.split(GROUP_SEP).length - 1);
-}
-
-function connectionTargets(
-  resourceId: string,
-  connections: ResourceConnection[],
-): string[] {
-  const targets = new Set<string>();
-  for (const connection of connections) {
-    const [from, to] = connection.nodes;
-    if (from === to) continue;
-    if (from === INTERNET_RESOURCE_ID || to === INTERNET_RESOURCE_ID) continue;
-    if (from === resourceId && to !== resourceId) targets.add(to);
-    if (to === resourceId && from !== resourceId) targets.add(from);
-  }
-  return [...targets];
 }
 
 function labelsForPath(
@@ -631,9 +820,11 @@ function emitNestedPack(
 
 export function layout({
   resources,
-  connections,
+  edges,
   glb,
+  lens = "application",
   config = DEFAULT_LAYOUT_CONFIG,
+  previous,
 }: LayoutInput): LayoutOutput {
   const { pack, connectors: connectorConfig } = config;
   const { iconAabb, buildAllConnectorPaths } =
@@ -645,15 +836,21 @@ export function layout({
     height: pack.iconHeight,
   };
 
-  const packable = resources.filter(
+  const connections = connectionsFromEdges(edges);
+  const visible = resources.filter(
     (resource) => resource.id !== INTERNET_RESOURCE_ID,
   );
+  const groups = groupsForLens(lens, visible, edges);
+  const packable = visible.map((resource) => ({
+    ...resource,
+    group: groups.get(resource.id) ?? UNCONNECTED_GROUP,
+  }));
 
   const forest = buildGroupForest(packable);
   const rootPacks = [...forest.values()]
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((node) =>
-      packGroupNode(node, sizes, fallback, pack.iconGap, pack.groupGap),
+      packGroupNode(node, sizes, fallback, pack.iconGap, pack.groupGap, previous),
     );
 
   const rootClusters: ClusterLayout[] = rootPacks.map((nested) => ({
@@ -667,9 +864,43 @@ export function layout({
     items: [],
     resources: [],
   }));
-  const packed = packPlatforms(rootClusters, pack.groupGap);
+  let packed: PackGridResult;
+  if (lens === "traffic") {
+    packed = packPlatformsInRow(rootClusters, pack.groupGap);
+  } else {
+    packed = packPlatforms(rootClusters, pack.groupGap);
+  }
 
-  const serviceOffsetY = -packed.totalHeight / 2;
+  let serviceOffsetY = -packed.totalHeight / 2;
+  if (previous) {
+    const oldRoots = new Map(previous.layout.flatMap((item) =>
+      item.type === "group" && !item.group.includes(GROUP_SEP) ? [[item.group, item] as const] : []));
+    const occupied: Array<{ x: number; y: number; w: number; h: number }> = [];
+    const placements = new Map<string, { x: number; y: number }>();
+    // Anchor unchanged platforms first. A growing platform only moves if its
+    // enlarged bounds would cover a neighbour; other platforms keep their place.
+    const sorted = [...rootClusters].sort((a, b) => {
+      const fits = (cluster: ClusterLayout) => {
+        const old = oldRoots.get(cluster.name);
+        return old && cluster.platformW <= old.to[0] - old.from[0] + POS_PRECISION && cluster.platformH <= old.to[1] - old.from[1] + POS_PRECISION;
+      };
+      return Number(!!fits(b)) - Number(!!fits(a));
+    });
+    for (const cluster of sorted) {
+      const old = oldRoots.get(cluster.name);
+      let x = old?.from[0] ?? 0;
+      let y = old?.from[1] ?? 0;
+      const overlaps = occupied.some((rect) => x < rect.x + rect.w + pack.groupGap - POS_PRECISION && x + cluster.platformW + pack.groupGap > rect.x + POS_PRECISION && y < rect.y + rect.h + pack.groupGap - POS_PRECISION && y + cluster.platformH + pack.groupGap > rect.y + POS_PRECISION);
+      if (!old || overlaps) {
+        x = occupied.reduce((right, rect) => Math.max(right, rect.x + rect.w + pack.groupGap), 0);
+        y = 0;
+      }
+      placements.set(cluster.name, { x, y });
+      occupied.push({ x, y, w: cluster.platformW, h: cluster.platformH });
+    }
+    packed.placed = rootClusters.map((cluster) => ({ cluster, offsetX: placements.get(cluster.name)!.x, offsetY: placements.get(cluster.name)!.y }));
+    serviceOffsetY = 0;
+  }
 
   const layoutItems: ResourceLayoutItem<string>[] = [];
   const boxes: LayoutAabb[] = [];
@@ -689,12 +920,17 @@ export function layout({
     );
   }
 
+  const adjacent = new Map<string, Set<string>>();
+  for (const { nodes: [from, to] } of connections) {
+    for (const [a, b] of [[from, to], [to, from]] as const) {
+      const targets = adjacent.get(a) ?? new Set<string>();
+      targets.add(b);
+      adjacent.set(a, targets);
+    }
+  }
   const paths = buildAllConnectorPaths(
     boxes,
-    packable.map((resource) => ({
-      id: resource.id,
-      connections: connectionTargets(resource.id, connections),
-    })),
+    packable.map((resource) => ({ id: resource.id, connections: [...(adjacent.get(resource.id) ?? [])] })),
   );
 
   for (const path of paths) {

@@ -11,6 +11,19 @@ import {
   type SearchDocument,
 } from "./search-ql";
 
+it("searches application, provider and directed multi-hop dependencies across lenses", () => {
+  const catalog = buildSearchCatalog([
+    { id: "vercel:web", name: "web", fields: {}, app: "checkout", provider: "vercel", dependsOn: ["cf:dns"] },
+    { id: "cf:dns", name: "api.acme.com", fields: {}, app: "checkout", provider: "cloudflare", dependsOn: ["cf:worker"] },
+    { id: "cf:worker", name: "api", fields: {}, app: "checkout", provider: "cloudflare", dependsOn: ["cf:db"] },
+    { id: "cf:db", name: "database", fields: {}, app: "Shared", provider: "cloudflare", dependsOn: [] },
+  ], new Map());
+  assert.deepEqual([...evaluateSearch('downstream:"api.acme.com"', catalog).matchIds!], ["cf:worker", "cf:db"]);
+  assert.deepEqual([...evaluateSearch('upstream:database & provider:vercel', catalog).matchIds!], ["vercel:web"]);
+  assert.deepEqual([...evaluateSearch('app:checkout & !provider:vercel', catalog).matchIds!], ["cf:dns", "cf:worker"]);
+  assert.equal(hintAt("downstream:", 11).activeKey, "downstream");
+});
+
 function catalogFromDocs(docs: SearchDocument[]) {
   return {
     docs,

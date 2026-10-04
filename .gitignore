@@ -40,6 +40,9 @@ cli/_generated/
 ui/infrastructure.json
 ui/next-env.d.ts
 
+# Local test environment instance records (may contain resolved test config)
+.local-test-env/
+
 # misc
 *.pem
 coverage/

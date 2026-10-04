@@ -1,7 +1,12 @@
 import { Vercel } from "@vercel/sdk";
 import { z } from "zod";
 
-import { envToClaims, urlBaseMatchClaim } from "../core/claims.js";
+import { envReferences } from "../core/claims.js";
+import {
+  DEFAULT_TTL_MS,
+  defineProvider,
+  type Scanner,
+} from "../core/provider.js";
 import { resourceId } from "../core/resource-id.js";
 import {
   mapPool,
@@ -9,11 +14,11 @@ import {
   settled,
   type ScrapeStepFn,
 } from "../core/scrape-async.js";
-import { bindScanner } from "../core/bind-scanner.js";
+import type { LinkEntry } from "../core/schemas.js";
+import { redactSensitiveValue } from "../core/utils.js";
 import type {
   FieldGroup,
   FieldNode,
-  ProviderResourceScanner,
   ResourceAlert,
   ResourceFields,
 } from "../types.js";
@@ -30,7 +35,6 @@ const PROJECT_CONCURRENCY = 4;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 // Vercel always has these three built-in targets; custom environments are extra.
 const STANDARD_ENV_TARGETS = ["production", "preview", "development"] as const;
-const noopStep: ScrapeStepFn = () => {};
 
 export const DEFAULT_POLICY = {
   onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [
@@ -165,12 +169,13 @@ function isEncryptedEnvelope(value: string) {
   return !value.includes(".");
 }
 
-function envClaimValues(envs: VercelEnv[]) {
-  const values: string[] = [];
+function envReferenceValues(envs: VercelEnv[]) {
+  const values: Array<{ value: string; secret: boolean }> = [];
   for (const env of envs) {
-    if (env.type.toLowerCase() === "sensitive") continue;
+    const type = env.type.toLowerCase();
+    if (type === "sensitive") continue;
     if (!env.value || isEncryptedEnvelope(env.value)) continue;
-    values.push(env.value);
+    values.push({ value: env.value, secret: type !== "plain" });
   }
   return values;
 }
@@ -178,20 +183,19 @@ function envClaimValues(envs: VercelEnv[]) {
 function vercelEnvValue(env: VercelEnv): FieldNode {
   if (env.type.toLowerCase() === "sensitive") return { type: "hidden" };
   if (!env.value || isEncryptedEnvelope(env.value)) return { type: "hidden" };
-  return { type: "secret", value: env.value };
+  return { type: "secret", value: redactSensitiveValue(env.value) };
 }
 
 async function pullTargetEnvs(
-  apiKey: string,
+  ctx: VercelCtx,
   projectId: string,
   target: string,
-  teamId?: string,
 ) {
   const params = new URLSearchParams({ source: "vercel-cli:env:pull" });
-  if (teamId) params.set("teamId", teamId);
-  const url = `https://api.vercel.com/v3/env/pull/${encodeURIComponent(projectId)}/${encodeURIComponent(target)}?${params}`;
+  if (ctx.teamId) params.set("teamId", ctx.teamId);
+  const url = `${ctx.apiUrl}/v3/env/pull/${encodeURIComponent(projectId)}/${encodeURIComponent(target)}?${params}`;
   const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: { Authorization: `Bearer ${ctx.apiKey}` },
   });
   if (!response.ok) return {};
   const parsed = pullEnvSchema.safeParse(await response.json());
@@ -282,13 +286,11 @@ async function scrapeCustomEnvironments(
   }, fallback);
 }
 
-async function scrapeProjects(
-  apiKey: string,
-  teamId?: string,
-  fn: ScrapeStepFn = noopStep,
-) {
+async function scrapeProjects(ctx: VercelCtx, fn: ScrapeStepFn) {
+  const teamId = ctx.teamId;
   const client = new Vercel({
-    bearerToken: apiKey,
+    bearerToken: ctx.apiKey,
+    serverURL: ctx.apiUrl,
     retryConfig: { strategy: "backoff" },
   });
 
@@ -367,7 +369,7 @@ async function scrapeProjects(
     const pulledByTarget = new Map<string, Record<string, string>>();
     await mapPool(environments, PROJECT_CONCURRENCY, async (target) => {
       const pulled = await settled(
-        () => pullTargetEnvs(apiKey, project.id, target, teamId),
+        () => pullTargetEnvs(ctx, project.id, target),
         {},
       );
       pulledByTarget.set(target, pulled);
@@ -386,48 +388,75 @@ async function scrapeProjects(
   });
 }
 
-export const projectScanner = {
-  type: "Project",
-  scrape: scrapeProjects,
-  policy: DEFAULT_POLICY,
-  transform(item, namespace, policy = DEFAULT_POLICY) {
-    const projectId = item.project.id;
-    const name = item.project.name;
-    const environments = item.environments;
-    return {
-      id: resourceId("vercel", namespace, "project", projectId),
-      group: namespace,
-      name,
-      url: `https://vercel.com/${encodeURIComponent(item.accountSlug)}s-projects/${encodeURIComponent(name)}`,
-      service: "Project",
-      asset: iconForKind("Project"),
-      fields: {
-        ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
-        ...(environments.length > 0
-          ? { Environment: vercelEnvGroup(item.envs, environments) }
-          : {}),
-      },
-      alerts: sensitiveVarAlerts(item.envs, policy),
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const domains = item.domains;
-    return {
-      claims: envToClaims(envClaimValues(item.envs)),
-      require: (claim) => {
-        for (const domain of domains) {
-          if (!urlBaseMatchClaim(domain, claim)) continue;
-          return { type: "connected", label: domain };
-        }
-        return false;
-      },
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeProjects>>[number],
-  [string, string | undefined, ScrapeStepFn],
-  typeof DEFAULT_POLICY
->;
+const VERCEL_API_URL = "https://api.vercel.com";
 
-export const vercelScanners = [bindScanner(projectScanner)];
+type VercelCtx = {
+  apiKey: string;
+  apiUrl: string;
+  teamId?: string;
+  policy: typeof DEFAULT_POLICY;
+};
+
+export const projectScanner: Scanner<VercelCtx> = {
+  key: "project",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    const items = await scrapeProjects(ctx, run.step);
+    return items.map((item) => {
+      const name = item.project.name;
+      const environments = item.environments;
+      return {
+        resource: {
+          id: resourceId("vercel", run.namespace, "project", item.project.id),
+          group: run.namespace,
+          name,
+          url: `https://vercel.com/${encodeURIComponent(item.accountSlug)}s-projects/${encodeURIComponent(name)}`,
+          service: "Project",
+          asset: iconForKind("Project"),
+          fields: {
+            ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
+            ...(environments.length > 0
+              ? { Environment: vercelEnvGroup(item.envs, environments) }
+              : {}),
+          },
+          alerts: sensitiveVarAlerts(item.envs, ctx.policy),
+          tags: { namespace: run.namespace },
+        },
+        exposes: item.domains.map((domain) => ({
+          type: "host" as const,
+          value: domain,
+          label: domain,
+        })),
+        references: envReferences(envReferenceValues(item.envs)),
+      } satisfies LinkEntry;
+    });
+  },
+};
+
+export function vercel(options: {
+  namespace: string;
+  apiToken: string;
+  apiUrl?: string;
+  teamId?: string;
+  policy?: typeof DEFAULT_POLICY;
+}) {
+  return defineProvider<VercelCtx>({
+    id: "vercel",
+    namespace: options.namespace,
+    scanners: [projectScanner],
+    async accounts() {
+      return [
+        {
+          account: options.teamId ?? "personal",
+          ctx: {
+            apiKey: options.apiToken,
+            apiUrl: options.apiUrl ?? VERCEL_API_URL,
+            teamId: options.teamId,
+            policy: options.policy ?? DEFAULT_POLICY,
+          },
+        },
+      ];
+    },
+  });
+}

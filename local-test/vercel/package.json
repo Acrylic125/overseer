@@ -1,0 +1,8 @@
+{
+  "name": "overseer-local-test-vercel",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "emulate": "0.12.1"
+  }
+}

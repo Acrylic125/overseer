@@ -81,12 +81,18 @@ importers:
       '@microsoft/microsoft-graph-types':
         specifier: ^2.40.0
         version: 2.43.1
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.2.0
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
 
   ui:
     dependencies:
+      '@acrylic125/overseer-sdk':
+        specifier: workspace:*
+        version: link:../packages/overseer-sdk
       '@base-ui/react':
         specifier: ^1.6.0
         version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)

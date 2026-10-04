@@ -57,7 +57,10 @@ function uniqueStrings(values: Iterable<string>) {
 }
 
 function valuesForKey(key: SearchKey, docs: SearchDocument[]) {
-  if (key === "name") {
+  if (key === "app" || key === "provider" || key === "namespace") {
+    return uniqueStrings(docs.flatMap((doc) => doc[key] ? [doc[key]!] : []));
+  }
+  if (key === "name" || key === "downstream" || key === "upstream") {
     return uniqueStrings(docs.map((doc) => doc.name));
   }
   if (key === "fieldName") {

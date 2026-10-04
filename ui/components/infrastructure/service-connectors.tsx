@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo } from "react";
 import * as THREE from "three";
 
 import { cssToThreeColor } from "@/lib/css-color";
@@ -253,27 +253,6 @@ function buildMeshes(
   return { segmentMesh, jointMesh };
 }
 
-function servicesSignature(services: InfrastructureService[]) {
-  // Identity + connection lists — enough to know routing inputs changed.
-  let sig = `${services.length}|`;
-  for (const service of services) {
-    sig += service.id;
-    sig += ">";
-    sig += service.connections.join(",");
-    sig += ";";
-  }
-  return sig;
-}
-
-function scheduleIdle(fn: () => void): () => void {
-  if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-    const id = window.requestIdleCallback(() => fn(), { timeout: 180 });
-    return () => window.cancelIdleCallback(id);
-  }
-  const id = window.setTimeout(fn, 0);
-  return () => window.clearTimeout(id);
-}
-
 type MeshBundle = {
   defaultSeg: THREE.InstancedMesh | null;
   defaultJoint: THREE.InstancedMesh | null;
@@ -293,39 +272,19 @@ function emptyBundle(): MeshBundle {
 export function ServiceConnectors({
   services,
   selectedServiceId = null,
+  tracedIds = null,
   activeConnectorId = null,
   /** When provided (from scan layout), skip client-side re-routing. */
   precomputedPaths = null,
 }: {
   services: InfrastructureService[];
   selectedServiceId?: string | null;
+  /** Highlight every connector inside the traced chain, not just the selection's. */
+  tracedIds?: Set<string> | null;
   activeConnectorId?: string | null;
   precomputedPaths?: ConnectorPath[] | null;
 }) {
-  const signature = useMemo(() => servicesSignature(services), [services]);
-  const servicesRef = useRef(services);
-  servicesRef.current = services;
-
-  const [paths, setPaths] = useState<ConnectorPath[]>(
-    () => precomputedPaths ?? [],
-  );
-
-  useEffect(() => {
-    if (precomputedPaths != null) {
-      setPaths(precomputedPaths);
-      return;
-    }
-
-    let cancelled = false;
-    const cancel = scheduleIdle(() => {
-      if (cancelled) return;
-      setPaths(buildAllConnectorPaths(servicesRef.current));
-    });
-    return () => {
-      cancelled = true;
-      cancel();
-    };
-  }, [signature, precomputedPaths]);
+  const paths = useMemo(() => precomputedPaths ?? buildAllConnectorPaths(services), [precomputedPaths, services]);
 
   const geometry = useMemo(() => collectFromPaths(paths), [paths]);
 
@@ -359,12 +318,14 @@ export function ServiceConnectors({
       };
     }
 
-    const linkedSegs = geometry.segments.filter((s) =>
-      linkedTo(s, selectedServiceId),
-    );
-    const linkedJoints = geometry.joints.filter((j) =>
-      linkedTo(j, selectedServiceId),
-    );
+    const selected = selectedServiceId;
+    const inFocus = (item: { sourceId?: string; targetId?: string }) => {
+      if (!tracedIds) return linkedTo(item, selected);
+      if (!item.sourceId || !item.targetId) return false;
+      return tracedIds.has(item.sourceId) && tracedIds.has(item.targetId);
+    };
+    const linkedSegs = geometry.segments.filter(inFocus);
+    const linkedJoints = geometry.joints.filter(inFocus);
     const segs = split(linkedSegs);
     const joints = split(linkedJoints);
     const def = buildMeshes(
@@ -389,7 +350,7 @@ export function ServiceConnectors({
         warningJoint: warn.jointMesh,
       } satisfies MeshBundle,
     };
-  }, [geometry, selectedServiceId]);
+  }, [geometry, selectedServiceId, tracedIds]);
 
   const connectorHighlight = useMemo(() => {
     if (!activeConnectorId) return emptyBundle();

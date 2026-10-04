@@ -1,160 +1,27 @@
-import { readFile } from "node:fs/promises";
-
-import {
-  azureScanners,
-  cloudflareScanners,
-  layout,
-  linkByReferences,
-  vercelScanners,
-  type LinkEntry,
-  type ScrapeStepFn,
-} from "@acrylic125/overseer-sdk";
-import Cloudflare from "cloudflare";
+import { fileCache, overseer } from "@acrylic125/overseer-sdk";
 import { config as loadEnv } from "dotenv";
-import { elapsed, log } from "../cli/log.js";
-import {
-  ARTIFACT_ASSETS_GLB,
-  artifactPath,
-  envPath,
-  resolveOutDir,
-} from "../paths.js";
-import { writeInfrastructureDb } from "../pipeline/output.js";
+
+import { log } from "../cli/log.js";
+import { cacheDir, envPath, resolveOutDir } from "../paths.js";
+import { writeGraphSnapshot } from "../pipeline/output.js";
 import { precomputeAssets } from "../pipeline/precompute.js";
-import { envToProvider } from "../providers.js";
+import { envToProviders } from "../providers.js";
 
 export type ScanPipelineOptions = {
   outDir?: string;
   skipPrecompute?: boolean;
+  /** Scope filters: `cloudflare`, `cloudflare:prod`, `cloudflare:prod/worker`. */
+  only?: string[];
+  force?: boolean;
+  /** Skip the network entirely and rebuild `graph.json` from the cache. */
+  offline?: boolean;
 };
 
-async function listCloudflareAccountIds(client: Cloudflare) {
-  const accountIds: string[] = [];
-  const seen = new Set<string>();
-  for (let page = 1; ; page += 1) {
-    const result = await client.accounts.list({ page });
-    let added = 0;
-    for (const account of result.result) {
-      if (!account.id || seen.has(account.id)) continue;
-      seen.add(account.id);
-      accountIds.push(account.id);
-      added += 1;
-    }
-    if (added === 0) break;
-  }
-  if (accountIds.length === 0) {
-    throw new Error("Cloudflare token has no accessible accounts");
-  }
-  return accountIds;
-}
-
-async function scrapeProviders() {
-  loadEnv({ path: envPath, quiet: true });
-
-  const providers = envToProvider(process.env);
-  const warnings: string[] = [];
-  const entries: LinkEntry[] = [];
-
-  const onStep =
-    (namespace: string): ScrapeStepFn =>
-    (step) => {
-      log.step(`${namespace}: ${step.message}`);
-    };
-
-  log.section("Scrape");
-
-  for (const provider of providers.cloudflare) {
-    try {
-      const client = new Cloudflare({ apiToken: provider.apiKey });
-      onStep(provider.namespace)({ message: "Listing accounts" });
-      const accountIds = await listCloudflareAccountIds(client);
-
-      for (const accountId of accountIds) {
-        try {
-          const accountStep: ScrapeStepFn = (step) => {
-            log.step(`${provider.namespace}/${accountId}: ${step.message}`);
-          };
-          const account = {
-            client,
-            accountId,
-            account: { account_id: accountId },
-            fn: accountStep,
-          };
-          const scanners = [...cloudflareScanners];
-          while (scanners.length > 0) {
-            const batch = scanners.splice(0, 3);
-            const linkedGroups = await Promise.all(
-              batch.map(async (scanner) => {
-                const items = await scanner.scrape(account);
-                return scanner.link(items, provider.namespace);
-              }),
-            );
-            entries.push(...linkedGroups.flat());
-          }
-        } catch (error) {
-          warnings.push(
-            `provider:${provider.namespace}/account:${accountId}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
-    } catch (error) {
-      warnings.push(
-        `provider:${provider.namespace}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  for (const provider of providers.vercel) {
-    try {
-      const step = onStep(provider.namespace);
-      for (const scanner of vercelScanners) {
-        const items = await scanner.scrape(
-          provider.apiKey,
-          provider.teamId,
-          step,
-        );
-        entries.push(...scanner.link(items, provider.namespace));
-      }
-    } catch (error) {
-      warnings.push(
-        `provider:${provider.namespace}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  for (const provider of providers.azure) {
-    try {
-      const step = onStep(provider.namespace);
-      for (const scanner of azureScanners) {
-        const items = await scanner.scrape(
-          provider.tenantId,
-          provider.clientId,
-          provider.clientSecret,
-          step,
-        );
-        entries.push(...scanner.link(items, provider.namespace));
-      }
-    } catch (error) {
-      warnings.push(
-        `provider:${provider.namespace}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  log.section("Link");
-  log.step("Matching claims to connection requirements");
-  const connections = linkByReferences(entries);
-  const resources = entries.map((entry) => entry.resource);
-
-  log.step(`${resources.length} resources · ${connections.length} connections`);
-  return { resources, connections, warnings };
-}
-
 /**
- * Full Overseer pipeline:
+ * Overseer pipeline:
  *   1. Precompute → assets.glb
- *   2. SDK scrape + transform + link
- *   3. SDK layout
- *   4. infrastructure.json
+ *   2. Sync stale scopes into the cache
+ *   3. Link cached scopes → graph.json
  */
 export async function runScanPipeline(options: ScanPipelineOptions = {}) {
   const outDir = resolveOutDir(options.outDir);
@@ -170,20 +37,37 @@ export async function runScanPipeline(options: ScanPipelineOptions = {}) {
       await precomputeAssets({ outDir });
     }
 
-    const { resources, connections, warnings } = await scrapeProviders();
-    const glbPath = artifactPath(outDir, ARTIFACT_ASSETS_GLB);
-    log.section("Layout");
-    log.start("Packing layout...");
-    const start = Date.now();
-    const packed = layout({
-      resources,
-      connections,
-      glb: await readFile(glbPath),
+    loadEnv({ path: envPath, quiet: true });
+    const client = overseer({
+      providers: envToProviders(process.env),
+      cache: fileCache(cacheDir),
     });
+    const warnings: string[] = [];
+
+    if (!options.offline) {
+      log.section("Sync");
+      const result = await client.sync({
+        only: options.only,
+        force: options.force,
+        onStep: (step) => log.step(step.message),
+      });
+      log.step(
+        `${result.scraped.length} scraped · ${result.fresh.length} fresh (cached) · ${result.failed.length} failed`,
+      );
+      for (const failure of result.failed) {
+        warnings.push(`${failure.scope}: ${failure.error}`);
+      }
+    }
+
+    log.section("Link");
+    const snapshot = await client.snapshot();
     log.step(
-      `${packed.resources.length} resources · ${packed.layout.length} layout items (${elapsed(start)})`,
+      `${snapshot.resources.length} resources · ${snapshot.edges.length} edges · ${Object.keys(snapshot.changes).length} changed · ${snapshot.removed.length} removed`,
     );
-    await writeInfrastructureDb({ layout: packed, warnings, outDir });
+    await writeGraphSnapshot(
+      { ...snapshot, warnings: [...snapshot.warnings, ...warnings] },
+      outDir,
+    );
 
     log.done("Scan Complete!");
   } catch (error) {

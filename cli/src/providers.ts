@@ -1,37 +1,24 @@
+import type { Provider } from "@acrylic125/overseer-sdk";
+import { azure } from "@acrylic125/overseer-sdk/azure";
+import { cloudflare } from "@acrylic125/overseer-sdk/cloudflare";
+import { vercel } from "@acrylic125/overseer-sdk/vercel";
+
 const CF_PROVIDER_PREFIX = "PROVIDER_CF";
 const CF_SUFFIX_API_KEY = "API_KEY";
 
 const VERCEL_PROVIDER_PREFIX = "PROVIDER_VERCEL";
 const VERCEL_SUFFIX_API_KEY = "API_KEY";
 const VERCEL_SUFFIX_TEAM_ID = "TEAM_ID";
+const VERCEL_SUFFIX_API_URL = "API_URL";
 
 const AZURE_PROVIDER_PREFIX = "PROVIDER_AZURE";
 const AZURE_SUFFIX_TENANT_ID = "TENANT_ID";
 const AZURE_SUFFIX_CLIENT_ID = "CLIENT_ID";
 const AZURE_SUFFIX_CLIENT_SECRET = "CLIENT_SECRET";
+const AZURE_SUFFIX_AUTHORITY_HOST = "AUTHORITY_HOST";
+const AZURE_SUFFIX_GRAPH_URL = "GRAPH_URL";
 
 export type ProviderKind = "cf" | "vercel" | "azure";
-
-export type CloudflareProvider = {
-  provider: "cf";
-  apiKey: string;
-  namespace: string;
-};
-
-export type VercelProvider = {
-  provider: "vercel";
-  apiKey: string;
-  namespace: string;
-  teamId?: string;
-};
-
-export type AzureProvider = {
-  provider: "azure";
-  namespace: string;
-  tenantId: string;
-  clientId: string;
-  clientSecret: string;
-};
 
 export function cloudflareEnvKeys(namespace: string) {
   return {
@@ -43,6 +30,7 @@ export function vercelEnvKeys(namespace: string) {
   return {
     apiKey: `${VERCEL_PROVIDER_PREFIX}_${namespace}_${VERCEL_SUFFIX_API_KEY}`,
     teamId: `${VERCEL_PROVIDER_PREFIX}_${namespace}_${VERCEL_SUFFIX_TEAM_ID}`,
+    apiUrl: `${VERCEL_PROVIDER_PREFIX}_${namespace}_${VERCEL_SUFFIX_API_URL}`,
   } as const;
 }
 
@@ -51,6 +39,8 @@ export function azureEnvKeys(namespace: string) {
     tenantId: `${AZURE_PROVIDER_PREFIX}_${namespace}_${AZURE_SUFFIX_TENANT_ID}`,
     clientId: `${AZURE_PROVIDER_PREFIX}_${namespace}_${AZURE_SUFFIX_CLIENT_ID}`,
     clientSecret: `${AZURE_PROVIDER_PREFIX}_${namespace}_${AZURE_SUFFIX_CLIENT_SECRET}`,
+    authorityHost: `${AZURE_PROVIDER_PREFIX}_${namespace}_${AZURE_SUFFIX_AUTHORITY_HOST}`,
+    graphUrl: `${AZURE_PROVIDER_PREFIX}_${namespace}_${AZURE_SUFFIX_GRAPH_URL}`,
   } as const;
 }
 
@@ -74,66 +64,64 @@ function requireEnv(env: NodeJS.ProcessEnv, key: string, label: string) {
   return value;
 }
 
-export function envToProvider(env: NodeJS.ProcessEnv) {
-  const cfNamespaces = namespacesForKey(
+export function envToProviders(env: NodeJS.ProcessEnv) {
+  const providers: Provider[] = [];
+
+  for (const namespace of namespacesForKey(
     env,
     CF_PROVIDER_PREFIX,
     CF_SUFFIX_API_KEY,
-  );
-  const vercelNamespaces = namespacesForKey(
+  )) {
+    const keys = cloudflareEnvKeys(namespace);
+    providers.push(
+      cloudflare({
+        namespace,
+        apiToken: requireEnv(
+          env,
+          keys.apiKey,
+          `Cloudflare API key for ${namespace}`,
+        ),
+      }),
+    );
+  }
+
+  for (const namespace of namespacesForKey(
     env,
     VERCEL_PROVIDER_PREFIX,
     VERCEL_SUFFIX_API_KEY,
-  );
-  const azureNamespaces = namespacesForKey(
+  )) {
+    const keys = vercelEnvKeys(namespace);
+    providers.push(
+      vercel({
+        namespace,
+        apiToken: requireEnv(env, keys.apiKey, `Vercel API key for ${namespace}`),
+        teamId: env[keys.teamId],
+        apiUrl: env[keys.apiUrl],
+      }),
+    );
+  }
+
+  for (const namespace of namespacesForKey(
     env,
     AZURE_PROVIDER_PREFIX,
     AZURE_SUFFIX_TENANT_ID,
-  );
-
-  return {
-    cloudflare: cfNamespaces.map((namespace) => {
-      const keys = cloudflareEnvKeys(namespace);
-      return {
-        provider: "cf",
+  )) {
+    const keys = azureEnvKeys(namespace);
+    providers.push(
+      azure({
         namespace,
-        apiKey: requireEnv(env, keys.apiKey, `Cloudflare API key for ${namespace}`),
-      };
-    }),
-    vercel: vercelNamespaces.map((namespace) => {
-      const keys = vercelEnvKeys(namespace);
-      return {
-        provider: "vercel",
-        namespace,
-        apiKey: requireEnv(env, keys.apiKey, `Vercel API key for ${namespace}`),
-        teamId: env[keys.teamId],
-      };
-    }),
-    azure: azureNamespaces.map((namespace) => {
-      const keys = azureEnvKeys(namespace);
-      return {
-        provider: "azure",
-        namespace,
-        tenantId: requireEnv(
-          env,
-          keys.tenantId,
-          `Azure tenant ID for ${namespace}`,
-        ),
-        clientId: requireEnv(
-          env,
-          keys.clientId,
-          `Azure client ID for ${namespace}`,
-        ),
+        tenantId: requireEnv(env, keys.tenantId, `Azure tenant ID for ${namespace}`),
+        clientId: requireEnv(env, keys.clientId, `Azure client ID for ${namespace}`),
         clientSecret: requireEnv(
           env,
           keys.clientSecret,
           `Azure client secret for ${namespace}`,
         ),
-      };
-    }),
-  } satisfies {
-    cloudflare: CloudflareProvider[];
-    vercel: VercelProvider[];
-    azure: AzureProvider[];
-  };
+        authorityHost: env[keys.authorityHost],
+        graphBaseUrl: env[keys.graphUrl],
+      }),
+    );
+  }
+
+  return providers;
 }

@@ -46,13 +46,13 @@ export type ResourceAlert = {
   message: string;
 };
 
-export type Tags<TTag extends string = "namespace"> = {
+export type Tags<TTag extends string = "namespace" | "provider" | "account"> = {
   [K in TTag]?: string;
 };
 
 export type Resource<
   TProviderKey extends string = string,
-  TTag extends string = "namespace",
+  TTag extends string = "namespace" | "provider" | "account",
 > = {
   id: ResourceId<TProviderKey>;
   group: string;
@@ -91,41 +91,6 @@ export function table(input: {
     rows,
   };
 }
-
-export type ResourceClaims =
-  | {
-      type: "url";
-      value: string;
-    }
-  | {
-      type: "ref";
-      value: string;
-    };
-
-export type ConnectionRequirement =
-  | {
-      type: "connected";
-      label: string;
-      errorMessage?: string;
-    }
-  | false;
-
-export type ResourceConnectionHandler = {
-  claims: ResourceClaims[];
-  require: (claim: ResourceClaims) => ConnectionRequirement;
-};
-
-export type ProviderResourceScanner<
-  T,
-  TScrapeArgs extends unknown[] = [],
-  TPolicy = undefined,
-> = {
-  type: string;
-  scrape: (...args: TScrapeArgs) => T[] | Promise<T[]>;
-  policy?: TPolicy;
-  transform: (item: T, namespace: string, policy?: TPolicy) => Resource | null;
-  connection: (item: T) => ResourceConnectionHandler;
-};
 
 export type ResourceConnection = {
   nodes: [string, string];

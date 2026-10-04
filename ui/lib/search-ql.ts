@@ -8,6 +8,11 @@ import {
 
 export const FILTER_KEYS = [
   "name",
+  "app",
+  "provider",
+  "namespace",
+  "downstream",
+  "upstream",
   "fieldName",
   "fieldValue",
   "warnAlerts",
@@ -38,6 +43,7 @@ type NumberPred =
 
 type FilterAtom =
   | { kind: "name"; pred: StringPred; span: Span }
+  | { kind: "app" | "provider" | "namespace" | "downstream" | "upstream"; pred: StringPred; span: Span }
   | { kind: "fieldName"; pred: StringPred; span: Span }
   | { kind: "fieldValue"; pred: StringPred; span: Span }
   | { kind: "warnAlerts"; pred: NumberPred; span: Span }
@@ -52,6 +58,10 @@ type QueryNode =
 export type SearchDocument = {
   id: string;
   name: string;
+  app?: string;
+  provider?: string;
+  namespace?: string;
+  dependsOn?: string[];
   fieldNames: string[];
   fieldValues: string[];
   warnAlerts: number;
@@ -68,7 +78,7 @@ type ParseSuccess = { ok: true; ast: QueryNode | null };
 type ParseFailure = { ok: false; message: string; at: number };
 type ParseResult = ParseSuccess | ParseFailure;
 
-const STRING_KEYS = new Set<SearchKey>(["name", "fieldName", "fieldValue"]);
+const STRING_KEYS = new Set<SearchKey>(["name", "fieldName", "fieldValue", "app", "provider", "namespace", "downstream", "upstream"]);
 const NUMBER_KEYS = new Set<SearchKey>(["warnAlerts", "errorAlert"]);
 const KEY_SET = new Set<string>(FILTER_KEYS);
 
@@ -175,7 +185,7 @@ export function countsFromAlerts(
 }
 
 export function buildSearchCatalog(
-  services: { id: string; name: string; fields: ServiceFields }[],
+  services: { id: string; name: string; fields: ServiceFields; app?: string; provider?: string; namespace?: string; dependsOn?: string[] }[],
   alertCounts: Map<string, { warn: number; error: number }>,
 ) {
   const docs: SearchDocument[] = [];
@@ -190,6 +200,10 @@ export function buildSearchCatalog(
     const doc: SearchDocument = {
       id: service.id,
       name: service.name,
+      app: service.app,
+      provider: service.provider,
+      namespace: service.namespace,
+      dependsOn: service.dependsOn,
       fieldNames,
       fieldValues,
       warnAlerts,
@@ -448,6 +462,9 @@ class Parser {
     if (STRING_KEYS.has(key)) {
       const { pred, end } = this.parseStringPred();
       const span = { start: keyStart, end };
+      if (key === "app" || key === "provider" || key === "namespace" || key === "downstream" || key === "upstream") {
+        return { kind: "atom" as const, atom: { kind: key, pred, span } };
+      }
       if (key === "name") {
         return {
           kind: "atom" as const,
@@ -676,7 +693,13 @@ function matchNumberPred(n: number, pred: NumberPred) {
   return n <= pred.n;
 }
 
-function matchAtom(doc: SearchDocument, atom: FilterAtom) {
+function matchAtom(doc: SearchDocument, atom: FilterAtom, graphMatches: Map<FilterAtom, Set<string>>) {
+  if (atom.kind === "app" || atom.kind === "provider" || atom.kind === "namespace") {
+    return matchStringPred([doc[atom.kind] ?? ""], atom.pred);
+  }
+  if (atom.kind === "downstream" || atom.kind === "upstream") {
+    return graphMatches.get(atom)?.has(doc.id) ?? false;
+  }
   if (atom.kind === "name") {
     return matchStringPred([doc.name], atom.pred);
   }
@@ -692,20 +715,21 @@ function matchAtom(doc: SearchDocument, atom: FilterAtom) {
   if (atom.kind === "errorAlert") {
     return matchNumberPred(doc.errorAlert, atom.pred);
   }
-  return doc.allText.toLowerCase().includes(atom.text.toLowerCase());
+  if (atom.kind === "bare") return doc.allText.toLowerCase().includes(atom.text.toLowerCase());
+  return false;
 }
 
-function matchDocument(doc: SearchDocument, node: QueryNode): boolean {
+function matchDocument(doc: SearchDocument, node: QueryNode, graphMatches: Map<FilterAtom, Set<string>>): boolean {
   if (node.kind === "atom") {
-    return matchAtom(doc, node.atom);
+    return matchAtom(doc, node.atom, graphMatches);
   }
   if (node.kind === "not") {
-    return !matchDocument(doc, node.node);
+    return !matchDocument(doc, node.node, graphMatches);
   }
   if (node.kind === "and") {
-    return matchDocument(doc, node.left) && matchDocument(doc, node.right);
+    return matchDocument(doc, node.left, graphMatches) && matchDocument(doc, node.right, graphMatches);
   }
-  return matchDocument(doc, node.left) || matchDocument(doc, node.right);
+  return matchDocument(doc, node.left, graphMatches) || matchDocument(doc, node.right, graphMatches);
 }
 
 export function evaluateSearch(
@@ -722,9 +746,46 @@ export function evaluateSearch(
     return { ok: true as const, matchIds: null };
   }
 
+  const byId = new Map(catalog.docs.map((doc) => [doc.id, doc]));
+  const dependents = new Map<string, string[]>();
+  for (const doc of catalog.docs) {
+    for (const target of doc.dependsOn ?? []) {
+      const sources = dependents.get(target) ?? [];
+      sources.push(doc.id);
+      dependents.set(target, sources);
+    }
+  }
+  const graphMatches = new Map<FilterAtom, Set<string>>();
+  const prepare = (node: QueryNode) => {
+    if (node.kind === "not") return prepare(node.node);
+    if (node.kind === "and" || node.kind === "or") {
+      prepare(node.left);
+      prepare(node.right);
+      return;
+    }
+    if (node.kind !== "atom") return;
+    const atom = node.atom;
+    if (atom.kind !== "downstream" && atom.kind !== "upstream") return;
+    const seeds = catalog.docs.filter((doc) => matchStringPred([doc.id, doc.name], atom.pred));
+    const seen = new Set(seeds.map((doc) => doc.id));
+    const found = new Set<string>();
+    const queue = [...seen];
+    for (let i = 0; i < queue.length; i += 1) {
+      const id = queue[i]!;
+      const next = atom.kind === "downstream" ? byId.get(id)?.dependsOn : dependents.get(id);
+      for (const target of next ?? []) {
+        if (seen.has(target)) continue;
+        seen.add(target);
+        found.add(target);
+        queue.push(target);
+      }
+    }
+    graphMatches.set(atom, found);
+  };
+  prepare(parsed.ast);
   const matchIds = new Set<string>();
   for (const doc of catalog.docs) {
-    if (matchDocument(doc, parsed.ast)) {
+    if (matchDocument(doc, parsed.ast, graphMatches)) {
       matchIds.add(doc.id);
     }
   }
@@ -783,7 +844,7 @@ export function hintAt(query: string, cursor: number) {
   }
 
   const keyMatch =
-    /(?:^|[&|(!\s])(name|fieldName|fieldValue|warnAlerts|errorAlert)\s*:\s*([^:&|()!]*)$/.exec(
+    /(?:^|[&|(!\s])(name|app|provider|namespace|downstream|upstream|fieldName|fieldValue|warnAlerts|errorAlert)\s*:\s*([^:&|()!]*)$/.exec(
       before,
     );
   if (keyMatch?.[1] && isSearchKey(keyMatch[1])) {

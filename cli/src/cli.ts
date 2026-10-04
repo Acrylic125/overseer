@@ -9,17 +9,27 @@ import { precomputeAssets } from "./pipeline/precompute.js";
 
 function printUsage(): void {
   console.log(`Usage:
-  pnpm cli                      Interactive menu
-  pnpm cli env                  Configure providers in cli/.env
-  pnpm cli scan [--dir <path>]  Full pipeline → <dir>/…
-  pnpm cli scan --skip-assets [--dir <path>]
-  pnpm cli assets [--dir <path>]  Bake assets.glb (+ gradient PNG)
-  pnpm cli mock [--dir <path>]  Synthetic infrastructure.json
+  pnpm cli                          Interactive menu
+  pnpm cli env                      Configure providers in cli/.env
+  pnpm cli scan [filters] [--force] [--skip-assets] [--dir <path>]
+                                    Assets → sync stale scopes → graph.json
+  pnpm cli sync [filters] [--force] [--dir <path>]
+                                    Sync stale scopes → graph.json (no assets)
+  pnpm cli graph [--dir <path>]     Rebuild graph.json from the cache (offline)
+  pnpm cli assets [--dir <path>]    Bake assets.glb (+ gradient PNG)
+  pnpm cli mock [--dir <path>]      Synthetic graph.json
+
+Filters narrow which scopes are synced:
+  cloudflare                 every Cloudflare namespace
+  cloudflare:prod            one namespace
+  cloudflare:prod/worker     one scanner (worker, dns, d1, kv, r2, queue, …)
+
+Scopes younger than their TTL are served from cli/.overseer/cache unless --force.
 
 Artifacts (flat in the output directory):
   assets.glb
   platform-gradient.png
-  infrastructure.json
+  graph.json
 
 Default directory: ./_generated  (override with --dir)
 `);
@@ -60,7 +70,17 @@ async function runInteractive(): Promise<void> {
         {
           name: "scan",
           value: "scan" as const,
-          description: "Assets → service scan → layout → _generated/",
+          description: "Assets → sync stale scopes → _generated/graph.json",
+        },
+        {
+          name: "sync (force)",
+          value: "force" as const,
+          description: "Re-scrape every scope, ignoring the cache",
+        },
+        {
+          name: "graph",
+          value: "graph" as const,
+          description: "Rebuild graph.json from the cache without scraping",
         },
         {
           name: "assets",
@@ -70,7 +90,7 @@ async function runInteractive(): Promise<void> {
         {
           name: "mock",
           value: "mock" as const,
-          description: "Write a synthetic infrastructure.json",
+          description: "Write a synthetic graph.json",
         },
         {
           name: "exit",
@@ -92,6 +112,16 @@ async function runInteractive(): Promise<void> {
 
     if (command === "scan") {
       await runScanPipeline();
+      continue;
+    }
+
+    if (command === "force") {
+      await runScanPipeline({ skipPrecompute: true, force: true });
+      continue;
+    }
+
+    if (command === "graph") {
+      await runScanPipeline({ skipPrecompute: true, offline: true });
       continue;
     }
 
@@ -127,10 +157,21 @@ async function main(): Promise<void> {
 
   const flags = parseCliFlags(argv.slice(1));
 
-  if (command === "scan") {
+  if (command === "scan" || command === "sync") {
     await runScanPipeline({
       outDir: flags.dir,
-      skipPrecompute: flags.skipAssets,
+      skipPrecompute: command === "sync" || flags.skipAssets,
+      only: flags.positionals,
+      force: flags.force,
+    });
+    return;
+  }
+
+  if (command === "graph") {
+    await runScanPipeline({
+      outDir: flags.dir,
+      skipPrecompute: true,
+      offline: true,
     });
     return;
   }

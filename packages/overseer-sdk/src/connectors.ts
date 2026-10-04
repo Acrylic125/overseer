@@ -7,7 +7,6 @@ import type { ConnectorConfig } from "./layout.js";
 
 const MAX_BFS_VISITS = 20_000;
 const DENSE_SPACING_MAX_SERVICES = 120;
-const BOX_GRID_CELL = 2;
 
 export type LayoutAabb = {
   id: string;
@@ -36,72 +35,60 @@ type ConnectionRow = {
 type SegmentObstacle = { a: Pt; b: Pt };
 type Dir = { x: 1 | -1 | 0; y: 1 | -1 | 0 };
 
-class BoxGrid {
-  readonly cellSize: number;
-  private readonly cells = new Map<string, LayoutAabb[]>();
+type BoxTree = {
+  minX: number; maxX: number; minY: number; maxY: number;
+  boxes: LayoutAabb[];
+  children: BoxTree[];
+};
 
-  constructor(boxes: LayoutAabb[], cellSize = BOX_GRID_CELL) {
-    this.cellSize = cellSize;
-    for (const box of boxes) {
-      const x0 = Math.floor(box.minX / cellSize);
-      const x1 = Math.floor(box.maxX / cellSize);
-      const y0 = Math.floor(box.minY / cellSize);
-      const y1 = Math.floor(box.maxY / cellSize);
-      for (let gx = x0; gx <= x1; gx += 1) {
-        for (let gy = y0; gy <= y1; gy += 1) {
-          const key = `${gx},${gy}`;
-          const list = this.cells.get(key);
-          if (list) list.push(box);
-          else this.cells.set(key, [box]);
-        }
+class BoxIndex {
+  private readonly root: BoxTree;
+
+  constructor(boxes: LayoutAabb[]) {
+    const build = (members: LayoutAabb[]): BoxTree => {
+      const node: BoxTree = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, boxes: [], children: [] };
+      for (const box of members) {
+        node.minX = Math.min(node.minX, box.minX);
+        node.maxX = Math.max(node.maxX, box.maxX);
+        node.minY = Math.min(node.minY, box.minY);
+        node.maxY = Math.max(node.maxY, box.maxY);
       }
-    }
+      if (members.length <= 8) node.boxes = members;
+      else {
+        const wide = node.maxX - node.minX >= node.maxY - node.minY;
+        members.sort((a, b) => wide ? a.cx - b.cx : a.cy - b.cy);
+        const middle = Math.floor(members.length / 2);
+        node.children = [build(members.slice(0, middle)), build(members.slice(middle))];
+      }
+      return node;
+    };
+    // A bounding-volume tree skips empty space between platforms, including
+    // long edge queries whose rectangular cell ranges used to dwarf the graph.
+    this.root = build([...boxes]);
   }
 
-  queryRect(
-    minX: number,
-    maxX: number,
-    minY: number,
-    maxY: number,
-  ): LayoutAabb[] {
-    const x0 = Math.floor(minX / this.cellSize);
-    const x1 = Math.floor(maxX / this.cellSize);
-    const y0 = Math.floor(minY / this.cellSize);
-    const y1 = Math.floor(maxY / this.cellSize);
-    const seen = new Set<string>();
+  queryRect(minX: number, maxX: number, minY: number, maxY: number) {
     const out: LayoutAabb[] = [];
-
-    for (let gx = x0; gx <= x1; gx += 1) {
-      for (let gy = y0; gy <= y1; gy += 1) {
-        const list = this.cells.get(`${gx},${gy}`);
-        if (!list) continue;
-        for (const box of list) {
-          if (seen.has(box.id)) continue;
-          if (
-            box.maxX < minX ||
-            box.minX > maxX ||
-            box.maxY < minY ||
-            box.minY > maxY
-          ) {
-            continue;
-          }
-          seen.add(box.id);
-          out.push(box);
-        }
+    const pending = [this.root];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (node.maxX < minX || node.minX > maxX || node.maxY < minY || node.minY > maxY) continue;
+      for (const box of node.boxes) {
+        if (box.maxX >= minX && box.minX <= maxX && box.maxY >= minY && box.minY <= maxY) out.push(box);
       }
+      pending.push(...node.children);
     }
-
     return out;
   }
 
-  queryPoint(px: number, py: number, radius: number): LayoutAabb[] {
+  queryPoint(px: number, py: number, radius: number) {
     return this.queryRect(px - radius, px + radius, py - radius, py + radius);
   }
 }
 
 type WalkSpace = {
   boxes: LayoutAabb[];
-  index: BoxGrid;
+  index: BoxIndex;
   excludeIds: Set<string>;
   segments: SegmentObstacle[];
   clearance: number;
@@ -236,6 +223,7 @@ function segmentDir(a: Pt, b: Pt): Dir | null {
 }
 
 function pathClear(points: Pt[], space: WalkSpace) {
+  if (space.segments.length === 0) return pathClearOfBoxes(points, space);
   const orth = finalizeOrthogonal(points);
   for (let i = 0; i < orth.length - 1; i += 1) {
     const a = orth[i]!;
@@ -254,13 +242,31 @@ function pathClear(points: Pt[], space: WalkSpace) {
 }
 
 function pathClearOfBoxes(points: Pt[], space: WalkSpace) {
-  return pathClear(points, { ...space, segments: [] });
+  const orth = finalizeOrthogonal(points);
+  for (let i = 1; i < orth.length; i += 1) {
+    const a = orth[i - 1]!;
+    const b = orth[i]!;
+    const minX = Math.min(a.x, b.x);
+    const maxX = Math.max(a.x, b.x);
+    const minY = Math.min(a.y, b.y);
+    const maxY = Math.max(a.y, b.y);
+    const clearance = space.clearance;
+    // Cardinal segments have an exact box distance; sampling every 0.1 units
+    // made distant cross-platform edges unnecessarily expensive.
+    for (const box of space.index.queryRect(minX - clearance, maxX + clearance, minY - clearance, maxY + clearance)) {
+      if (space.excludeIds.has(box.id)) continue;
+      const dx = Math.max(0, box.minX - maxX, minX - box.maxX);
+      const dy = Math.max(0, box.minY - maxY, minY - box.maxY);
+      if (Math.hypot(dx, dy) < clearance) return false;
+    }
+  }
+  return true;
 }
 
 function obstaclesNearPath(
   exit: Pt,
   entry: Pt,
-  index: BoxGrid,
+  index: BoxIndex,
   excludeIds: Set<string>,
   pad: number,
 ): LayoutAabb[] {
@@ -743,7 +749,7 @@ function walkConnectorPath(
   exit: Pt,
   entry: Pt,
   boxes: LayoutAabb[],
-  index: BoxGrid,
+  index: BoxIndex,
   excludeIds: Set<string>,
   segments: SegmentObstacle[],
   config: ConnectorConfig,
@@ -858,7 +864,7 @@ function buildConnectorPath(
   source: LayoutAabb,
   target: LayoutAabb,
   boxes: LayoutAabb[],
-  index: BoxGrid,
+  index: BoxIndex,
   priorSegments: SegmentObstacle[],
   portSlots: {
     fromSlot: number;
@@ -996,7 +1002,7 @@ export function createConnectorEngine(config: ConnectorConfig): {
     const faceUsed = new Map<string, number>();
 
     const trackSpacing = boxes.length <= DENSE_SPACING_MAX_SERVICES;
-    const index = new BoxGrid(boxes);
+    const index = new BoxIndex(boxes);
     const priorSegments: SegmentObstacle[] = [];
     const paths: RoutedConnectorPath[] = [];
 

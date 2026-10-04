@@ -12,12 +12,29 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./layout": {
+      "types": "./dist/layout.d.ts",
+      "import": "./dist/layout.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare/scanners.d.ts",
+      "import": "./dist/cloudflare/scanners.js"
+    },
+    "./vercel": {
+      "types": "./dist/vercel/scanners.d.ts",
+      "import": "./dist/vercel/scanners.js"
+    },
+    "./azure": {
+      "types": "./dist/azure/scanners.d.ts",
+      "import": "./dist/azure/scanners.js"
     }
   },
   "scripts": {
     "build": "tsc",
     "prepare": "pnpm run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",
@@ -28,6 +45,7 @@
   },
   "devDependencies": {
     "@microsoft/microsoft-graph-types": "^2.40.0",
+    "@types/node": "^26.1.2",
     "typescript": "^5.9.3"
   }
 }

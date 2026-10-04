@@ -1,12 +1,15 @@
 "use client";
 
 import { useFrame, useThree } from "@react-three/fiber";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 
+import { GroupOverview } from "@/components/infrastructure/group-overview";
+import { TraceFlow } from "@/components/infrastructure/trace-flow";
 import { CameraBridge } from "@/components/infrastructure/camera-bridge";
 import {
   CameraModeSync,
+  TOP_DOWN_QUATERNION,
   type ViewMode,
 } from "@/components/infrastructure/infrastructure-camera-sync";
 import { FlyControls } from "@/components/infrastructure/fly-controls";
@@ -29,7 +32,7 @@ import {
   pickConnectorAt,
   pickableConnectorPaths,
 } from "@/lib/graph/pick-connector";
-import { linkedServiceIds, RENDER_HALF } from "@/lib/graph/service-streaming";
+import { RENDER_HALF, tracedServiceIds } from "@/lib/graph/service-streaming";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
 import type { CameraFrame } from "@/lib/layout-from-db";
 import { CELL_SIZE, SCENE } from "@/lib/infrastructure-styles";
@@ -42,6 +45,7 @@ type SceneProps = {
   platforms: PackLayoutResult["platforms"];
   publicInternet: PackLayoutResult["publicInternet"];
   connectorPaths: ConnectorPath[] | null;
+  cameraFrame: CameraFrame;
   viewMode: ViewMode;
   selectedServiceId: string | null;
   searchMatchIds: Set<string> | null;
@@ -53,6 +57,8 @@ type SceneProps = {
   onPinnedConnectorChange: (focus: ConnectorFocus | null) => void;
   onHoverConnectorChange: (focus: ConnectorFocus | null) => void;
   onCameraReady: (camera: THREE.Camera) => void;
+  /** Dim everything except resources changed since the previous scrape. */
+  showChanges: boolean;
 };
 
 function resolveCameraFrame(
@@ -84,11 +90,11 @@ export function internetPickTarget(
     depth,
     group: "internet",
     connections: [],
+    dependsOn: [],
     species: "cdn_edge",
     category: "compute",
     health: "healthy",
     zone: "edge",
-    metrics: { rps: 0, errorRate: 0, latencyMs: 0 },
     color: SCENE.publicInternet,
     fields: {},
   };
@@ -99,6 +105,7 @@ export function InfrastructureScene({
   platforms,
   publicInternet,
   connectorPaths,
+  cameraFrame,
   viewMode,
   selectedServiceId,
   searchMatchIds,
@@ -110,8 +117,19 @@ export function InfrastructureScene({
   onPinnedConnectorChange,
   onHoverConnectorChange,
   onCameraReady,
+  showChanges,
 }: SceneProps) {
   const { camera, gl } = useThree();
+  useLayoutEffect(() => {
+    const topView = Math.abs(camera.quaternion.dot(TOP_DOWN_QUATERNION)) > 0.99;
+    camera.position.set(
+      cameraFrame.position[0],
+      topView ? cameraFrame.position[1] : camera.position.y,
+      cameraFrame.position[2],
+    );
+    camera.updateMatrixWorld();
+  }, [camera, cameraFrame]);
+  const [overview, setOverview] = useState(false);
   const background = useMemo(() => cssToThreeColor(SCENE.background), []);
   const renderServices = useMemo(
     () => services.filter((service) => !isInternetService(service)),
@@ -136,15 +154,20 @@ export function InfrastructureScene({
     selectedServiceId,
     internetHubService,
   });
-  const selectionIds = useMemo(
-    () =>
-      selectedServiceId ? linkedServiceIds(services, selectedServiceId) : null,
-    [services, selectedServiceId],
-  );
-  const relevantIds = useMemo(
-    () => composeFocusIds({ searchMatchIds, selectionIds }),
-    [searchMatchIds, selectionIds],
-  );
+  const tracedIds = useMemo(() => {
+    if (!selectedServiceId) return null;
+    return tracedServiceIds(services, selectedServiceId);
+  }, [services, selectedServiceId]);
+  const changedIds = useMemo(() => {
+    if (!showChanges) return null;
+    return new Set(
+      services.filter((service) => service.change).map((service) => service.id),
+    );
+  }, [services, showChanges]);
+  const relevantIds = useMemo(() => composeFocusIds({
+    searchMatchIds,
+    selectionIds: composeFocusIds({ searchMatchIds: changedIds, selectionIds: tracedIds }),
+  }), [searchMatchIds, changedIds, tracedIds]);
   const internetOpacity =
     relevantIds != null && !relevantIds.has(INTERNET_ID) ? 0.2 : 1;
   const pickPool = useMemo(() => {
@@ -160,6 +183,7 @@ export function InfrastructureScene({
 
   const handlePick = useCallback(
     (clientX: number, clientY: number) => {
+      if (overview) return false;
       const hitId = pickServiceAt(
         clientX,
         clientY,
@@ -202,6 +226,7 @@ export function InfrastructureScene({
     [
       camera,
       gl,
+      overview,
       onSelectedServiceIdChange,
       pickPool,
       selectedServiceId,
@@ -211,6 +236,8 @@ export function InfrastructureScene({
   );
 
   useFrame(() => {
+    const nextOverview = viewMode === "top" && camera.position.y > (overview ? 55 : 65) && relevantIds == null;
+    if (nextOverview !== overview) setOverview(nextOverview);
     if (!fogRef.current) return;
     const y = Math.max(1, camera.position.y);
     fogRef.current.near = Math.hypot(RENDER_HALF * 0.35, y) * 0.9;
@@ -246,6 +273,8 @@ export function InfrastructureScene({
         />
       ) : null}
 
+      {overview ? <GroupOverview services={services} platforms={visiblePlatforms} /> : null}
+      <group visible={!overview}>
       <InstancedServiceBlocks
         services={visibleRenderServices}
         relevantIds={relevantIds}
@@ -254,9 +283,12 @@ export function InfrastructureScene({
       <ServiceConnectors
         services={connectorServices}
         selectedServiceId={selectedServiceId}
+        tracedIds={tracedIds}
         activeConnectorId={connectorFocus?.pathId ?? null}
         precomputedPaths={streamedConnectorPaths}
       />
+      {tracedIds && !overview ? <TraceFlow paths={streamedConnectorPaths ?? []} services={services} tracedIds={tracedIds} /> : null}
+      </group>
 
       <ConnectorInteraction
         paths={streamedConnectorPaths}

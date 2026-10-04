@@ -27,10 +27,10 @@ export function PageNav({
   searchCatalog?: { docs: SearchDocument[] };
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-4 top-4 z-20 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-      <div className="pointer-events-auto justify-self-start">{left}</div>
+    <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex flex-wrap items-start justify-between gap-3">
+      <div className="pointer-events-auto max-w-full">{left}</div>
 
-      <div className="pointer-events-auto justify-self-center">
+      <div className="pointer-events-auto">
         {searchCatalog != null ? (
           <SearchQueryInput
             catalog={searchCatalog}

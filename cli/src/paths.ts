@@ -10,6 +10,9 @@ export const repoRoot = path.resolve(scanRoot, "..");
 
 export const envPath = path.join(scanRoot, ".env");
 
+/** Per-scope scrape cache. Lives outside `--dir` so changing outputs keeps it. */
+export const cacheDir = path.join(scanRoot, ".overseer", "cache");
+
 /** SVG sources live under `cli/assets/` (inputs, not generated). */
 export const assetsRoot = path.join(scanRoot, "assets");
 export const assetsIconsDir = path.join(assetsRoot, "icons");
@@ -17,7 +20,7 @@ export const assetsShapesDir = path.join(assetsRoot, "shapes");
 
 export const ARTIFACT_ASSETS_GLB = "assets.glb";
 export const ARTIFACT_GRADIENT_PNG = "platform-gradient.png";
-export const ARTIFACT_INFRASTRUCTURE_JSON = "infrastructure.json";
+export const ARTIFACT_GRAPH_JSON = "graph.json";
 
 /**
  * Artifact output directory: `./_generated` under cwd, or `--dir <path>`.

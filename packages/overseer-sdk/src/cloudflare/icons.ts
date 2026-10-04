@@ -7,6 +7,7 @@ const CF_ICON_BY_KIND: Record<string, string> = {
   R2: "cf-r2",
   Vectorize: "cf-vectorize",
   Queue: "cf-queue",
+  DNS: "cf-dns",
 };
 
 export function iconForKind(kind: string) {

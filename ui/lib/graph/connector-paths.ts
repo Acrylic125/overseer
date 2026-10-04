@@ -176,9 +176,9 @@ function outwardNormal(box: WorldAabb, point: Pt, toward: Pt): Dir {
   if (onMinZ) return { x: 0, z: -1 };
   if (onMaxZ) return { x: 0, z: 1 };
   if (Math.abs(dx) >= Math.abs(dz)) {
-    return { x: Math.sign(dx) || 1, z: 0 };
+    return { x: dx < 0 ? -1 : 1, z: 0 };
   }
-  return { x: 0, z: Math.sign(dz) || 1 };
+  return { x: 0, z: dz < 0 ? -1 : 1 };
 }
 
 /** Drop collinear midpoints; force every remaining span to be H or V. */
@@ -217,8 +217,8 @@ function finalizeOrthogonal(points: Pt[]): Pt[] {
 
 function segmentDir(a: Pt, b: Pt): Dir | null {
   if (same(a.x, b.x) && same(a.z, b.z)) return null;
-  if (same(a.x, b.x)) return { x: 0, z: Math.sign(b.z - a.z) || 1 };
-  if (same(a.z, b.z)) return { x: Math.sign(b.x - a.x) || 1, z: 0 };
+  if (same(a.x, b.x)) return { x: 0, z: b.z < a.z ? -1 : 1 };
+  if (same(a.z, b.z)) return { x: b.x < a.x ? -1 : 1, z: 0 };
   return null;
 }
 

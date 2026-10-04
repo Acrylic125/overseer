@@ -1,28 +1,27 @@
 import Cloudflare from "cloudflare";
 
+import { collect, mapPool, mapPoolCollect, settled } from "../core/scrape-async.js";
+import { envReferences, hostOf, refReferences } from "../core/claims.js";
 import {
-  collect,
-  mapPool,
-  mapPoolCollect,
-  settled,
-  type ScrapeStepFn,
-} from "../core/scrape-async.js";
-import { bindScanner } from "../core/bind-scanner.js";
-import { envToClaims, parseEnvUrl, urlBaseMatchClaim } from "../core/claims.js";
+  DEFAULT_TTL_MS,
+  HOUR_MS,
+  defineProvider,
+  type Scanner,
+} from "../core/provider.js";
 import { resourceId } from "../core/resource-id.js";
-import type {
-  FieldNode,
-  ProviderResourceScanner,
-  ResourceAlert,
-  ResourceClaims,
-  ConnectionRequirement,
-  ResourceFields,
+import type { Exposure, LinkEntry, Reference } from "../core/schemas.js";
+import { redactSensitiveValue } from "../core/utils.js";
+import {
+  table,
+  type FieldNode,
+  type ResourceAlert,
+  type ResourceFields,
 } from "../types.js";
 import { iconForKind } from "./icons.js";
 import {
+  parseDnsRecord,
   parseR2Cors,
   parseR2CustomDomains,
-  parseR2ManagedDomains,
   parseWorkerSecret,
   parseWorkerSettings,
   parseWorkflowGraph,
@@ -35,6 +34,7 @@ import { workflowNodesToGraph } from "./workflow-graph.js";
 
 const DETAIL_CONCURRENCY = 3;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
+const DNS_RECORD_TYPES = new Set(["A", "AAAA", "CNAME"]);
 
 export const WORKER_DEFAULT_POLICY = {
   onAfterSensitiveVarLastUpdatedDays: [90, "warn"] as [
@@ -43,12 +43,50 @@ export const WORKER_DEFAULT_POLICY = {
   ],
 };
 
-type CloudflareAccount = {
+type CloudflareCtx = {
   client: Cloudflare;
   accountId: string;
   account: { account_id: string };
-  fn: ScrapeStepFn;
+  /** Memoised per account; DNS and Worker routes both need the zone list. */
+  zones: () => Promise<Array<{ id: string; name: string }>>;
+  policy: typeof WORKER_DEFAULT_POLICY;
 };
+
+type WorkerEnv = {
+  key: string;
+  value: string;
+  type: string;
+  modifiedOn?: string;
+};
+
+function idFor(namespace: string, accountId: string, type: string, key: string) {
+  return resourceId("cf", namespace, accountId, type, key);
+}
+
+function refExposures(
+  refs: Array<string | null | undefined>,
+  label: string,
+): Exposure[] {
+  const exposures: Exposure[] = [];
+  const seen = new Set<string>();
+  for (const raw of refs) {
+    const value = raw?.trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    exposures.push({ type: "ref", value, label });
+  }
+  return exposures;
+}
+
+function hostExposures(hosts: string[], extra: Partial<Exposure> = {}) {
+  const exposures: Exposure[] = [];
+  for (const host of hosts) {
+    exposures.push({ type: "host", value: host, label: host, ...extra });
+  }
+  return exposures;
+}
 
 function sensitiveVarAlerts(
   envs: WorkerEnv[],
@@ -74,26 +112,20 @@ function sensitiveVarAlerts(
   return alerts;
 }
 
-function idFor(
-  namespace: string,
-  accountId: string,
-  type: string,
-  key: string,
-) {
-  return resourceId("cf", namespace, accountId, type, key);
-}
-
 function workerName(worker: { id?: string | null; name?: string | null }) {
   if ("name" in worker && worker.name) return worker.name;
   return worker.id ?? null;
 }
 
-type WorkerEnv = {
-  key: string;
-  value: string;
-  type: string;
-  modifiedOn?: string;
-};
+function workerRevision(worker: object) {
+  if ("modified_on" in worker && typeof worker.modified_on === "string") {
+    return worker.modified_on;
+  }
+  if ("updated_on" in worker && typeof worker.updated_on === "string") {
+    return worker.updated_on;
+  }
+  return undefined;
+}
 
 function extractEnv(binding: WorkerBinding) {
   const type = binding.type;
@@ -132,75 +164,37 @@ function mergeWorkerEnvs(bindings: WorkerBinding[], secrets: WorkerSecret[]) {
   return [...byKey.values()];
 }
 
-function workerEnvValue(env: WorkerEnv): FieldNode {
-  if (env.type === "secret_text" && !env.value) return { type: "hidden" };
-  if (!env.value) return { type: "hidden" };
-  return { type: "secret", value: env.value };
-}
-
 function workerEnvFields(envs: WorkerEnv[]) {
   const fields: ResourceFields = {};
   for (const env of envs) {
-    fields[env.key] = workerEnvValue(env);
+    let value: FieldNode = { type: "hidden" };
+    if (env.value) {
+      value = { type: "secret", value: redactSensitiveValue(env.value) };
+    }
+    fields[env.key] = value;
   }
   return fields;
 }
 
-function workerEnvValues(envs: WorkerEnv[]) {
-  const values: string[] = [];
-  for (const env of envs) {
-    if (env.type === "secret_text" && !env.value) continue;
-    if (!env.value) continue;
-    values.push(env.value);
-  }
-  return values;
-}
-
-function bindingRefClaims(bindings: WorkerBinding[], workerName: string) {
-  const claims: ResourceClaims[] = [];
-  const seen = new Set<string>();
-  const add = (value: string | null | undefined) => {
-    if (!value) return;
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    claims.push({ type: "ref", value: trimmed });
-  };
+function bindingReferences(bindings: WorkerBinding[], name: string) {
+  const values: Array<string | null | undefined> = [];
   for (const binding of bindings) {
     const type = binding.type?.toLowerCase();
     if (type === "plain_text" || type === "secret_text") continue;
-    const classRef =
-      binding.class_name && (binding.script_name ?? workerName)
-        ? `${binding.script_name ?? workerName}:${binding.class_name}`
-        : null;
-    add(binding.namespace_id);
-    add(binding.database_id);
-    add(binding.id);
-    add(binding.bucket_name);
-    add(binding.index_name);
-    add(binding.queue_name);
-    add(binding.service);
-    add(binding.workflow_name);
-    add(classRef);
+    const script = binding.script_name ?? name;
+    values.push(
+      binding.namespace_id,
+      binding.database_id,
+      binding.id,
+      binding.bucket_name,
+      binding.index_name,
+      binding.queue_name,
+      binding.service,
+      binding.workflow_name,
+      binding.class_name ? `${script}:${binding.class_name}` : null,
+    );
   }
-  return claims;
-}
-
-function requireRef(
-  refs: Array<{ value: string | null | undefined; label: string }>,
-  claim: ResourceClaims,
-): ConnectionRequirement {
-  if (claim.type !== "ref") return false;
-  const claimValue = claim.value.trim().toLowerCase();
-  for (const ref of refs) {
-    if (!ref.value) continue;
-    if (ref.value.trim().toLowerCase() === claimValue) {
-      return { type: "connected" as const, label: ref.label };
-    }
-  }
-  return false;
+  return refReferences(values, "binding");
 }
 
 function formatCors(cors: R2Cors) {
@@ -225,20 +219,6 @@ function r2CorsOrigins(cors: R2Cors) {
   return origins;
 }
 
-function r2CorsAllowsClaim(cors: R2Cors | undefined, claim: ResourceClaims) {
-  if (!cors) return true;
-  if (claim.type !== "url") return false;
-  const claimHost =
-    parseEnvUrl(claim.value)?.hostname.toLowerCase() ??
-    claim.value.trim().toLowerCase();
-  if (!claimHost) return false;
-  for (const origin of r2CorsOrigins(cors)) {
-    if (origin === "*") return true;
-    if (urlBaseMatchClaim(origin, claim)) return true;
-  }
-  return false;
-}
-
 function r2Domains(custom: R2CustomDomains) {
   if (!custom.domains) return [];
   return custom.domains
@@ -247,9 +227,9 @@ function r2Domains(custom: R2CustomDomains) {
 }
 
 async function r2Cors(
-  client: CloudflareAccount["client"],
+  client: CloudflareCtx["client"],
   bucketName: string,
-  account: CloudflareAccount["account"],
+  account: CloudflareCtx["account"],
 ) {
   try {
     return await client.r2.buckets.cors.get(bucketName, account);
@@ -266,7 +246,7 @@ async function r2Cors(
 }
 
 async function scrapeWorkerSecrets(
-  ctx: CloudflareAccount,
+  ctx: CloudflareCtx,
   scriptName: string,
   bindings: WorkerBinding[],
 ) {
@@ -302,535 +282,570 @@ async function scrapeWorkerSecrets(
   return envs;
 }
 
-async function scrapeWorkers(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing workers" });
-  const listedWorkers = await collect(
-    ctx.client.workers.scripts.list(ctx.account),
-  );
-  const betaWorkers =
-    listedWorkers.length > 0
-      ? []
-      : await collect(ctx.client.workers.beta.workers.list(ctx.account));
-  const workerDetails: Record<
-    string,
-    { bindings: WorkerBinding[]; envs: WorkerEnv[] }
-  > = {};
-  const workerNames = [
-    ...listedWorkers.map((worker) => workerName(worker)),
-    ...betaWorkers.map((worker) => workerName(worker)),
-  ].filter((name): name is string => Boolean(name));
-
-  await mapPool(workerNames, DETAIL_CONCURRENCY, async (name) => {
-    const settings = await settled(
-      () =>
-        ctx.client.workers.scripts.scriptAndVersionSettings.get(
-          name,
-          ctx.account,
-        ),
-      null,
-    );
-    const bindings = settings
-      ? (parseWorkerSettings(settings)?.bindings ?? [])
-      : [];
-    const envs = await scrapeWorkerSecrets(ctx, name, bindings);
-    workerDetails[name] = { bindings, envs };
+async function scrapeRoutes(ctx: CloudflareCtx) {
+  const zones = await ctx.zones();
+  const byScript = new Map<string, string[]>();
+  await mapPool(zones, DETAIL_CONCURRENCY, async (zone) => {
+    const routes = await collect(ctx.client.workers.routes.list({ zone_id: zone.id }));
+    for (const route of routes) {
+      if (!route.script) continue;
+      const list = byScript.get(route.script) ?? [];
+      list.push(route.pattern);
+      byScript.set(route.script, list);
+    }
   });
-
-  ctx.fn({ message: "Listing worker domains" });
-  const workerDomains = await collect(
-    ctx.client.workers.domains.list(ctx.account),
-  );
-  const workersSubdomain = await settled(
-    () => ctx.client.workers.subdomains.get(ctx.account),
-    { subdomain: "" },
-  );
-
-  const listed = listedWorkers.length > 0 ? listedWorkers : betaWorkers;
-  const items = [];
-  for (const worker of listed) {
-    const name = workerName(worker);
-    if (!name) continue;
-    const hosts: string[] = [];
-    for (const row of workerDomains) {
-      if (row.service !== name) continue;
-      if (row.hostname) hosts.push(row.hostname);
-    }
-    if (hosts.length === 0 && workersSubdomain.subdomain) {
-      hosts.push(`${name}.${workersSubdomain.subdomain}.workers.dev`);
-    }
-    const details = workerDetails[name];
-    items.push({
-      accountId: ctx.accountId,
-      name,
-      domains: hosts,
-      bindings: details?.bindings ?? [],
-      envs: details?.envs ?? [],
-    });
-  }
-  return items;
+  return byScript;
 }
 
-async function scrapeDurableObjects(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing durable objects" });
-  const durableObjects = await collect(
-    ctx.client.durableObjects.namespaces.list(ctx.account),
-  );
-  return durableObjects.map((namespaceDo) => ({
-    accountId: ctx.accountId,
-    namespaceDo,
-  }));
-}
-
-async function scrapeWorkflows(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing workflows" });
-  const workflows = await collect(ctx.client.workflows.list(ctx.account));
-  return mapPoolCollect(workflows, DETAIL_CONCURRENCY, async (workflow) => {
-    const name = workflow.name;
-    if (!name) return null;
-
-    const versions = await settled(
-      () => collect(ctx.client.workflows.versions.list(name, ctx.account)),
-      [],
+export const workerScanner: Scanner<CloudflareCtx> = {
+  key: "worker",
+  version: 1,
+  ttlMs: HOUR_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing workers" });
+    const listedWorkers = await collect(
+      ctx.client.workers.scripts.list(ctx.account),
     );
-    const latest = [...versions].sort((a, b) => {
-      const aTime = Date.parse(a.modified_on || a.created_on) || 0;
-      const bTime = Date.parse(b.modified_on || b.created_on) || 0;
-      return bTime - aTime;
-    })[0];
+    const betaWorkers =
+      listedWorkers.length > 0
+        ? []
+        : await collect(ctx.client.workers.beta.workers.list(ctx.account));
 
-    let graph = null;
-    if (latest?.id) {
-      const raw = await settled(
+    const workers: Array<{ name: string; revision?: string }> = [];
+    for (const worker of [...listedWorkers, ...betaWorkers]) {
+      const name = workerName(worker);
+      if (name) workers.push({ name, revision: workerRevision(worker) });
+    }
+
+    // Settings and secrets are N+1 calls; skip them when the script is unchanged.
+    const details = new Map<
+      string,
+      { fields: ResourceFields; alerts: ResourceAlert[]; references: Reference[] }
+    >();
+    let reused = 0;
+    await mapPool(workers, DETAIL_CONCURRENCY, async ({ name, revision }) => {
+      const cached = run.previous.get(
+        idFor(run.namespace, ctx.accountId, "worker", name),
+      );
+      if (revision && cached?.revision === revision) {
+        const environment = cached.resource.fields.Environment;
+        details.set(name, {
+          fields: environment ? { Environment: environment } : {},
+          alerts: cached.resource.alerts,
+          references: cached.references,
+        });
+        reused += 1;
+        return;
+      }
+
+      const settings = await settled(
         () =>
-          ctx.client.workflows.versions.graph(latest.id, {
-            account_id: ctx.accountId,
-            workflow_name: name,
-          }),
+          ctx.client.workers.scripts.scriptAndVersionSettings.get(
+            name,
+            ctx.account,
+          ),
         null,
       );
-      if (raw) graph = parseWorkflowGraph(raw);
+      const bindings = settings
+        ? (parseWorkerSettings(settings)?.bindings ?? [])
+        : [];
+      const envs = await scrapeWorkerSecrets(ctx, name, bindings);
+      const envFields = workerEnvFields(envs);
+      details.set(name, {
+        fields:
+          Object.keys(envFields).length > 0
+            ? { Environment: { fields: envFields } }
+            : {},
+        alerts: sensitiveVarAlerts(envs, ctx.policy),
+        references: [
+          ...envReferences(
+            envs.map((env) => ({
+              value: env.value,
+              secret: env.type === "secret_text",
+            })),
+          ),
+          ...bindingReferences(bindings, name),
+        ],
+      });
+    });
+    if (reused > 0) {
+      run.step({ message: `Reused details for ${reused} unchanged workers` });
     }
 
-    return {
-      accountId: ctx.accountId,
-      workflow,
-      graph,
-    };
-  });
-}
-
-async function scrapeKv(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing KV namespaces" });
-  const kv = await collect(ctx.client.kv.namespaces.list(ctx.account));
-  return kv.map((row) => ({ accountId: ctx.accountId, kv: row }));
-}
-
-async function scrapeD1(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing D1 databases" });
-  const d1 = await collect(ctx.client.d1.database.list(ctx.account));
-  return d1.map((db) => ({ accountId: ctx.accountId, db }));
-}
-
-async function scrapeR2(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing R2 buckets" });
-  const r2Result = await settled(
-    () => ctx.client.r2.buckets.list({ ...ctx.account, per_page: 100 }),
-    { buckets: [] },
-  );
-  const r2 = r2Result.buckets ?? [];
-  return mapPoolCollect(r2, DETAIL_CONCURRENCY, async (bucket) => {
-    const name = bucket.name;
-    if (!name) return null;
-
-    const [managed, custom, cors] = await Promise.all([
-      settled(
-        () => ctx.client.r2.buckets.domains.managed.list(name, ctx.account),
-        null,
-      ),
-      settled(
-        () => ctx.client.r2.buckets.domains.custom.list(name, ctx.account),
-        null,
-      ),
-      settled(() => r2Cors(ctx.client, name, ctx.account), null),
+    run.step({ message: "Listing worker domains and routes" });
+    const [workerDomains, workersSubdomain, routes] = await Promise.all([
+      collect(ctx.client.workers.domains.list(ctx.account)),
+      settled(() => ctx.client.workers.subdomains.get(ctx.account), {
+        subdomain: "",
+      }),
+      scrapeRoutes(ctx),
     ]);
 
-    return {
-      accountId: ctx.accountId,
-      bucket,
-      custom: custom ? (parseR2CustomDomains(custom) ?? undefined) : undefined,
-      managed: managed
-        ? (parseR2ManagedDomains(managed) ?? undefined)
-        : undefined,
-      cors: cors ? (parseR2Cors(cors) ?? undefined) : undefined,
-    };
+    const entries: LinkEntry[] = [];
+    for (const { name, revision } of workers) {
+      const hosts: string[] = [];
+      for (const row of workerDomains) {
+        if (row.service !== name) continue;
+        if (row.hostname) hosts.push(row.hostname);
+      }
+      const patterns = routes.get(name) ?? [];
+      if (hosts.length === 0 && patterns.length === 0 && workersSubdomain.subdomain) {
+        hosts.push(`${name}.${workersSubdomain.subdomain}.workers.dev`);
+      }
+      const detail = details.get(name);
+      const exposes: Exposure[] = [
+        ...hostExposures(hosts),
+        ...refExposures([name], name),
+      ];
+      for (const pattern of patterns) {
+        const host = hostOf(pattern);
+        if (host) exposes.push({ type: "host", value: host, label: pattern });
+      }
+
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "worker", name),
+          group: run.namespace,
+          name,
+          url: `https://dash.cloudflare.com/${ctx.accountId}/workers/services/view/${encodeURIComponent(name)}/production/observability/events`,
+          service: "Worker",
+          asset: iconForKind("Worker"),
+          fields: {
+            ...(hosts.length > 0 ? { Domains: hosts } : {}),
+            ...(patterns.length > 0 ? { Routes: patterns } : {}),
+            ...detail?.fields,
+          },
+          alerts: detail?.alerts ?? [],
+          tags: { namespace: run.namespace },
+        },
+        exposes,
+        references: detail?.references ?? [],
+        ...(revision ? { revision } : {}),
+      });
+    }
+    return entries;
+  },
+};
+
+export const dnsScanner: Scanner<CloudflareCtx> = {
+  key: "dns",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing zones" });
+    const zones = await ctx.zones();
+    run.step({ message: `Listing DNS records for ${zones.length} zones` });
+
+    const byHost = new Map<
+      string,
+      { zone: string; records: Array<{ type: string; content: string; proxied: boolean }> }
+    >();
+    await mapPool(zones, DETAIL_CONCURRENCY, async (zone) => {
+      const rows = await collect(ctx.client.dns.records.list({ zone_id: zone.id }));
+      for (const row of rows) {
+        const record = parseDnsRecord(row);
+        if (!record || !DNS_RECORD_TYPES.has(record.type)) continue;
+        const host = record.name.toLowerCase();
+        const existing = byHost.get(host) ?? { zone: zone.name, records: [] };
+        existing.records.push({
+          type: record.type,
+          content: record.content ?? "",
+          proxied: record.proxied ?? false,
+        });
+        byHost.set(host, existing);
+      }
+    });
+
+    const entries: LinkEntry[] = [];
+    for (const [host, { zone, records }] of byHost) {
+      const references: Reference[] = [{ type: "host", value: host, kind: "dns" }];
+      for (const record of records) {
+        if (record.type !== "CNAME") continue;
+        const target = hostOf(record.content);
+        if (target) references.push({ type: "host", value: target, kind: "dns" });
+      }
+      const proxied = records.some((record) => record.proxied);
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "dns", host),
+          group: run.namespace,
+          name: host,
+          url: `https://dash.cloudflare.com/${ctx.accountId}/${encodeURIComponent(zone)}/dns/records`,
+          service: "DNS",
+          asset: iconForKind("DNS"),
+          fields: {
+            Zone: zone,
+            Proxied: proxied,
+            Records: table({
+              columns: ["Type", "Content", "Proxied"],
+              rows: records.map((record) => ({
+                Type: record.type,
+                Content: record.content,
+                Proxied: record.proxied ? "yes" : "no",
+              })),
+            }),
+          },
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: [{ type: "host", value: host, label: host, entry: true }],
+        references,
+      });
+    }
+    return entries;
+  },
+};
+
+export const durableObjectScanner: Scanner<CloudflareCtx> = {
+  key: "durable-object",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing durable objects" });
+    const namespaces = await collect(
+      ctx.client.durableObjects.namespaces.list(ctx.account),
+    );
+    const entries: LinkEntry[] = [];
+    for (const namespaceDo of namespaces) {
+      const doId = namespaceDo.id;
+      if (!doId) continue;
+      const name = namespaceDo.name ?? namespaceDo.class ?? doId;
+      const classRef =
+        namespaceDo.script && namespaceDo.class
+          ? `${namespaceDo.script}:${namespaceDo.class}`
+          : null;
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "do", doId),
+          group: run.namespace,
+          name,
+          url: `https://dash.cloudflare.com/${ctx.accountId}/workers/durable-objects/view/${encodeURIComponent(doId)}`,
+          service: "Durable Object",
+          asset: iconForKind("Durable Object"),
+          fields: {},
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: refExposures(
+          [doId, namespaceDo.name, namespaceDo.class, classRef],
+          name,
+        ),
+        references: [],
+      });
+    }
+    return entries;
+  },
+};
+
+export const workflowScanner: Scanner<CloudflareCtx> = {
+  key: "workflow",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing workflows" });
+    const workflows = await collect(ctx.client.workflows.list(ctx.account));
+    return mapPoolCollect(workflows, DETAIL_CONCURRENCY, async (workflow) => {
+      const name = workflow.name;
+      if (!name || !workflow.id) return null;
+
+      const versions = await settled(
+        () => collect(ctx.client.workflows.versions.list(name, ctx.account)),
+        [],
+      );
+      const latest = [...versions].sort((a, b) => {
+        const aTime = Date.parse(a.modified_on || a.created_on) || 0;
+        const bTime = Date.parse(b.modified_on || b.created_on) || 0;
+        return bTime - aTime;
+      })[0];
+
+      let graph = null;
+      if (latest?.id) {
+        const raw = await settled(
+          () =>
+            ctx.client.workflows.versions.graph(latest.id, {
+              account_id: ctx.accountId,
+              workflow_name: name,
+            }),
+          null,
+        );
+        if (raw) graph = parseWorkflowGraph(raw);
+      }
+
+      const nodes =
+        graph?.graph?.workflow?.nodes ??
+        graph?.graph?.nodes ??
+        graph?.workflow?.nodes ??
+        graph?.nodes ??
+        null;
+      const fields: ResourceFields = {};
+      if (workflow.script_name) fields.Script = workflow.script_name;
+      if (nodes && nodes.length > 0) fields.Steps = workflowNodesToGraph(nodes);
+
+      return {
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "workflow", workflow.id),
+          group: run.namespace,
+          name,
+          url: "",
+          service: "Workflow",
+          asset: iconForKind("Workflow"),
+          fields,
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: refExposures([name, workflow.id], name),
+        references: [],
+      } satisfies LinkEntry;
+    });
+  },
+};
+
+export const kvScanner: Scanner<CloudflareCtx> = {
+  key: "kv",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing KV namespaces" });
+    const namespaces = await collect(ctx.client.kv.namespaces.list(ctx.account));
+    const entries: LinkEntry[] = [];
+    for (const kv of namespaces) {
+      const title = kv.title ?? kv.id;
+      if (!kv.id || !title) continue;
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "kv", kv.id),
+          group: run.namespace,
+          name: title,
+          url: "",
+          service: "KV",
+          asset: iconForKind("KV"),
+          fields: {},
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: refExposures([kv.id, title], title),
+        references: [],
+      });
+    }
+    return entries;
+  },
+};
+
+export const d1Scanner: Scanner<CloudflareCtx> = {
+  key: "d1",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing D1 databases" });
+    const databases = await collect(ctx.client.d1.database.list(ctx.account));
+    const entries: LinkEntry[] = [];
+    for (const db of databases) {
+      if (!db.uuid || !db.name) continue;
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "d1", db.uuid),
+          group: run.namespace,
+          name: db.name,
+          url: "",
+          service: "D1",
+          asset: iconForKind("D1"),
+          fields: {},
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: refExposures([db.uuid, db.name], db.name),
+        references: [],
+      });
+    }
+    return entries;
+  },
+};
+
+export const r2Scanner: Scanner<CloudflareCtx> = {
+  key: "r2",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing R2 buckets" });
+    const listed = await settled(
+      () => ctx.client.r2.buckets.list({ ...ctx.account, per_page: 100 }),
+      { buckets: [] },
+    );
+    return mapPoolCollect(listed.buckets ?? [], DETAIL_CONCURRENCY, async (bucket) => {
+      const name = bucket.name;
+      if (!name) return null;
+
+      const [customRaw, corsRaw] = await Promise.all([
+        settled(
+          () => ctx.client.r2.buckets.domains.custom.list(name, ctx.account),
+          null,
+        ),
+        settled(() => r2Cors(ctx.client, name, ctx.account), null),
+      ]);
+      const custom = customRaw ? parseR2CustomDomains(customRaw) : null;
+      const cors = corsRaw ? parseR2Cors(corsRaw) : null;
+      const domains = custom ? r2Domains(custom) : [];
+      const corsRules = cors ? formatCors(cors) : [];
+
+      return {
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "r2", name),
+          group: run.namespace,
+          name,
+          url: "",
+          service: "R2",
+          asset: iconForKind("R2"),
+          fields: {
+            ...(domains.length > 0 ? { Domains: domains } : {}),
+            "S3 API URL": `https://${ctx.accountId}.r2.cloudflarestorage.com/${name}`,
+            ...(corsRules.length > 0 ? { CORS: corsRules } : {}),
+          },
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: [
+          ...refExposures([name], name),
+          ...hostExposures(
+            domains,
+            cors ? { allowedOrigins: r2CorsOrigins(cors) } : {},
+          ),
+        ],
+        references: [],
+      } satisfies LinkEntry;
+    });
+  },
+};
+
+export const vectorizeScanner: Scanner<CloudflareCtx> = {
+  key: "vectorize",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing Vectorize indexes" });
+    const indexes = await collect(ctx.client.vectorize.indexes.list(ctx.account));
+    const entries: LinkEntry[] = [];
+    for (const index of indexes) {
+      if (!index.name) continue;
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "vectorize", index.name),
+          group: run.namespace,
+          name: index.name,
+          url: "",
+          service: "Vectorize",
+          asset: iconForKind("Vectorize"),
+          fields: {},
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: refExposures([index.name], index.name),
+        references: [],
+      });
+    }
+    return entries;
+  },
+};
+
+export const queueScanner: Scanner<CloudflareCtx> = {
+  key: "queue",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    run.step({ message: "Listing queues" });
+    const queues = await collect(ctx.client.queues.list(ctx.account));
+    const entries: LinkEntry[] = [];
+    for (const queue of queues) {
+      const name = queue.queue_name;
+      const queueId = queue.queue_id ?? name;
+      if (!name || !queueId) continue;
+      const consumers: string[] = [];
+      for (const consumer of queue.consumers ?? []) {
+        if ("script_name" in consumer && consumer.script_name) {
+          consumers.push(consumer.script_name);
+        }
+      }
+      entries.push({
+        resource: {
+          id: idFor(run.namespace, ctx.accountId, "queue", queueId),
+          group: run.namespace,
+          name,
+          url: "",
+          service: "Queue",
+          asset: iconForKind("Queue"),
+          fields: consumers.length > 0 ? { Consumers: consumers } : {},
+          alerts: [],
+          tags: { namespace: run.namespace },
+        },
+        exposes: refExposures([name, queueId], name),
+        // Messages flow from the queue to its consumer workers.
+        references: refReferences(consumers, "binding"),
+      });
+    }
+    return entries;
+  },
+};
+
+async function listAccountIds(client: Cloudflare) {
+  const accountIds: string[] = [];
+  const seen = new Set<string>();
+  for (let page = 1; ; page += 1) {
+    const result = await client.accounts.list({ page });
+    let added = 0;
+    for (const account of result.result) {
+      if (!account.id || seen.has(account.id)) continue;
+      seen.add(account.id);
+      accountIds.push(account.id);
+      added += 1;
+    }
+    if (added === 0) break;
+  }
+  if (accountIds.length === 0) {
+    throw new Error("Cloudflare token has no accessible accounts");
+  }
+  return accountIds;
+}
+
+export function cloudflare(options: {
+  namespace: string;
+  apiToken: string;
+  policy?: typeof WORKER_DEFAULT_POLICY;
+}) {
+  const client = new Cloudflare({ apiToken: options.apiToken });
+  return defineProvider<CloudflareCtx>({
+    id: "cloudflare",
+    namespace: options.namespace,
+    scanners: [
+      workerScanner,
+      dnsScanner,
+      durableObjectScanner,
+      workflowScanner,
+      kvScanner,
+      d1Scanner,
+      r2Scanner,
+      vectorizeScanner,
+      queueScanner,
+    ],
+    async accounts(step) {
+      step({ message: "Listing accounts" });
+      const accountIds = await listAccountIds(client);
+      return accountIds.map((accountId) => {
+        let zones: Promise<Array<{ id: string; name: string }>> | null = null;
+        return {
+          account: accountId,
+          ctx: {
+            client,
+            accountId,
+            account: { account_id: accountId },
+            policy: options.policy ?? WORKER_DEFAULT_POLICY,
+            zones() {
+              zones ??= collect(
+                client.zones.list({ account: { id: accountId } }),
+              ).then((rows) => rows.map((zone) => ({ id: zone.id, name: zone.name })));
+              return zones;
+            },
+          },
+        };
+      });
+    },
   });
 }
-
-async function scrapeVectorize(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing Vectorize indexes" });
-  const vectorize = await collect(
-    ctx.client.vectorize.indexes.list(ctx.account),
-  );
-  return vectorize.map((index) => ({
-    accountId: ctx.accountId,
-    index,
-  }));
-}
-
-async function scrapeQueues(ctx: CloudflareAccount) {
-  ctx.fn({ message: "Listing queues" });
-  const queues = await collect(ctx.client.queues.list(ctx.account));
-  return queues.map((queue) => ({
-    accountId: ctx.accountId,
-    queue,
-  }));
-}
-
-export const workerScanner = {
-  type: "Worker",
-  scrape: scrapeWorkers,
-  policy: WORKER_DEFAULT_POLICY,
-  transform(item, namespace, policy = WORKER_DEFAULT_POLICY) {
-    const envFields = workerEnvFields(item.envs);
-    return {
-      id: idFor(namespace, item.accountId, "worker", item.name),
-      group: namespace,
-      name: item.name,
-      url: `https://dash.cloudflare.com/${item.accountId}/workers/services/view/${encodeURIComponent(item.name)}/production/observability/events`,
-      service: "Worker",
-      asset: iconForKind("Worker"),
-      fields: {
-        ...(item.domains.length > 0 ? { Domains: item.domains } : {}),
-        ...(Object.keys(envFields).length > 0
-          ? { Environment: { fields: envFields } }
-          : {}),
-      },
-      alerts: sensitiveVarAlerts(item.envs, policy),
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const domains = item.domains;
-    return {
-      claims: [
-        ...envToClaims(workerEnvValues(item.envs)),
-        ...bindingRefClaims(item.bindings, item.name),
-      ],
-      require: (claim) => {
-        for (const domain of domains) {
-          if (!urlBaseMatchClaim(domain, claim)) continue;
-          return { type: "connected", label: domain };
-        }
-        return false;
-      },
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeWorkers>>[number],
-  [CloudflareAccount],
-  typeof WORKER_DEFAULT_POLICY
->;
-
-export const durableObjectScanner = {
-  type: "Durable Object",
-  scrape: scrapeDurableObjects,
-  transform(item, namespace) {
-    const doId = item.namespaceDo.id;
-    if (!doId) return null;
-    const name = item.namespaceDo.name ?? item.namespaceDo.class ?? doId;
-    return {
-      id: idFor(namespace, item.accountId, "do", doId),
-      group: namespace,
-      name,
-      url: `https://dash.cloudflare.com/${item.accountId}/workers/durable-objects/view/${encodeURIComponent(doId)}`,
-      service: "Durable Object",
-      asset: iconForKind("Durable Object"),
-      fields: {},
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const namespaceDo = item.namespaceDo;
-    const name = namespaceDo.name ?? namespaceDo.class ?? namespaceDo.id ?? "";
-    const script = namespaceDo.script;
-    const className = namespaceDo.class;
-    const classRef = script && className ? `${script}:${className}` : null;
-    return {
-      claims: [],
-      require: (claim) =>
-        requireRef(
-          [
-            { value: namespaceDo.id, label: name },
-            { value: namespaceDo.name, label: name },
-            { value: namespaceDo.class, label: name },
-            { value: classRef, label: name },
-          ],
-          claim,
-        ),
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeDurableObjects>>[number],
-  [CloudflareAccount]
->;
-
-export const workflowScanner = {
-  type: "Workflow",
-  scrape: scrapeWorkflows,
-  transform(item, namespace) {
-    const name = item.workflow.name;
-    const workflowId = item.workflow.id;
-    if (!name || !workflowId) return null;
-    const nodes =
-      item.graph?.graph?.workflow?.nodes ??
-      item.graph?.graph?.nodes ??
-      item.graph?.workflow?.nodes ??
-      item.graph?.nodes ??
-      null;
-    const fields: ResourceFields = {};
-    if (nodes && nodes.length > 0) {
-      fields.Steps = workflowNodesToGraph(nodes);
-    }
-    return {
-      id: idFor(namespace, item.accountId, "workflow", workflowId),
-      group: namespace,
-      name,
-      url: "",
-      service: "Workflow",
-      asset: iconForKind("Workflow"),
-      fields,
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const name = item.workflow.name ?? "";
-    return {
-      claims: [],
-      require: (claim) =>
-        requireRef(
-          [
-            { value: item.workflow.name, label: name },
-            { value: item.workflow.id, label: name },
-            { value: item.workflow.script_name, label: name },
-          ],
-          claim,
-        ),
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeWorkflows>>[number],
-  [CloudflareAccount]
->;
-
-export const kvScanner = {
-  type: "KV",
-  scrape: scrapeKv,
-  transform(item, namespace) {
-    const kvId = item.kv.id;
-    const title = item.kv.title ?? kvId;
-    if (!kvId || !title) return null;
-    return {
-      id: idFor(namespace, item.accountId, "kv", kvId),
-      group: namespace,
-      name: title,
-      url: "",
-      service: "KV",
-      asset: iconForKind("KV"),
-      fields: {},
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const kvId = item.kv.id;
-    const title = item.kv.title ?? kvId ?? "";
-    return {
-      claims: [],
-      require: (claim) =>
-        requireRef(
-          [
-            { value: kvId, label: title },
-            { value: title, label: title },
-          ],
-          claim,
-        ),
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeKv>>[number],
-  [CloudflareAccount]
->;
-
-export const d1Scanner = {
-  type: "D1",
-  scrape: scrapeD1,
-  transform(item, namespace) {
-    const uuid = item.db.uuid;
-    const name = item.db.name;
-    if (!uuid || !name) return null;
-    return {
-      id: idFor(namespace, item.accountId, "d1", uuid),
-      group: namespace,
-      name,
-      url: "",
-      service: "D1",
-      asset: iconForKind("D1"),
-      fields: {},
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const name = item.db.name ?? "";
-    return {
-      claims: [],
-      require: (claim) =>
-        requireRef(
-          [
-            { value: item.db.uuid, label: name },
-            { value: name, label: name },
-          ],
-          claim,
-        ),
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeD1>>[number],
-  [CloudflareAccount]
->;
-
-export const r2Scanner = {
-  type: "R2",
-  scrape: scrapeR2,
-  transform(item, namespace) {
-    const name = item.bucket.name;
-    if (!name) return null;
-    const domains = item.custom ? r2Domains(item.custom) : [];
-    const cors = item.cors ? formatCors(item.cors) : [];
-    const s3ApiUrl = `https://${item.accountId}.r2.cloudflarestorage.com/${name}`;
-    return {
-      id: idFor(namespace, item.accountId, "r2", name),
-      group: namespace,
-      name,
-      url: "",
-      service: "R2",
-      asset: iconForKind("R2"),
-      fields: {
-        ...(domains.length > 0 ? { Domains: domains } : {}),
-        "S3 API URL": s3ApiUrl,
-        ...(cors.length > 0 ? { CORS: cors } : {}),
-      },
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const domains = item.custom ? r2Domains(item.custom) : [];
-    const cors = item.cors;
-    const name = item.bucket.name ?? "";
-    return {
-      claims: [],
-      require: (claim) => {
-        const refMatch = requireRef([{ value: name, label: name }], claim);
-        if (refMatch) return refMatch;
-        for (const domain of domains) {
-          if (!urlBaseMatchClaim(domain, claim)) continue;
-          if (!r2CorsAllowsClaim(cors, claim)) {
-            return {
-              type: "connected",
-              label: domain,
-              errorMessage: `CORS does not allow ${claim.value}`,
-            };
-          }
-          return { type: "connected", label: domain };
-        }
-        return false;
-      },
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeR2>>[number],
-  [CloudflareAccount]
->;
-
-export const vectorizeScanner = {
-  type: "Vectorize",
-  scrape: scrapeVectorize,
-  transform(item, namespace) {
-    const name = item.index.name;
-    if (!name) return null;
-    return {
-      id: idFor(namespace, item.accountId, "vectorize", name),
-      group: namespace,
-      name,
-      url: "",
-      service: "Vectorize",
-      asset: iconForKind("Vectorize"),
-      fields: {},
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const name = item.index.name ?? "";
-    return {
-      claims: [],
-      require: (claim) => requireRef([{ value: name, label: name }], claim),
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeVectorize>>[number],
-  [CloudflareAccount]
->;
-
-export const queueScanner = {
-  type: "Queue",
-  scrape: scrapeQueues,
-  transform(item, namespace) {
-    const name = item.queue.queue_name;
-    const queueId = item.queue.queue_id ?? name;
-    if (!name || !queueId) return null;
-    return {
-      id: idFor(namespace, item.accountId, "queue", queueId),
-      group: namespace,
-      name,
-      url: "",
-      service: "Queue",
-      asset: iconForKind("Queue"),
-      fields: {},
-      alerts: [],
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const name = item.queue.queue_name ?? "";
-    const queueId = item.queue.queue_id ?? name;
-    return {
-      claims: [],
-      require: (claim) =>
-        requireRef(
-          [
-            { value: name, label: name },
-            { value: queueId, label: name },
-          ],
-          claim,
-        ),
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeQueues>>[number],
-  [CloudflareAccount]
->;
-
-export const cloudflareScanners = [
-  bindScanner(workerScanner),
-  bindScanner(durableObjectScanner),
-  bindScanner(workflowScanner),
-  bindScanner(kvScanner),
-  bindScanner(d1Scanner),
-  bindScanner(r2Scanner),
-  bindScanner(vectorizeScanner),
-  bindScanner(queueScanner),
-];

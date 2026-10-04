@@ -2,20 +2,19 @@ import { ClientSecretCredential } from "@azure/identity";
 import { Client, PageIterator } from "@microsoft/microsoft-graph-client";
 import { TokenCredentialAuthenticationProvider } from "@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js";
 
-import { envToClaims } from "../core/claims.js";
-import { resourceId } from "../core/resource-id.js";
-import { redactSensitiveValue } from "../core/utils.js";
-import { type ScrapeStepFn } from "../core/scrape-async.js";
-import { bindScanner } from "../core/bind-scanner.js";
+import { envReferences } from "../core/claims.js";
 import {
-  table,
-  type ProviderResourceScanner,
-  type ResourceAlert,
-} from "../types.js";
+  DEFAULT_TTL_MS,
+  defineProvider,
+  type Scanner,
+} from "../core/provider.js";
+import { resourceId } from "../core/resource-id.js";
+import { type ScrapeStepFn } from "../core/scrape-async.js";
+import type { LinkEntry } from "../core/schemas.js";
+import { table, type ResourceAlert } from "../types.js";
 import { iconForKind } from "./icons.js";
 import { type AzureApplication, parseApplicationsPage } from "./schemas.js";
 
-const noopStep: ScrapeStepFn = () => {};
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
 export const DEFAULT_POLICY = {
@@ -122,7 +121,8 @@ function secretTable(credentials: AzureApplication["passwordCredentials"]) {
   for (const { name, credential } of secrets) {
     rows.push({
       Name: name,
-      Value: redactSensitiveValue(credential.hint ?? ""),
+      // Azure only ever returns a 3-character prefix hint, never the secret.
+      Value: credential.hint ? `${credential.hint}******` : "******",
       "Expires On": credential.endDateTime ?? "",
     });
   }
@@ -133,18 +133,20 @@ function secretTable(credentials: AzureApplication["passwordCredentials"]) {
   });
 }
 
-async function scrapeEntra(
-  tenantId: string,
-  clientId: string,
-  clientSecret: string,
-  fn: ScrapeStepFn = noopStep,
-) {
+async function scrapeEntra(ctx: AzureCtx, fn: ScrapeStepFn) {
   const credential = new ClientSecretCredential(
-    tenantId,
-    clientId,
-    clientSecret,
+    ctx.tenantId,
+    ctx.clientId,
+    ctx.clientSecret,
+    {
+      authorityHost: ctx.authorityHost,
+      // Instance discovery only recognises Microsoft clouds, so custom authorities must skip it.
+      disableInstanceDiscovery: ctx.authorityHost !== undefined,
+    },
   );
   const client = Client.initWithMiddleware({
+    baseUrl: ctx.graphBaseUrl,
+    customHosts: new Set([new URL(ctx.graphBaseUrl).hostname]),
     authProvider: new TokenCredentialAuthenticationProvider(credential, {
       scopes: ["https://graph.microsoft.com/.default"],
     }),
@@ -170,63 +172,93 @@ async function scrapeEntra(
   );
   await iterator.iterate();
 
-  return applications.map((application) => ({ application, tenantId }));
+  return applications;
 }
 
-export const entraScanner = {
-  type: "Entra",
-  policy: DEFAULT_POLICY,
-  scrape: scrapeEntra,
-  transform(item, namespace, policy = DEFAULT_POLICY) {
-    const objectId = item.application.id;
-    const applicationId = item.application.appId;
-    if (!objectId || !applicationId) return null;
-    const name = item.application.displayName ?? applicationId;
-    const uris = redirectUris(item.application);
-    const secrets = secretTable(item.application.passwordCredentials);
-    return {
-      id: resourceId("azure", namespace, "entra", objectId),
-      group: namespace,
-      name,
-      url: `https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/appId/${applicationId}`,
-      service: "Entra",
-      asset: iconForKind("Entra"),
-      fields: {
-        "Application (client) ID": applicationId,
-        "Directory (tenant) ID": item.tenantId,
-        ...(uris.length > 0 ? { "Redirect URIs": uris } : {}),
-        ...(secrets ? { Secrets: secrets } : {}),
-      },
-      alerts: secretAlerts(item.application.passwordCredentials, policy),
-      tags: { namespace },
-    };
-  },
-  connection(item) {
-    const uris = redirectUris(item.application);
-    const objectId = item.application.id;
-    const applicationId = item.application.appId;
-    const name =
-      item.application.displayName ?? applicationId ?? objectId ?? "";
-    return {
-      claims: envToClaims(uris),
-      require: (claim) => {
-        if (claim.type !== "ref") return false;
-        const value = claim.value.trim().toLowerCase();
-        if (!value) return false;
-        if (objectId && objectId.trim().toLowerCase() === value) {
-          return { type: "connected", label: name };
-        }
-        if (applicationId && applicationId.trim().toLowerCase() === value) {
-          return { type: "connected", label: name };
-        }
-        return false;
-      },
-    };
-  },
-} satisfies ProviderResourceScanner<
-  Awaited<ReturnType<typeof scrapeEntra>>[number],
-  [string, string, string, ScrapeStepFn],
-  typeof DEFAULT_POLICY
->;
+const GRAPH_BASE_URL = "https://graph.microsoft.com";
 
-export const azureScanners = [bindScanner(entraScanner)];
+type AzureCtx = {
+  tenantId: string;
+  clientId: string;
+  clientSecret: string;
+  authorityHost?: string;
+  graphBaseUrl: string;
+  policy: typeof DEFAULT_POLICY;
+};
+
+export const entraScanner: Scanner<AzureCtx> = {
+  key: "entra",
+  version: 1,
+  ttlMs: DEFAULT_TTL_MS,
+  async scan(ctx, run) {
+    const applications = await scrapeEntra(ctx, run.step);
+    const entries: LinkEntry[] = [];
+    for (const application of applications) {
+      const objectId = application.id;
+      const applicationId = application.appId;
+      if (!objectId || !applicationId) continue;
+      const name = application.displayName ?? applicationId;
+      const uris = redirectUris(application);
+      const secrets = secretTable(application.passwordCredentials);
+      entries.push({
+        resource: {
+          id: resourceId("azure", run.namespace, "entra", objectId),
+          group: run.namespace,
+          name,
+          url: `https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Overview/appId/${applicationId}`,
+          service: "Entra",
+          asset: iconForKind("Entra"),
+          fields: {
+            "Application (client) ID": applicationId,
+            "Directory (tenant) ID": ctx.tenantId,
+            ...(uris.length > 0 ? { "Redirect URIs": uris } : {}),
+            ...(secrets ? { Secrets: secrets } : {}),
+          },
+          alerts: secretAlerts(application.passwordCredentials, ctx.policy),
+          tags: { namespace: run.namespace },
+        },
+        exposes: [
+          { type: "ref", value: objectId, label: name },
+          { type: "ref", value: applicationId, label: name },
+        ],
+        // Redirect URIs point at the apps that sign in through this registration.
+        references: envReferences(
+          uris.map((uri) => ({ value: uri, secret: true })),
+          "auth",
+        ),
+      });
+    }
+    return entries;
+  },
+};
+
+export function azure(options: {
+  namespace: string;
+  tenantId: string;
+  clientId: string;
+  clientSecret: string;
+  authorityHost?: string;
+  graphBaseUrl?: string;
+  policy?: typeof DEFAULT_POLICY;
+}) {
+  return defineProvider<AzureCtx>({
+    id: "azure",
+    namespace: options.namespace,
+    scanners: [entraScanner],
+    async accounts() {
+      return [
+        {
+          account: options.tenantId,
+          ctx: {
+            tenantId: options.tenantId,
+            clientId: options.clientId,
+            clientSecret: options.clientSecret,
+            authorityHost: options.authorityHost,
+            graphBaseUrl: options.graphBaseUrl ?? GRAPH_BASE_URL,
+            policy: options.policy ?? DEFAULT_POLICY,
+          },
+        },
+      ];
+    },
+  });
+}
