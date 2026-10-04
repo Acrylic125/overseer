@@ -45,3 +45,4 @@ ui/next-env.d.ts
 coverage/
 
 .tmp
+.local-test-env/

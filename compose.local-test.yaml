@@ -1,0 +1,30 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: dev/local-test/Dockerfile
+    image: overseer-local-test:${LOCAL_TEST_INSTANCE:?Use the local-test-env instance helper}
+    init: true
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3000"
+      INFRASTRUCTURE_DB_PATH: /data/infrastructure.json
+    ports:
+      - target: 3000
+        host_ip: 127.0.0.1
+        protocol: tcp
+        app_protocol: http
+    volumes:
+      - infrastructure-data:/data
+      - next-cache:/workspace/ui/.next
+    healthcheck:
+      test: ["CMD", "node", "/workspace/dev/local-test/healthcheck.mjs"]
+      interval: 5s
+      timeout: 30s
+      start_period: 60s
+      retries: 12
+
+volumes:
+  infrastructure-data: {}
+  next-cache: {}
