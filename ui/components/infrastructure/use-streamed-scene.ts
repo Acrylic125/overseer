@@ -2,6 +2,8 @@
 
 import { useFrame, useThree } from "@react-three/fiber";
 import { useMemo, useRef, useState } from "react";
+import * as THREE from "three";
+import { cameraGroundPoint } from "@/lib/data-center-camera";
 
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
@@ -26,6 +28,7 @@ type UseStreamedSceneArgs = {
   connectorPaths: ConnectorPath[] | null;
   selectedServiceId: string | null;
   internetHubService: InfrastructureService | null;
+  focusOnGround?: boolean;
 };
 
 export function useStreamedScene({
@@ -36,18 +39,26 @@ export function useStreamedScene({
   connectorPaths,
   selectedServiceId,
   internetHubService,
+  focusOnGround = false,
 }: UseStreamedSceneArgs) {
   const { camera } = useThree();
+  const groundPoint = useMemo(() => new THREE.Vector3(), []);
+  const currentFocus = () => {
+    const point = focusOnGround
+      ? cameraGroundPoint(camera, groundPoint)
+      : camera.position;
+    return quantizeFocus(point.x, point.z);
+  };
   const spatialIndex = useMemo(
     () => buildServiceSpatialIndex(renderServices),
     [renderServices],
   );
-  const initialFocus = quantizeFocus(camera.position.x, camera.position.z);
+  const initialFocus = currentFocus();
   const [focus, setFocus] = useState<StreamFocus>(initialFocus);
   const lastFocusRef = useRef<StreamFocus>(initialFocus);
 
   useFrame(() => {
-    const next = quantizeFocus(camera.position.x, camera.position.z);
+    const next = currentFocus();
     if (
       next.focusX === lastFocusRef.current.focusX &&
       next.focusZ === lastFocusRef.current.focusZ

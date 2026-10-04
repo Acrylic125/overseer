@@ -61,6 +61,8 @@ export type Resource<
   service: string;
   fields: ResourceFields;
   asset: AssetsByProvider;
+  /** Optional footprint in grid blocks; defaults to the icon's dimensions. */
+  size?: [number, number];
   alerts: ResourceAlert[];
   tags: Tags<TTag>;
 };

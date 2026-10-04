@@ -131,3 +131,32 @@ test("sparse long-distance connectors finish without scanning empty grid cells",
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
 });
+
+test("graph layouts retain rectangular footprints without overlapping equal-asset resources", () => {
+  const glb = Buffer.alloc(24, " ");
+  glb.writeUInt32LE(0x46546c67, 0);
+  glb.writeUInt32LE(2, 4);
+  glb.writeUInt32LE(24, 8);
+  glb.writeUInt32LE(4, 12);
+  glb.writeUInt32LE(0x4e4f534a, 16);
+  glb.write("{}", 20);
+  const resources = [
+    { ...entry("cf:warehouse").resource, size: [3, 2] },
+    { ...entry("cf:rack").resource, size: [1, 3] },
+    { ...entry("cf:default").resource },
+  ];
+  const first = layout({ resources, edges: [], glb });
+  const positions = new Map(first.layout.flatMap(item => item.type === "resource" ? [[item.ref, item.pos]] : []));
+  for (let i = 0; i < resources.length; i++) for (let j = i + 1; j < resources.length; j++) {
+    const a = positions.get(resources[i].id);
+    const b = positions.get(resources[j].id);
+    const as = resources[i].size ?? [1, 1];
+    const bs = resources[j].size ?? [1, 1];
+    assert.ok(a[0] + as[0] <= b[0] || b[0] + bs[0] <= a[0] || a[1] + as[1] <= b[1] || b[1] + bs[1] <= a[1]);
+  }
+  const changed = resources.map(r => r.id === "cf:rack" ? { ...r, size: [4, 2] } : r);
+  const second = layout({ resources: changed, edges: [], glb, previous: first });
+  const resized = second.layout.find(item => item.type === "resource" && item.ref === "cf:rack");
+  assert.notDeepEqual(resized.pos, positions.get("cf:rack"));
+  assert.deepEqual(second.resources.find(r => r.id === "cf:rack").size, [4, 2]);
+});

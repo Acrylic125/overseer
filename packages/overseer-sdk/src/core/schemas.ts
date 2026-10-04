@@ -54,6 +54,7 @@ export const resourceSchema: z.ZodType<Resource> = z.object({
   service: z.string(),
   fields: z.record(z.string(), fieldNodeSchema),
   asset: z.string(),
+  size: z.tuple([z.number().positive(), z.number().positive()]).optional(),
   alerts: z.array(resourceAlertSchema),
   tags: z.object({
     namespace: z.string().optional(),

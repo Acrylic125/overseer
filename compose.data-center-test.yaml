@@ -1,0 +1,30 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: test-env/Dockerfile
+    image: overseer-local-test:${LOCAL_TEST_INSTANCE:?Use test-env/manage.sh prepare first}
+    init: true
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      OVERSEER_GRAPH_PATH: /data/graph.json
+    ports:
+      - target: 3000
+        host_ip: 127.0.0.1
+        protocol: tcp
+        app_protocol: http
+    volumes:
+      - infrastructure-data:/data
+      - next-cache:/workspace/ui/.next
+    healthcheck:
+      test: [CMD, node, /workspace/test-env/healthcheck.mjs]
+      interval: 5s
+      timeout: 20s
+      start_period: 60s
+      retries: 18
+    stop_grace_period: 15s
+
+volumes:
+  infrastructure-data: {}
+  next-cache: {}

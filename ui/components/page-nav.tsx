@@ -52,7 +52,7 @@ export function PageNav({
         )}
       </div>
 
-      <div className="pointer-events-auto justify-self-end">
+      <div className="pointer-events-auto">
         <Button
           type="button"
           variant="secondary"

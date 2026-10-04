@@ -272,6 +272,12 @@ function sizeForAsset(
   return sizes.get(asset) ?? sizes.get("all-unknown") ?? fallback;
 }
 
+function sizeForResource(resource: Resource, sizes: Map<string, MeshSize>, fallback: MeshSize): MeshSize {
+  return resource.size
+    ? { width: resource.size[0], height: resource.size[1] }
+    : sizeForAsset(resource.asset, sizes, fallback);
+}
+
 type ClusterItem = { x: number; y: number };
 
 type ClusterLayout = {
@@ -527,10 +533,10 @@ function packDomainCluster(
     for (const resource of ordered) {
       const old = oldResources.get(resource.id);
       const pos = positions.get(resource.id);
-      if (pos && old?.group === name && old.asset === resource.asset) {
+      if (pos && old?.group === name && old.asset === resource.asset && JSON.stringify(old.size) === JSON.stringify(resource.size)) {
         items.push({ x: pos[0] - oldGroup.from[0] - PAD_LEFT, y: pos[1] - oldGroup.from[1] - PAD_TOP });
       } else {
-        const size = sizeForAsset(resource.asset, sizes, fallback);
+        const size = sizeForResource(resource, sizes, fallback);
         items.push({ x: 0, y: nextY });
         width = Math.max(width, size.width);
         height = nextY + size.height;
@@ -543,16 +549,18 @@ function packDomainCluster(
   }
   const byAsset = new Map<string, Resource[]>();
   for (const resource of resources) {
-    const list = byAsset.get(resource.asset) ?? [];
+    const footprint = sizeForResource(resource, sizes, fallback);
+    const key = `${resource.asset}:${footprint.width}:${footprint.height}`;
+    const list = byAsset.get(key) ?? [];
     list.push(resource);
-    byAsset.set(resource.asset, list);
+    byAsset.set(key, list);
   }
 
   const assetBlocks = [...byAsset.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([asset, members]) => {
+    .map(([, members]) => {
       const sorted = [...members].sort((a, b) => a.name.localeCompare(b.name));
-      const footprint = sizeForAsset(asset, sizes, fallback);
+      const footprint = sizeForResource(sorted[0]!, sizes, fallback);
       const packed = packCluster(
         sorted.length,
         footprint.width,
@@ -805,7 +813,7 @@ function emitNestedPack(
       pos,
     });
 
-    const footprint = sizeForAsset(resource.asset, sizes, fallback);
+    const footprint = sizeForResource(resource, sizes, fallback);
     boxes.push(
       iconAabb(
         resource.id,
@@ -920,6 +928,21 @@ export function layout({
     );
   }
 
+  // Retain an explicit Internet hub and its routes outside the service platforms.
+  const needsInternet = resources.some(resource => resource.id === INTERNET_RESOURCE_ID)
+    || connections.some(connection => connection.nodes.includes(INTERNET_RESOURCE_ID));
+  const internetResource: Resource | null = needsInternet ? resources.find(resource => resource.id === INTERNET_RESOURCE_ID) ?? {
+    id: INTERNET_RESOURCE_ID, name: "Public Internet", group: "internet", service: "Internet",
+    url: "", asset: "all-unknown", fields: {}, alerts: [], tags: {},
+  } : null;
+  if (internetResource) {
+    const x = boxes.reduce((right, box) => Math.max(right, box.maxX), 0) + pack.groupGap;
+    const y = boxes.length ? (Math.min(...boxes.map(box => box.minY)) + Math.max(...boxes.map(box => box.maxY))) / 2 - 1 : 0;
+    boxes.push(iconAabb(INTERNET_RESOURCE_ID, x, y, 4, 2));
+    layoutItems.push({ type: "group", group: "__public_internet__", from: roundPos([x, y, 0]), to: roundPos([x + 4, y + 2, 0]) });
+    layoutItems.push({ type: "resource", ref: INTERNET_RESOURCE_ID, pos: roundPos([x, y, ICON_Z]) });
+  }
+
   const adjacent = new Map<string, Set<string>>();
   for (const { nodes: [from, to] } of connections) {
     for (const [a, b] of [[from, to], [to, from]] as const) {
@@ -935,13 +958,6 @@ export function layout({
 
   for (const path of paths) {
     if (path.sourceId === path.targetId) continue;
-    if (
-      path.sourceId === INTERNET_RESOURCE_ID ||
-      path.targetId === INTERNET_RESOURCE_ID
-    ) {
-      continue;
-    }
-
     layoutItems.push({
       type: "connector",
       nodes: [path.sourceId, path.targetId],
@@ -955,14 +971,11 @@ export function layout({
   const visibleConnections = connections.filter((connection) => {
     const [from, to] = connection.nodes;
     if (from === to) return false;
-    if (from === INTERNET_RESOURCE_ID || to === INTERNET_RESOURCE_ID) {
-      return false;
-    }
     return true;
   });
 
   return {
-    resources: packable,
+    resources: internetResource ? [...packable, internetResource] : packable,
     connections: visibleConnections,
     layout: layoutItems,
   };

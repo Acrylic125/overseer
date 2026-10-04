@@ -1,0 +1,322 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-04T00:00:00.000Z",
+  "warnings": [
+    "Synthetic Data Center fixture"
+  ],
+  "scopes": [
+    {
+      "scope": "local:data-center",
+      "scrapedAt": "2026-10-04T00:00:00.000Z"
+    }
+  ],
+  "resources": [
+    {
+      "id": "local:api",
+      "name": "API workers",
+      "group": "Compute",
+      "service": "Worker",
+      "asset": "cf-worker",
+      "size": [
+        2,
+        1.5
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "2 \u00d7 1.5 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Compute",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:web",
+      "name": "Web frontend",
+      "group": "Compute",
+      "service": "Project",
+      "asset": "vercel",
+      "size": [
+        1.5,
+        1.5
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "1.5 \u00d7 1.5 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Compute",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:storage",
+      "name": "Media warehouse",
+      "group": "Data",
+      "service": "R2",
+      "asset": "cf-r2",
+      "size": [
+        3,
+        2
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "3 \u00d7 2 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Data",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:database",
+      "name": "Orders database",
+      "group": "Data",
+      "service": "D1",
+      "asset": "cf-d1",
+      "size": [
+        2,
+        2
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "2 \u00d7 2 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Data",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:cache",
+      "name": "Session cache",
+      "group": "Data",
+      "service": "KV",
+      "asset": "cf-worker-kv",
+      "size": [
+        1,
+        1
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "1 \u00d7 1 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Data",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:queue",
+      "name": "Job queue",
+      "group": "Events",
+      "service": "Queue",
+      "asset": "aws-sqs",
+      "size": [
+        2,
+        1.5
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "2 \u00d7 1.5 blocks"
+          }
+        }
+      },
+      "alerts": [
+        {
+          "type": "warning",
+          "message": "Synthetic queue backlog for testing alert search."
+        }
+      ],
+      "tags": {
+        "provider": "local",
+        "namespace": "Events",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:events",
+      "name": "Event bus",
+      "group": "Events",
+      "service": "EventBridge",
+      "asset": "aws-eventbridge",
+      "size": [
+        1.5,
+        1.5
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "1.5 \u00d7 1.5 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Events",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "local:workflow",
+      "name": "Batch workers",
+      "group": "Events",
+      "service": "Workflow",
+      "asset": "cf-workflow",
+      "size": [
+        1,
+        3
+      ],
+      "url": "",
+      "fields": {
+        "Local test": {
+          "fields": {
+            "Environment": "Synthetic local fixture",
+            "Purpose": "Data Center visualization",
+            "Footprint": "1 \u00d7 3 blocks"
+          }
+        }
+      },
+      "alerts": [],
+      "tags": {
+        "provider": "local",
+        "namespace": "Events",
+        "account": "fixture"
+      }
+    },
+    {
+      "id": "internet:public",
+      "name": "Public Internet",
+      "group": "internet",
+      "service": "Internet",
+      "asset": "all-unknown",
+      "url": "",
+      "fields": {},
+      "alerts": [],
+      "tags": {}
+    }
+  ],
+  "changes": {
+    "local:api": "modified",
+    "local:storage": "added"
+  },
+  "removed": [],
+  "edges": [
+    {
+      "from": "local:web",
+      "to": "local:api",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "local:api",
+      "to": "local:database",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "local:api",
+      "to": "local:storage",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "local:database",
+      "to": "local:queue",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": [
+        {
+          "type": "warning",
+          "message": "Synthetic queue backlog"
+        }
+      ]
+    },
+    {
+      "from": "local:queue",
+      "to": "local:events",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "local:workflow",
+      "to": "local:queue",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "local:events",
+      "to": "local:api",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "local:cache",
+      "to": "local:database",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    },
+    {
+      "from": "internet:public",
+      "to": "local:web",
+      "kind": "binding",
+      "label": "Local fixture connection",
+      "alerts": []
+    }
+  ]
+}

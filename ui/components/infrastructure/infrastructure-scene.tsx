@@ -6,6 +6,19 @@ import * as THREE from "three";
 
 import { GroupOverview } from "@/components/infrastructure/group-overview";
 import { TraceFlow } from "@/components/infrastructure/trace-flow";
+import {
+  DataCenterBuildings,
+  DataCenterLots,
+} from "@/components/infrastructure/data-center-buildings";
+import { DataCenterControls } from "@/components/infrastructure/data-center-controls";
+import { DataCenterGround } from "@/components/infrastructure/data-center-geometry";
+import { DataCenterTransport } from "@/components/infrastructure/data-center-transport";
+import {
+  DATA_CENTER,
+  dataCenterPickHeight,
+  type VisualizationStyle,
+} from "@/lib/data-center";
+import { buildAllConnectorPaths } from "@/lib/graph/connector-paths";
 import { CameraBridge } from "@/components/infrastructure/camera-bridge";
 import {
   CameraModeSync,
@@ -41,6 +54,10 @@ import { composeFocusIds } from "@/lib/search-ql";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 type SceneProps = {
+  visualizationStyle: VisualizationStyle;
+  animatePackets: boolean;
+  overviewCenter: [number, number, number];
+  overviewSize: [number, number];
   services: InfrastructureService[];
   platforms: PackLayoutResult["platforms"];
   publicInternet: PackLayoutResult["publicInternet"];
@@ -101,6 +118,10 @@ export function internetPickTarget(
 }
 
 export function InfrastructureScene({
+  visualizationStyle,
+  animatePackets,
+  overviewCenter,
+  overviewSize,
   services,
   platforms,
   publicInternet,
@@ -120,7 +141,9 @@ export function InfrastructureScene({
   showChanges,
 }: SceneProps) {
   const { camera, gl } = useThree();
+  const dataCenter = visualizationStyle === "data-center";
   useLayoutEffect(() => {
+    if (dataCenter && viewMode === "top") return;
     const topView = Math.abs(camera.quaternion.dot(TOP_DOWN_QUATERNION)) > 0.99;
     camera.position.set(
       cameraFrame.position[0],
@@ -128,9 +151,13 @@ export function InfrastructureScene({
       cameraFrame.position[2],
     );
     camera.updateMatrixWorld();
-  }, [camera, cameraFrame]);
+  }, [camera, cameraFrame, dataCenter, viewMode]);
   const [overview, setOverview] = useState(false);
-  const background = useMemo(() => cssToThreeColor(SCENE.background), []);
+  const background = useMemo(
+    () =>
+      cssToThreeColor(dataCenter ? DATA_CENTER.background : SCENE.background),
+    [dataCenter],
+  );
   const renderServices = useMemo(
     () => services.filter((service) => !isInternetService(service)),
     [services],
@@ -146,6 +173,7 @@ export function InfrastructureScene({
     showPublicInternet,
     streamedConnectorPaths,
   } = useStreamedScene({
+    focusOnGround: dataCenter && viewMode === "top",
     services,
     renderServices,
     platforms,
@@ -154,6 +182,10 @@ export function InfrastructureScene({
     selectedServiceId,
     internetHubService,
   });
+  const transportPaths = useMemo(
+    () => streamedConnectorPaths ?? (dataCenter ? buildAllConnectorPaths(connectorServices) : []),
+    [streamedConnectorPaths, dataCenter, connectorServices],
+  );
   const tracedIds = useMemo(() => {
     if (!selectedServiceId) return null;
     return tracedServiceIds(services, selectedServiceId);
@@ -190,17 +222,16 @@ export function InfrastructureScene({
         camera,
         gl.domElement,
         pickPool,
+        dataCenter ? dataCenterPickHeight : undefined,
       );
       if (hitId) {
-        onSelectedServiceIdChange(
-          selectedServiceId === hitId ? null : hitId,
-        );
+        onSelectedServiceIdChange(selectedServiceId === hitId ? null : hitId);
         return true;
       }
 
       // Connector clicks are handled by ConnectorInteraction — don't deselect.
       const pickable = pickableConnectorPaths(
-        streamedConnectorPaths,
+        dataCenter ? transportPaths : streamedConnectorPaths,
         selectedServiceId,
       );
       if (pickable.length > 0) {
@@ -231,15 +262,23 @@ export function InfrastructureScene({
       pickPool,
       selectedServiceId,
       streamedConnectorPaths,
+      transportPaths,
       viewMode,
+      dataCenter,
     ],
   );
 
   useFrame(() => {
-    const nextOverview = viewMode === "top" && camera.position.y > (overview ? 55 : 65) && relevantIds == null;
+    const nextOverview = !dataCenter && viewMode === "top" && camera.position.y > (overview ? 55 : 65) && relevantIds == null;
     if (nextOverview !== overview) setOverview(nextOverview);
     if (!fogRef.current) return;
     const y = Math.max(1, camera.position.y);
+    if (dataCenter) {
+      // A portrait overview sits farther away; keep its buildings crisp.
+      fogRef.current.near = Math.max(60, y * 2.2);
+      fogRef.current.far = fogRef.current.near + RENDER_HALF * 2;
+      return;
+    }
     fogRef.current.near = Math.hypot(RENDER_HALF * 0.35, y) * 0.9;
     fogRef.current.far = Math.hypot(RENDER_HALF * 1.35, y) * 1.1;
   });
@@ -249,20 +288,40 @@ export function InfrastructureScene({
       <color attach="background" args={[background]} />
       <fog ref={fogRef} attach="fog" args={[background, 28, 90]} />
 
-      <WorldGrid />
+      {dataCenter ? (
+        <>
+          <DataCenterGround />
+          <DataCenterLots platforms={visiblePlatforms} services={renderServices} />
+          <DataCenterBuildings
+            services={visibleRenderServices}
+            relevantIds={relevantIds}
+            onSelect={onSelectedServiceIdChange}
+          />
+          <DataCenterTransport
+            paths={transportPaths}
+            relevantIds={relevantIds}
+            activeConnectorId={connectorFocus?.pathId ?? null}
+            animate={animatePackets}
+          />
+        </>
+      ) : (
+        <>
+          <WorldGrid />
 
-      {visiblePlatforms.map((platform) => (
-        <FrostedPlatform
-          key={platform.group ?? platform.id}
-          group={platform.group ?? ""}
-          centerX={platform.centerX}
-          centerZ={platform.centerZ}
-          width={platform.width}
-          depth={platform.depth}
-        />
-      ))}
+          {visiblePlatforms.map((platform) => (
+            <FrostedPlatform
+              key={platform.group ?? platform.id}
+              group={platform.group ?? ""}
+              centerX={platform.centerX}
+              centerZ={platform.centerZ}
+              width={platform.width}
+              depth={platform.depth}
+            />
+          ))}
+        </>
+      )}
 
-      {showPublicInternet ? (
+      {showPublicInternet && !dataCenter ? (
         <PublicInternetCloud
           centerX={publicInternet.centerX}
           centerZ={publicInternet.centerZ}
@@ -273,25 +332,38 @@ export function InfrastructureScene({
         />
       ) : null}
 
-      {overview ? <GroupOverview services={services} platforms={visiblePlatforms} /> : null}
-      <group visible={!overview}>
-      <InstancedServiceBlocks
-        services={visibleRenderServices}
-        relevantIds={relevantIds}
-      />
+      {showPublicInternet && dataCenter ? (
+        <DataCenterBuildings
+          services={[internetHubService]}
+          relevantIds={relevantIds}
+          onSelect={onSelectedServiceIdChange}
+        />
+      ) : null}
 
-      <ServiceConnectors
-        services={connectorServices}
-        selectedServiceId={selectedServiceId}
-        tracedIds={tracedIds}
-        activeConnectorId={connectorFocus?.pathId ?? null}
-        precomputedPaths={streamedConnectorPaths}
-      />
-      {tracedIds && !overview ? <TraceFlow paths={streamedConnectorPaths ?? []} services={services} tracedIds={tracedIds} /> : null}
-      </group>
+      {!dataCenter && (
+        <>
+          {overview ? <GroupOverview services={services} platforms={visiblePlatforms} /> : null}
+          <group visible={!overview}>
+          <InstancedServiceBlocks
+            services={visibleRenderServices}
+            relevantIds={relevantIds}
+          />
+
+          <ServiceConnectors
+            services={connectorServices}
+            selectedServiceId={selectedServiceId}
+            tracedIds={tracedIds}
+            activeConnectorId={connectorFocus?.pathId ?? null}
+            precomputedPaths={streamedConnectorPaths}
+          />
+          {tracedIds && !overview ? <TraceFlow paths={streamedConnectorPaths ?? []} services={services} tracedIds={tracedIds} /> : null}
+          </group>
+        </>
+      )}
 
       <ConnectorInteraction
-        paths={streamedConnectorPaths}
+        heightForService={dataCenter ? dataCenterPickHeight : undefined}
+        paths={dataCenter ? transportPaths : streamedConnectorPaths}
         pickPool={pickPool}
         viewMode={viewMode}
         selectedServiceId={selectedServiceId}
@@ -305,12 +377,19 @@ export function InfrastructureScene({
 
       <CameraModeSync
         viewMode={viewMode}
+        visualizationStyle={visualizationStyle}
+        overviewCenter={overviewCenter}
+        overviewSize={overviewSize}
         services={services}
         onSettled={setSettledMode}
       />
 
       {controlsActive && viewMode === "top" ? (
-        <TopViewControls onPick={handlePick} />
+        dataCenter ? (
+          <DataCenterControls onPick={handlePick} focusCenter={overviewCenter} />
+        ) : (
+          <TopViewControls onPick={handlePick} />
+        )
       ) : null}
       {controlsActive && viewMode === "explore" ? (
         <FlyControls

@@ -1,7 +1,7 @@
 "use client";
 
 import { useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 
 import type { ViewMode } from "@/components/infrastructure/infrastructure-camera-sync";
 import type { ConnectorFocus } from "@/components/infrastructure/connector-callout";
@@ -38,6 +38,7 @@ function focusFromHit(
 }
 
 type ConnectorInteractionProps = {
+  heightForService?: (service: InfrastructureService) => number;
   paths: ConnectorPath[] | null;
   pickPool: InfrastructureService[];
   viewMode: ViewMode;
@@ -49,6 +50,7 @@ type ConnectorInteractionProps = {
 };
 
 export function ConnectorInteraction({
+  heightForService,
   paths,
   pickPool,
   viewMode,
@@ -68,14 +70,25 @@ export function ConnectorInteraction({
   const onPinnedRef = useRef(onPinnedFocusChange);
   const onHoverRef = useRef(onHoverFocusChange);
 
-  pinnedRef.current = pinnedFocus;
-  hoverRef.current = hoverFocus;
-  pathsRef.current = paths;
-  pickPoolRef.current = pickPool;
-  viewModeRef.current = viewMode;
-  selectedServiceIdRef.current = selectedServiceId;
-  onPinnedRef.current = onPinnedFocusChange;
-  onHoverRef.current = onHoverFocusChange;
+  useLayoutEffect(() => {
+    pinnedRef.current = pinnedFocus;
+    hoverRef.current = hoverFocus;
+    pathsRef.current = paths;
+    pickPoolRef.current = pickPool;
+    viewModeRef.current = viewMode;
+    selectedServiceIdRef.current = selectedServiceId;
+    onPinnedRef.current = onPinnedFocusChange;
+    onHoverRef.current = onHoverFocusChange;
+  }, [
+    pinnedFocus,
+    hoverFocus,
+    paths,
+    pickPool,
+    viewMode,
+    selectedServiceId,
+    onPinnedFocusChange,
+    onHoverFocusChange,
+  ]);
 
   useFrame(() => {
     if (viewModeRef.current !== "explore") return;
@@ -88,7 +101,14 @@ export function ConnectorInteraction({
     );
 
     if (
-      pickServiceAt(center.x, center.y, camera, el, pickPoolRef.current) != null
+      pickServiceAt(
+        center.x,
+        center.y,
+        camera,
+        el,
+        pickPoolRef.current,
+        heightForService,
+      ) != null
     ) {
       if (hoverRef.current) onHoverRef.current(null);
       return;
@@ -102,9 +122,7 @@ export function ConnectorInteraction({
       return;
     }
 
-    onHoverRef.current(
-      focusFromHit(hit, center.x, center.y, pickable, false),
-    );
+    onHoverRef.current(focusFromHit(hit, center.x, center.y, pickable, false));
   });
 
   useEffect(() => {
@@ -113,7 +131,14 @@ export function ConnectorInteraction({
     const el = gl.domElement;
 
     const isOverService = (clientX: number, clientY: number) =>
-      pickServiceAt(clientX, clientY, camera, el, pickPoolRef.current) != null;
+      pickServiceAt(
+        clientX,
+        clientY,
+        camera,
+        el,
+        pickPoolRef.current,
+        heightForService,
+      ) != null;
 
     const hitAt = (clientX: number, clientY: number) => {
       if (isOverService(clientX, clientY)) return null;
@@ -182,7 +207,7 @@ export function ConnectorInteraction({
       el.removeEventListener("pointerdown", onPointerDown);
       el.style.cursor = "";
     };
-  }, [camera, gl, viewMode]);
+  }, [camera, gl, viewMode, heightForService]);
 
   useEffect(() => {
     if (viewMode !== "explore") return;
@@ -225,9 +250,7 @@ export function ConnectorInteraction({
       const hit = hitAtCenter();
       if (hit) {
         onHoverRef.current(null);
-        onPinnedRef.current(
-          focusFromHit(hit, center.x, center.y, list, true),
-        );
+        onPinnedRef.current(focusFromHit(hit, center.x, center.y, list, true));
         return;
       }
       if (pinnedRef.current) onPinnedRef.current(null);

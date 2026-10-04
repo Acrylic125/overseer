@@ -4,6 +4,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import * as THREE from "three";
 
+import type { VisualizationStyle } from "@/lib/data-center";
+import { dataCenterCameraPosition } from "@/lib/data-center-camera";
 import { pickServiceAt } from "@/lib/graph/pick-service";
 import { serviceWorldCenter } from "@/lib/graph/pack-layout";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
@@ -46,8 +48,7 @@ function closestServiceToScreenPoint(
     const [x, y, z] = serviceWorldCenter(service);
     _ndc.set(x, y, z).project(camera);
     if (_ndc.z < -1 || _ndc.z > 1) continue;
-    const dist =
-      (_ndc.x - targetNdcX) ** 2 + (_ndc.y - targetNdcY) ** 2;
+    const dist = (_ndc.x - targetNdcX) ** 2 + (_ndc.y - targetNdcY) ** 2;
     if (dist < bestDist) {
       bestDist = dist;
       best = service;
@@ -116,14 +117,26 @@ type ViewTransition = {
 /** Blends camera between top-down and first-person explore modes. */
 export function CameraModeSync({
   viewMode,
+  visualizationStyle = "default",
+  overviewCenter = [0, 0, 0],
+  overviewSize = [20, 20],
   services,
   onSettled,
 }: {
   viewMode: ViewMode;
+  visualizationStyle?: VisualizationStyle;
+  overviewCenter?: [number, number, number];
+  overviewSize?: [number, number];
   services: InfrastructureService[];
   onSettled: (mode: ViewMode | null) => void;
 }) {
-  const { camera, gl } = useThree();
+  const { camera, gl, size } = useThree();
+  const previousStyle = useRef<VisualizationStyle>("default");
+  const previousFrame = useRef("");
+  const lastOverview = useRef<{
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+  } | null>(null);
   const prevMode = useRef<ViewMode | null>(null);
   const viewModeRef = useRef(viewMode);
   const transition = useRef<ViewTransition | null>(null);
@@ -150,6 +163,34 @@ export function CameraModeSync({
   }, [gl]);
 
   useLayoutEffect(() => {
+    const frameKey = [...overviewCenter, ...overviewSize, size.width, size.height].join(":");
+    const frameChanged = previousFrame.current !== frameKey;
+    previousFrame.current = frameKey;
+    if (previousStyle.current !== visualizationStyle || (visualizationStyle === "data-center" && frameChanged)) {
+      previousStyle.current = visualizationStyle;
+      lastOverview.current = null;
+      if (viewMode === "top") {
+        transition.current = null;
+        if (visualizationStyle === "data-center") {
+          camera.position.set(...dataCenterCameraPosition(
+            overviewCenter,
+            overviewSize[0],
+            overviewSize[1],
+            size.width / size.height,
+            (camera as THREE.PerspectiveCamera).fov,
+          ));
+          camera.lookAt(...overviewCenter);
+        } else {
+          camera.position.set(
+            overviewCenter[0],
+            lastTopY.current || DEFAULT_TOP_HEIGHT,
+            overviewCenter[2],
+          );
+          camera.quaternion.copy(TOP_DOWN_QUAT);
+        }
+        onSettledRef.current(viewMode);
+      }
+    }
     if (prevMode.current === null) {
       prevMode.current = viewMode;
       if (viewMode === "top") lastTopY.current = camera.position.y;
@@ -174,9 +215,23 @@ export function CameraModeSync({
     let toQ: THREE.Quaternion;
 
     if (viewMode === "top") {
-      toPos = new THREE.Vector3(x, lastTopY.current || DEFAULT_TOP_HEIGHT, z);
-      toQ = TOP_DOWN_QUAT.clone();
+      if (visualizationStyle === "data-center" && lastOverview.current) {
+        toPos = lastOverview.current.position.clone();
+        toQ = lastOverview.current.quaternion.clone();
+      } else if (visualizationStyle === "data-center") {
+        toPos = new THREE.Vector3(x + 12, 15, z + 12);
+        _lookRig.position.copy(toPos);
+        _lookRig.lookAt(x, 0, z);
+        toQ = _lookRig.quaternion.clone();
+      } else {
+        toPos = new THREE.Vector3(x, lastTopY.current || DEFAULT_TOP_HEIGHT, z);
+        toQ = TOP_DOWN_QUAT.clone();
+      }
     } else {
+      lastOverview.current = {
+        position: camera.position.clone(),
+        quaternion: camera.quaternion.clone(),
+      };
       toPos = new THREE.Vector3(x, EXPLORE_EYE_HEIGHT, z);
       const pointer = lastPointer.current;
       toQ = exploreQuatTowardTarget(
@@ -198,12 +253,15 @@ export function CameraModeSync({
       startMs: performance.now(),
       durationMs: TRANSITION_MS,
     };
-  }, [viewMode, camera, gl, services]);
+  }, [viewMode, visualizationStyle, overviewCenter, overviewSize, size, camera, gl, services]);
 
   useFrame(() => {
     const t = transition.current;
     if (t) {
-      const uLinear = Math.min(1, (performance.now() - t.startMs) / t.durationMs);
+      const uLinear = Math.min(
+        1,
+        (performance.now() - t.startMs) / t.durationMs,
+      );
       const u = easeOutCubic(uLinear);
       _lerpPos.lerpVectors(t.fromPos, t.toPos, u);
       camera.position.copy(_lerpPos);
@@ -219,7 +277,7 @@ export function CameraModeSync({
       return;
     }
 
-    if (viewModeRef.current === "top") {
+    if (viewModeRef.current === "top" && visualizationStyle === "default") {
       lastTopY.current = camera.position.y;
     }
   });
