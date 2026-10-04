@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import * as THREE from "three";
 
@@ -38,6 +39,8 @@ import { cssToThreeColor } from "@/lib/css-color";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
 import type { CameraFrame } from "@/lib/layout-from-db";
+import { DATA_CENTER } from "@/lib/data-center";
+import { useVisualizationStyle } from "@/lib/visualization-preference";
 import { SCENE } from "@/lib/infrastructure-styles";
 import { INTERNET_ID } from "@/lib/internet";
 import { isTypingTarget } from "@/lib/is-typing-target";
@@ -50,6 +53,15 @@ import { useTRPC } from "@/lib/trpc/client";
 import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type { ViewMode };
+
+function subscribeReducedMotion(callback: () => void) {
+  const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+  media.addEventListener("change", callback);
+  return () => media.removeEventListener("change", callback);
+}
+function reducedMotionSnapshot() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 type InfrastructureCanvasProps = {
   services: InfrastructureService[];
@@ -72,6 +84,21 @@ export function InfrastructureCanvas({
     () => resolveCameraFrame(bounds, cameraFrame),
     [bounds, cameraFrame],
   );
+  const [visualizationStyle, setVisualizationStyle] = useVisualizationStyle();
+  const [packetsPaused, setPacketsPaused] = useState(false);
+  const reducedMotion = useSyncExternalStore(
+    subscribeReducedMotion,
+    reducedMotionSnapshot,
+    () => true,
+  );
+  const overviewCenter = useMemo<[number, number, number]>(
+    () => [bounds.centerX, 0, bounds.centerZ],
+    [bounds],
+  );
+  const overviewSize = useMemo<[number, number]>(
+    () => [bounds.width, bounds.depth],
+    [bounds],
+  );
   const background = useMemo(() => cssToThreeColor(SCENE.background), []);
   const largeScene = services.length >= 80;
   const maxDpr = largeScene ? 1 : 1.5;
@@ -89,10 +116,7 @@ export function InfrastructureCanvas({
       staleTime: 30_000,
     }),
   );
-  const alertCounts = useMemo(
-    () => countsFromAlerts(alerts ?? []),
-    [alerts],
-  );
+  const alertCounts = useMemo(() => countsFromAlerts(alerts ?? []), [alerts]);
   const searchCatalog = useMemo(
     () => buildSearchCatalog(services, alertCounts),
     [services, alertCounts],
@@ -152,7 +176,8 @@ export function InfrastructureCanvas({
 
   const setViewModeFromUi = useCallback((next: ViewMode) => {
     if (next === "explore") {
-      void canvasRef.current?.requestPointerLock();
+      // Embedded previews can decline pointer lock; keep Explore usable unlocked.
+      void canvasRef.current?.requestPointerLock()?.catch(() => {});
     } else {
       setLookLocked(false);
     }
@@ -180,6 +205,11 @@ export function InfrastructureCanvas({
         return;
       }
       if (isTypingTarget(event.target)) return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest("button, a, [role='tab'], [role='combobox']")
+      )
+        return;
       event.preventDefault();
       setViewModeFromUi(viewModeRef.current === "top" ? "explore" : "top");
     };
@@ -193,7 +223,9 @@ export function InfrastructureCanvas({
 
   const helpText =
     viewMode === "top"
-      ? "WASD move · drag to pan · scroll to zoom · Tab to explore"
+      ? visualizationStyle === "data-center"
+        ? "Drag to orbit · right-drag to pan · scroll to zoom · Tab to explore"
+        : "WASD move · drag to pan · scroll to zoom · Tab to explore"
       : lookLocked
         ? "WASD move · look with mouse · Esc unlock · Tab for top view"
         : "WASD move · click to look · Tab for top view";
@@ -201,55 +233,64 @@ export function InfrastructureCanvas({
   return (
     <div
       className="absolute inset-0 touch-none"
-      style={{ background: SCENE.background }}
+      style={{
+        background:
+          visualizationStyle === "data-center"
+            ? DATA_CENTER.background
+            : SCENE.background,
+      }}
     >
       <div className="absolute inset-0">
         <Canvas
           className="block h-full w-full"
           dpr={[1, maxDpr]}
-        performance={{ min: 0.5 }}
-        camera={{
-          position: frame.position,
-          fov: 42,
-          near: 0.1,
-          far: frame.far,
-        }}
-        gl={{
-          antialias: !largeScene,
-          powerPreference: "high-performance",
-          toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: 1.12,
-          outputColorSpace: THREE.SRGBColorSpace,
-        }}
-        onCreated={({ camera, gl }) => {
-          canvasRef.current = gl.domElement;
-          setCanvasElement(gl.domElement);
-          camera.up.set(0, 1, 0);
-          camera.position.set(...frame.position);
-          camera.quaternion.copy(TOP_DOWN_QUATERNION);
-          gl.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
-          gl.setClearColor(background, 1);
-        }}
-      >
-        <Suspense fallback={null}>
-          <InfrastructureScene
-            services={services}
-            platforms={platforms}
-            publicInternet={publicInternet}
-            connectorPaths={connectorPaths}
-            viewMode={viewMode}
-            selectedServiceId={selectedServiceId}
-            searchMatchIds={searchMatchIds}
-            onSelectedServiceIdChange={handleSelectedServiceIdChange}
-            onLookLockChange={setLookLocked}
-            connectorFocus={connectorFocus}
-            pinnedConnector={pinnedConnector}
-            hoverConnector={hoverConnector}
-            onPinnedConnectorChange={setPinnedConnector}
-            onHoverConnectorChange={setHoverConnector}
-            onCameraReady={handleCameraReady}
-          />
-        </Suspense>
+          performance={{ min: 0.5 }}
+          camera={{
+            position: frame.position,
+            fov: 42,
+            near: 0.1,
+            far: frame.far,
+          }}
+          gl={{
+            antialias: !largeScene,
+            powerPreference: "high-performance",
+            toneMapping: THREE.ACESFilmicToneMapping,
+            toneMappingExposure: 1.12,
+            outputColorSpace: THREE.SRGBColorSpace,
+          }}
+          onCreated={({ camera, gl }) => {
+            canvasRef.current = gl.domElement;
+            setCanvasElement(gl.domElement);
+            camera.up.set(0, 1, 0);
+            camera.position.set(...frame.position);
+            camera.quaternion.copy(TOP_DOWN_QUATERNION);
+            gl.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
+            gl.setClearColor(background, 1);
+          }}
+        >
+          <Suspense fallback={null}>
+            <InfrastructureScene
+              visualizationStyle={visualizationStyle}
+              animatePackets={!packetsPaused && !reducedMotion}
+              overviewCenter={overviewCenter}
+              overviewSize={overviewSize}
+              services={services}
+              platforms={platforms}
+              publicInternet={publicInternet}
+              connectorPaths={connectorPaths}
+              viewMode={viewMode}
+              selectedServiceId={selectedServiceId}
+              searchMatchIds={searchMatchIds}
+              onSelectedServiceIdChange={handleSelectedServiceIdChange}
+              onLookLockChange={setLookLocked}
+              connectorFocus={connectorFocus}
+              pinnedConnector={pinnedConnector}
+              hoverConnector={hoverConnector}
+              onPinnedConnectorChange={setPinnedConnector}
+              onHoverConnectorChange={setHoverConnector}
+              onCameraReady={handleCameraReady}
+            />
+          </Suspense>
         </Canvas>
 
         {sceneCamera && canvasElement && connectorFocus ? (
@@ -268,30 +309,84 @@ export function InfrastructureCanvas({
         onSearchChange={setSearchQuery}
         searchCatalog={searchCatalog}
         left={
-          <Tabs
-            value={viewMode}
-            onValueChange={(value) => {
-              if (value === "top" || value === "explore") {
-                setViewModeFromUi(value);
-              }
-            }}
-          >
-            <TabsList className={overlayTabsListClass}>
-              <TabsTrigger value="top" className={overlayTabTriggerClass}>
-                Top View
-              </TabsTrigger>
-              <TabsTrigger value="explore" className={overlayTabTriggerClass}>
-                Explore
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs
+              value={visualizationStyle}
+              onValueChange={(value) => {
+                if (value === "default" || value === "data-center")
+                  setVisualizationStyle(value);
+              }}
+            >
+              <TabsList
+                className={`${overlayTabsListClass} h-10 sm:h-8 ring-1 ring-white/20`}
+                aria-label="Visualization style"
+              >
+                <TabsTrigger value="default" className={overlayTabTriggerClass}>
+                  Default
+                </TabsTrigger>
+                <TabsTrigger value="data-center" className={overlayTabTriggerClass}>
+                  Data Center
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <Tabs
+              value={viewMode}
+              onValueChange={(value) => {
+                if (value === "top" || value === "explore") {
+                  setViewModeFromUi(value);
+                }
+              }}
+            >
+              <TabsList className={overlayTabsListClass}>
+                <TabsTrigger value="top" className={overlayTabTriggerClass}>
+                  Top View
+                </TabsTrigger>
+                <TabsTrigger value="explore" className={overlayTabTriggerClass}>
+                  Explore
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
         }
       />
 
+      <div
+        className="pointer-events-auto absolute bottom-16 left-4 z-20 flex flex-wrap items-center gap-2 sm:bottom-4"
+        aria-label="Visualization settings"
+      >
+        {visualizationStyle === "data-center" && (
+          <button
+            type="button"
+            className="h-11 rounded-md bg-black/55 px-3 text-xs text-white backdrop-blur-sm hover:bg-black/70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 sm:h-8"
+            onClick={() => setPacketsPaused((paused) => !paused)}
+            aria-pressed={packetsPaused || reducedMotion}
+            disabled={reducedMotion}
+            title={
+              reducedMotion
+                ? "Packet movement is off because reduced motion is enabled"
+                : undefined
+            }
+          >
+            {reducedMotion
+              ? "Motion reduced"
+              : packetsPaused
+                ? "Resume packets"
+                : "Pause packets"}
+          </button>
+        )}
+      </div>
+
       <LookCrosshair visible={viewMode === "explore" && lookLocked} />
 
-      <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md bg-black/50 px-3 py-1.5 font-mono text-[11px] text-white/75 backdrop-blur-sm">
-        {helpText}
+      <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 text-center sm:bottom-14 rounded-md bg-black/50 px-3 py-1.5 font-mono text-[11px] text-white/75 backdrop-blur-sm">
+        <span className="hidden sm:inline">{helpText}</span>
+        <span className="sm:hidden">
+          {viewMode === "top"
+            ? visualizationStyle === "data-center"
+              ? "Drag to orbit · pinch to zoom"
+              : "Drag to pan · pinch to zoom"
+            : "WASD move · click to look"}
+        </span>
       </div>
 
       <ServiceDetailSheet

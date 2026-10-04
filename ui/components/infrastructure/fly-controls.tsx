@@ -92,7 +92,7 @@ export function FlyControls({
       setLocked(true);
       euler.current.setFromQuaternion(camera.quaternion);
     } else if (autoLock) {
-      void el.requestPointerLock();
+      void el.requestPointerLock()?.catch(() => {});
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -185,7 +185,7 @@ export function FlyControls({
       // Soft click while unlocked: pick under cursor, else enter look mode.
       const hit = pickAt(event.clientX, event.clientY);
       if (!hit) {
-        void el.requestPointerLock();
+        void el.requestPointerLock()?.catch(() => {});
       }
     };
 
@@ -219,7 +219,7 @@ export function FlyControls({
 
       // Drag without modifier → enter pointer-lock look for smooth control.
       if (drag.current.moved && !look.current.locked) {
-        void el.requestPointerLock();
+        void el.requestPointerLock()?.catch(() => {});
       }
     };
 

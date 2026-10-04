@@ -10,6 +10,7 @@ const HIT_PAD = 0.2;
 const _ndc = new THREE.Vector2();
 const _hit = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
+const _box = new THREE.Box3();
 /** Ground plane (XZ), y = 0 — matches block bases. */
 const _ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
@@ -24,6 +25,7 @@ export function pickServiceAt(
   camera: THREE.Camera,
   domElement: HTMLElement,
   services: InfrastructureService[],
+  heightForService?: (service: InfrastructureService) => number,
 ): string | null {
   const rect = domElement.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
@@ -33,6 +35,26 @@ export function pickServiceAt(
     -((clientY - rect.top) / rect.height) * 2 + 1,
   );
   _raycaster.setFromCamera(_ndc, camera);
+
+  // Raised Data Center buildings need volume picking from an angled camera.
+  if (heightForService) {
+    let nearest: string | null = null;
+    let distance = Infinity;
+    for (const service of services) {
+      const [cx, , cz] = serviceWorldCenter(service);
+      const halfW = (service.width * CELL_SIZE) / 2 + HIT_PAD;
+      const halfD = (service.depth * CELL_SIZE) / 2 + HIT_PAD;
+      _box.min.set(cx - halfW, 0, cz - halfD);
+      _box.max.set(cx + halfW, heightForService(service), cz + halfD);
+      if (!_raycaster.ray.intersectBox(_box, _hit)) continue;
+      const nextDistance = _hit.distanceToSquared(_raycaster.ray.origin);
+      if (nextDistance < distance) {
+        nearest = service.id;
+        distance = nextDistance;
+      }
+    }
+    return nearest;
+  }
 
   if (!_raycaster.ray.intersectPlane(_ground, _hit)) return null;
 

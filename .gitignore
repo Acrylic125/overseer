@@ -45,3 +45,5 @@ ui/next-env.d.ts
 coverage/
 
 .tmp
+# Private local Docker test instances and resolved configuration
+.local-test-env/

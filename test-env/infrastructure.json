@@ -1,0 +1,522 @@
+{
+  "resources": [
+    {
+      "id": "local:api",
+      "group": "Compute",
+      "name": "API workers",
+      "sourceType": "local-test",
+      "service": "cf-worker",
+      "pos": [
+        -8,
+        -4.5,
+        0
+      ],
+      "size": [
+        2,
+        1.5
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "2 \u00d7 1.5 blocks"
+        }
+      }
+    },
+    {
+      "id": "local:web",
+      "group": "Compute",
+      "name": "Web frontend",
+      "sourceType": "local-test",
+      "service": "vercel",
+      "pos": [
+        -4,
+        -4.5,
+        0
+      ],
+      "size": [
+        1.5,
+        1.5
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "1.5 \u00d7 1.5 blocks"
+        }
+      }
+    },
+    {
+      "id": "local:storage",
+      "group": "Data",
+      "name": "Media warehouse",
+      "sourceType": "local-test",
+      "service": "cf-r2",
+      "pos": [
+        -8,
+        2,
+        0
+      ],
+      "size": [
+        3,
+        2
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "3 \u00d7 2 blocks"
+        }
+      }
+    },
+    {
+      "id": "local:database",
+      "group": "Data",
+      "name": "Orders database",
+      "sourceType": "local-test",
+      "service": "cf-d1",
+      "pos": [
+        -3.5,
+        2,
+        0
+      ],
+      "size": [
+        2,
+        2
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "2 \u00d7 2 blocks"
+        }
+      }
+    },
+    {
+      "id": "local:cache",
+      "group": "Data",
+      "name": "Session cache",
+      "sourceType": "local-test",
+      "service": "cf-worker-kv",
+      "pos": [
+        -3.5,
+        4.5,
+        0
+      ],
+      "size": [
+        1,
+        1
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "1 \u00d7 1 blocks"
+        }
+      }
+    },
+    {
+      "id": "local:queue",
+      "group": "Events",
+      "name": "Job queue",
+      "sourceType": "local-test",
+      "service": "aws-sqs",
+      "pos": [
+        3,
+        -3.5,
+        0
+      ],
+      "size": [
+        2,
+        1.5
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "2 \u00d7 1.5 blocks"
+        }
+      },
+      "alerts": [
+        {
+          "type": "warning",
+          "message": "Synthetic queue backlog for testing alert search."
+        }
+      ]
+    },
+    {
+      "id": "local:events",
+      "group": "Events",
+      "name": "Event bus",
+      "sourceType": "local-test",
+      "service": "aws-eventbridge",
+      "pos": [
+        3,
+        2,
+        0
+      ],
+      "size": [
+        1.5,
+        1.5
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "1.5 \u00d7 1.5 blocks"
+        }
+      }
+    },
+    {
+      "id": "local:workflow",
+      "group": "Events",
+      "name": "Batch workers",
+      "sourceType": "local-test",
+      "service": "cf-workflow",
+      "pos": [
+        6,
+        -3.5,
+        0
+      ],
+      "size": [
+        1,
+        3
+      ],
+      "fields": {
+        "Local test": {
+          "Environment": "Synthetic local fixture",
+          "Purpose": "Data Center visualization",
+          "Footprint": "1 \u00d7 3 blocks"
+        }
+      }
+    }
+  ],
+  "groups": [
+    {
+      "group": "Compute",
+      "pos": [
+        -9,
+        -6,
+        0
+      ],
+      "size": [
+        8,
+        4.5
+      ]
+    },
+    {
+      "group": "Data",
+      "pos": [
+        -9,
+        0,
+        0
+      ],
+      "size": [
+        8,
+        6
+      ]
+    },
+    {
+      "group": "Events",
+      "pos": [
+        2,
+        -6,
+        0
+      ],
+      "size": [
+        6,
+        12
+      ]
+    }
+  ],
+  "static": {
+    "publicInternet": {
+      "id": "internet",
+      "pos": [
+        10,
+        -2,
+        0
+      ],
+      "size": [
+        3,
+        3
+      ]
+    }
+  },
+  "connectors": [
+    {
+      "nodes": [
+        "local:web",
+        "local:api"
+      ],
+      "path": [
+        [
+          -3.25,
+          -3.75,
+          0
+        ],
+        [
+          -7.0,
+          -3.75,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "local:api",
+        "local:database"
+      ],
+      "path": [
+        [
+          -7.0,
+          -3.75,
+          0
+        ],
+        [
+          -7,
+          -1,
+          0
+        ],
+        [
+          -2.5,
+          -1,
+          0
+        ],
+        [
+          -2.5,
+          3.0,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "local:api",
+        "local:storage"
+      ],
+      "path": [
+        [
+          -7.0,
+          -3.75,
+          0
+        ],
+        [
+          -7,
+          -1,
+          0
+        ],
+        [
+          -6.5,
+          -1,
+          0
+        ],
+        [
+          -6.5,
+          3.0,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "local:database",
+        "local:queue"
+      ],
+      "path": [
+        [
+          -2.5,
+          3.0,
+          0
+        ],
+        [
+          -0.5,
+          3,
+          0
+        ],
+        [
+          -0.5,
+          -2.75,
+          0
+        ],
+        [
+          4.0,
+          -2.75,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ],
+      "variant": "warning"
+    },
+    {
+      "nodes": [
+        "local:queue",
+        "local:events"
+      ],
+      "path": [
+        [
+          4.0,
+          -2.75,
+          0
+        ],
+        [
+          4,
+          -0.5,
+          0
+        ],
+        [
+          3.75,
+          -0.5,
+          0
+        ],
+        [
+          3.75,
+          2.75,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "local:workflow",
+        "local:queue"
+      ],
+      "path": [
+        [
+          6.5,
+          -2.0,
+          0
+        ],
+        [
+          6.5,
+          -2.75,
+          0
+        ],
+        [
+          4.0,
+          -2.75,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "local:events",
+        "local:api"
+      ],
+      "path": [
+        [
+          3.75,
+          2.75,
+          0
+        ],
+        [
+          3.75,
+          -7,
+          0
+        ],
+        [
+          -7,
+          -7,
+          0
+        ],
+        [
+          -7.0,
+          -3.75,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "local:cache",
+        "local:database"
+      ],
+      "path": [
+        [
+          -3.0,
+          5.0,
+          0
+        ],
+        [
+          -3,
+          3,
+          0
+        ],
+        [
+          -2.5,
+          3.0,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    },
+    {
+      "nodes": [
+        "internet",
+        "local:web"
+      ],
+      "path": [
+        [
+          11.5,
+          -0.5,
+          0
+        ],
+        [
+          9,
+          -0.5,
+          0
+        ],
+        [
+          9,
+          -7,
+          0
+        ],
+        [
+          -3.25,
+          -7,
+          0
+        ],
+        [
+          -3.25,
+          -3.75,
+          0
+        ]
+      ],
+      "labels": [
+        null,
+        "Local fixture connection"
+      ]
+    }
+  ]
+}
