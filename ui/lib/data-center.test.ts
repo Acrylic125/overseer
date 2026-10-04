@@ -27,6 +27,11 @@ describe("Data Center service silhouettes", () => {
       ["aws-eventbridge", "watchtower"],
       ["cf-worker", "rack"],
       ["cloud", "gateway"],
+      ["cf-dns", "gateway"],
+      ["aws-route53", "gateway"],
+      ["azure-entra", "gate"],
+      ["azure-ad", "gate"],
+      ["auth0", "gate"],
     ]) {
       assert.equal(buildingKind(service(type!)), expected);
     }
@@ -35,6 +40,15 @@ describe("Data Center service silhouettes", () => {
       "warehouse",
     );
   });
+  it("distinguishes application gates from queues with shared legacy metadata", () => {
+    const integration = { category: "integration", species: "queue" } as const;
+    assert.equal(buildingKind({ ...integration, type: "custom-app" }), "gate");
+    assert.equal(buildingKind({ ...integration, type: "cf-dns" }), "gateway");
+    assert.equal(buildingKind({ ...integration, type: "azure-entra" }), "gate");
+    assert.equal(buildingKind({ ...integration, type: "aws-sqs" }), "gantry");
+    assert.equal(buildingKind({ ...integration, type: "aws-eventbridge" }), "watchtower");
+  });
+
 });
 
 it("fits fences around variable service footprints and nested group members", () => {

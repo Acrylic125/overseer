@@ -4,20 +4,23 @@ import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type VisualizationStyle = "default" | "data-center";
 export type BuildingKind =
-  "warehouse" | "rack" | "database" | "gantry" | "watchtower" | "gateway";
+  "warehouse" | "rack" | "database" | "gantry" | "watchtower" | "gateway" | "gate";
 
 export const DATA_CENTER = {
   background: "#ffffff",
-  surface: "#fff0d6",
-  recessed: "#ffdfad",
+  surface: "#fffdf8",
+  recessed: "#f5eee2",
   ink: "#70442e",
-  compute: "#ff852b",
-  storage: "#ff852b",
-  database: "#ff852b",
-  integration: "#ff852b",
-  blue: "#9abaff",
-  paleBlue: "#edf3ff",
-  amber: "#ffba47",
+  compute: "#ff791f",
+  storage: "#ff791f",
+  database: "#ff791f",
+  integration: "#ff791f",
+  fitting: "#ff9a38",
+  panel: "#faf5ec",
+  platform: "#fdfbf7",
+  platformEdge: "#cdbb9f",
+  platformSide: "#f2ece2",
+  amber: "#ffa62b",
   packet: "#ffae38",
 } as const;
 
@@ -26,7 +29,9 @@ export function buildingKind(
   service: Pick<InfrastructureService, "type" | "category" | "species">,
 ): BuildingKind {
   const type = service.type.toLowerCase();
-  if (type === "cloud") return "gateway";
+  if (type === "cloud" || /(?:^|[-_])dns$|route[-_]?53/.test(type)) return "gateway";
+  if (/azure[-_]?ad|azure[-_]?entra|entra|active[-_ ]?directory|auth0|okta|cognito/.test(type))
+    return "gate";
   if (/event[-_]?bridge|event[-_]?bus/.test(type))
     return "watchtower";
   if (/queue|sqs|kinesis|pub[-_]?sub|service[-_]?bus/.test(type))
@@ -41,8 +46,10 @@ export function buildingKind(
     return "warehouse";
   if (service.category === "database") return "database";
   if (service.category === "storage") return "warehouse";
-  if (service.category === "integration" || service.species === "queue")
-    return "gantry";
+  // Integration metadata historically assigns every application the queue species.
+  // Actual queues are recognized by their provider type above.
+  if (service.category === "integration") return "gate";
+  if (service.species === "queue") return "gantry";
   return "rack";
 }
 
@@ -57,7 +64,7 @@ export function buildingAccent(kind: BuildingKind) {
 }
 
 export function buildingHeight(kind: BuildingKind) {
-  return kind === "gateway" ? 1.7 : kind === "watchtower" ? 2.9 : kind === "gantry" ? 1.95 : 1.8;
+  return kind === "gate" ? 1.2 : kind === "gateway" ? 1.7 : kind === "watchtower" ? 2.9 : kind === "gantry" ? 1.95 : 1.8;
 }
 
 export function hologramLift(service: Pick<InfrastructureService, "width">) {
@@ -84,6 +91,29 @@ export function dataCenterLotFootprints(
 
 export function dataCenterPickHeight(service: InfrastructureService) {
   return buildingHeight(buildingKind(service)) + 0.15;
+}
+
+/** Carry belts across the threshold instead of stopping outside open doors. */
+export function dataCenterTransportPaths(paths: ConnectorPath[], services: InfrastructureService[]): ConnectorPath[] {
+  const byId = new Map(services.map(service => [service.id, service]));
+  return paths.map(path => {
+    const points = [...path.points];
+    for (const source of [true, false]) {
+      const service = byId.get(source ? path.sourceId : path.targetId);
+      if (!service || !["warehouse", "gate"].includes(buildingKind(service))) continue;
+      const ordered = source ? path.points : [...path.points].reverse();
+      const port = ordered[0];
+      if (!port) continue;
+      const next = ordered.find(p => Math.hypot(p.x - port.x, p.z - port.z) > 1e-6);
+      if (!next) continue;
+      const length = Math.hypot(next.x - port.x, next.z - port.z);
+      const inset = Math.min(0.32, Math.min(service.width, service.depth) * 0.3);
+      const tip = { x: port.x - (next.x - port.x) / length * inset, z: port.z - (next.z - port.z) / length * inset };
+      if (source) points.unshift(tip);
+      else points.push(tip);
+    }
+    return { ...path, points };
+  });
 }
 
 export type PacketRoute = {

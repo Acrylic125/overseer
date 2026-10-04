@@ -16,6 +16,7 @@ import { DataCenterTransport } from "@/components/infrastructure/data-center-tra
 import {
   DATA_CENTER,
   dataCenterPickHeight,
+  dataCenterTransportPaths,
   type VisualizationStyle,
 } from "@/lib/data-center";
 import { buildAllConnectorPaths } from "@/lib/graph/connector-paths";
@@ -166,6 +167,7 @@ export function InfrastructureScene({
     () => ({ ...internetPickTarget(publicInternet), id: INTERNET_ID }),
     [publicInternet],
   );
+  const internetHubServices = useMemo(() => [internetHubService], [internetHubService]);
   const {
     visibleRenderServices,
     connectorServices,
@@ -183,7 +185,10 @@ export function InfrastructureScene({
     internetHubService,
   });
   const transportPaths = useMemo(
-    () => streamedConnectorPaths ?? (dataCenter ? buildAllConnectorPaths(connectorServices) : []),
+    () => {
+      const paths = streamedConnectorPaths ?? (dataCenter ? buildAllConnectorPaths(connectorServices) : []);
+      return dataCenter ? dataCenterTransportPaths(paths, connectorServices) : paths;
+    },
     [streamedConnectorPaths, dataCenter, connectorServices],
   );
   const tracedIds = useMemo(() => {
@@ -291,8 +296,9 @@ export function InfrastructureScene({
       {dataCenter ? (
         <>
           <DataCenterGround />
-          <DataCenterLots platforms={visiblePlatforms} services={renderServices} />
+          <DataCenterLots platforms={visiblePlatforms} services={renderServices} paths={transportPaths} />
           <DataCenterBuildings
+            paths={transportPaths}
             services={visibleRenderServices}
             relevantIds={relevantIds}
             onSelect={onSelectedServiceIdChange}
@@ -334,7 +340,8 @@ export function InfrastructureScene({
 
       {showPublicInternet && dataCenter ? (
         <DataCenterBuildings
-          services={[internetHubService]}
+          paths={transportPaths}
+          services={internetHubServices}
           relevantIds={relevantIds}
           onSelect={onSelectedServiceIdChange}
         />

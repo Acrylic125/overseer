@@ -4,14 +4,11 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
-import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import { conveyorRibbon } from "@/lib/conveyor-geometry";
 
 import {
   CampusGeometry,
   type CampusPart,
+  type CampusTint,
 } from "@/components/infrastructure/data-center-geometry";
 import {
   conveyorPacketRoute,
@@ -21,7 +18,7 @@ import {
 } from "@/lib/data-center";
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 
-const BELT_Y = 0.18;
+import { BELT_Y, buildConveyorBelts, tintConveyorBelts } from "@/lib/data-center-transport-geometry";
 
 /** Tape, a shipping label and barcode share one instanced detail batch. */
 function parcelDetails() {
@@ -62,49 +59,17 @@ export function DataCenterTransport({
   const routes = useMemo(() => paths.map((path) => ({
     ...packetRoute(path),
     motion: conveyorPacketRoute(path),
-    dimmed: relevantIds != null && !relevantIds.has(path.sourceId) && !relevantIds.has(path.targetId),
-    active: activeConnectorId === path.id,
-  })).filter(route => route.length > 0), [paths, relevantIds, activeConnectorId]);
+
+  })).filter(route => route.length > 0), [paths]);
+
+  const tints = useMemo(() => new Map<string, CampusTint>(routes.map(route => [route.path.id, {
+    edge: route.path.variant === "warning" ? "#ee6658" : activeConnectorId === route.path.id ? "#ff7f25" : "#ff9237",
+    dimmed: relevantIds != null && !relevantIds.has(route.path.sourceId) && !relevantIds.has(route.path.targetId),
+  }])), [routes, relevantIds, activeConnectorId]);
 
   const { size } = useThree();
-  const belts = useMemo(() => {
-    const geometries: THREE.BufferGeometry[] = [];
-    const edgePoints: number[] = [];
-    const edgeColors: number[] = [];
-    for (const route of routes) {
-      const edge = new THREE.Color(route.path.variant === "warning" ? "#ee6658" : route.active ? "#ff7f25" : "#ff9237");
-      if (route.dimmed) edge.lerp(new THREE.Color(DATA_CENTER.background), 0.8);
-      for (const [side, width, bottom, top, fill] of [
-        [0, 0.3, BELT_Y - 0.028, BELT_Y + 0.028, DATA_CENTER.surface],
-        [-0.16, 0.025, BELT_Y + 0.028, BELT_Y + 0.09, "#ffe4b8"],
-        [0.16, 0.025, BELT_Y + 0.028, BELT_Y + 0.09, "#ffe4b8"],
-      ] as const) {
-        const geometry = conveyorRibbon(route.motion.path.points, side, width, bottom, top);
-        const fillColor = new THREE.Color(fill);
-        if (route.dimmed) fillColor.lerp(new THREE.Color(DATA_CENTER.background), 0.8);
-        const colors = new Float32Array(geometry.getAttribute("position").count * 3);
-        for (let i = 0; i < colors.length; i += 3) colors.set([fillColor.r, fillColor.g, fillColor.b], i);
-        geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-        const edges = new THREE.EdgesGeometry(geometry, 25);
-        const positions = edges.getAttribute("position");
-        for (let i = 0; i < positions.count; i++) {
-          edgePoints.push(positions.getX(i), positions.getY(i), positions.getZ(i));
-          edgeColors.push(edge.r, edge.g, edge.b);
-        }
-        edges.dispose();
-        geometries.push(geometry);
-      }
-    }
-    if (!geometries.length) return null;
-    const geometry = mergeGeometries(geometries)!;
-    geometries.forEach(g => g.dispose());
-    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
-    const lineGeometry = new LineSegmentsGeometry();
-    lineGeometry.setPositions(edgePoints);
-    lineGeometry.setColors(edgeColors);
-    const lines = new LineSegments2(lineGeometry, new LineMaterial({ vertexColors: true, toneMapped: false, linewidth: 1.65 }));
-    return { mesh, lines };
-  }, [routes]);
+  const belts = useMemo(() => buildConveyorBelts(routes), [routes]);
+  useLayoutEffect(() => tintConveyorBelts(belts, tints), [belts, tints]);
   useLayoutEffect(() => { belts?.lines.material.resolution.set(size.width, size.height); }, [belts, size]);
   useEffect(() => () => {
     if (!belts) return;
@@ -117,16 +82,16 @@ export function DataCenterTransport({
   const parts = useMemo(() => {
     const out: CampusPart[] = [];
     for (const route of routes) {
-      const edge = route.path.variant === "warning" ? "#ee6658" : route.active ? "#ff7f25" : "#ff9237";
+      const edge = route.path.variant === "warning" ? "#ee6658" : "#ff9237";
       const rollers = Math.min(160, Math.ceil(route.motion.length / 0.28));
       for (let i = 0; i < rollers; i++) {
         const point = packetPosition(route.motion, (i + 0.5) * route.motion.length / rollers)!;
-        out.push({ position: [point.x, BELT_Y + 0.038, point.z], size: [0.26, 0.018, 0.025], rotation: [0, point.angle, 0], color: "#ffbc61", edge, dimmed: route.dimmed });
+        out.push({ position: [point.x, BELT_Y + 0.038, point.z], size: [0.26, 0.018, 0.025], rotation: [0, point.angle, 0], color: "#e5d4b6", edge, groupId: route.path.id });
       }
       const legs = Math.min(40, Math.ceil(route.motion.length / 1.3));
       for (let i = 0; i < legs; i++) {
         const point = packetPosition(route.motion, (i + 0.5) * route.motion.length / legs)!;
-        out.push({ position: [point.x, 0.075, point.z], size: [0.18, 0.15, 0.03], rotation: [0, point.angle, 0], color: DATA_CENTER.surface, edge, dimmed: route.dimmed });
+        out.push({ position: [point.x, 0.075, point.z], size: [0.18, 0.15, 0.03], rotation: [0, point.angle, 0], color: DATA_CENTER.surface, edge, groupId: route.path.id });
       }
     }
     return out;
@@ -162,14 +127,16 @@ export function DataCenterTransport({
   useLayoutEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
-    packets.forEach(({ route }, i) => mesh.setColorAt(i, new THREE.Color(route.dimmed ? "#fff0da" : route.path.variant === "warning" ? "#efaaa0" : "#ffc36a")));
+    packets.forEach(({ route }, i) => mesh.setColorAt(i, new THREE.Color(relevantIds != null && !relevantIds.has(route.path.sourceId) && !relevantIds.has(route.path.targetId) ? "#fff0da" : route.path.variant === "warning" ? "#efaaa0" : "#ffc36a")));
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [packets]);
+  }, [packets, relevantIds]);
 
+  const positionedPackets = useRef<typeof packets | null>(null);
   useFrame((_, delta) => {
     const mesh = meshRef.current;
     const detailMesh = detailsRef.current;
-    if (!mesh || !detailMesh) return;
+    if (!mesh || !detailMesh || (!animate && positionedPackets.current === packets)) return;
+    positionedPackets.current = packets;
     if (animate) elapsed.current += Math.min(delta, 0.1);
     const base = outline.base.getAttribute("position");
     const positions = outline.lines.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -192,7 +159,7 @@ export function DataCenterTransport({
   return (
     <group>
       {belts && <><primitive object={belts.mesh} /><primitive object={belts.lines} /></>}
-      <CampusGeometry parts={parts} />
+      <CampusGeometry parts={parts} tints={tints} />
       {packets.length > 0 && (
         <>
           <instancedMesh ref={meshRef} args={[undefined, undefined, packets.length]} frustumCulled={false}>

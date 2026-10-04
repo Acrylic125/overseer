@@ -16,6 +16,7 @@ export type CampusPart = {
   color: string;
   edge?: string;
   dimmed?: boolean;
+  groupId?: string;
 };
 
 export function DataCenterGround() {
@@ -38,10 +39,39 @@ function gableRoof() {
 }
 
 /** Buildings, fixtures and transport lanes share three instanced shape batches. */
-export function CampusGeometry({ parts }: { parts: CampusPart[] }) {
+export type CampusTint = { edge: string; dimmed: boolean };
+
+type CampusBatch = { mesh: THREE.InstancedMesh; lines: LineSegments2; items: CampusPart[]; edgesPerPart: number };
+
+// Focus changes only recolor existing buffers; transforms and outlines stay resident.
+function tintCampusBatches(batches: CampusBatch[], tints?: ReadonlyMap<string, CampusTint>) {
+  if (!tints) return;
+  const color = new THREE.Color();
+  const background = new THREE.Color(DATA_CENTER.background);
+  for (const { mesh, lines, items, edgesPerPart } of batches) {
+    const starts = lines.geometry.getAttribute("instanceColorStart");
+    const ends = lines.geometry.getAttribute("instanceColorEnd");
+    items.forEach((part, i) => {
+      const tint = part.groupId ? tints.get(part.groupId) : undefined;
+      color.set(part.color);
+      if (tint?.dimmed ?? part.dimmed) color.lerp(background, 0.8);
+      mesh.setColorAt(i, color);
+      color.set(tint?.edge ?? part.edge ?? DATA_CENTER.fitting);
+      if (tint?.dimmed ?? part.dimmed) color.lerp(background, 0.8);
+      for (let j = i * edgesPerPart; j < (i + 1) * edgesPerPart; j++) {
+        starts.setXYZ(j, color.r, color.g, color.b);
+        ends.setXYZ(j, color.r, color.g, color.b);
+      }
+    });
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    starts.needsUpdate = true;
+  }
+}
+
+export function CampusGeometry({ parts, tints }: { parts: CampusPart[]; tints?: ReadonlyMap<string, CampusTint> }) {
   const { size } = useThree();
   const batches = useMemo(() => {
-    const result: { mesh: THREE.InstancedMesh; lines: LineSegments2 }[] =
+    const result: CampusBatch[] =
       [];
     const dummy = new THREE.Object3D();
     const vertex = new THREE.Vector3();
@@ -55,6 +85,7 @@ export function CampusGeometry({ parts }: { parts: CampusPart[] }) {
           : shape === "cylinder"
             ? new THREE.CylinderGeometry(0.5, 0.5, 1, 40)
             : gableRoof();
+      // Unlit fills preserve the flat illustration palette at every camera angle.
       const material = new THREE.MeshBasicMaterial({
         toneMapped: false,
         polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
@@ -73,7 +104,7 @@ export function CampusGeometry({ parts }: { parts: CampusPart[] }) {
         color.set(part.color);
         if (part.dimmed) color.lerp(new THREE.Color(DATA_CENTER.background), 0.8);
         mesh.setColorAt(i, color);
-        color.set(part.edge ?? DATA_CENTER.blue);
+        color.set(part.edge ?? DATA_CENTER.fitting);
         if (part.dimmed) color.lerp(new THREE.Color(DATA_CENTER.background), 0.8);
         for (let j = 0; j < edgePositions.count; j++) {
           vertex.fromBufferAttribute(edgePositions, j).applyMatrix4(dummy.matrix);
@@ -87,13 +118,15 @@ export function CampusGeometry({ parts }: { parts: CampusPart[] }) {
       lineGeometry.setColors(colors);
       const lines = new LineSegments2(
         lineGeometry,
-        new LineMaterial({ vertexColors: true, toneMapped: false, linewidth: 1.65 }),
+        new LineMaterial({ vertexColors: true, toneMapped: false, linewidth: 1.2 }),
       );
       edges.dispose();
-      result.push({ mesh, lines });
+      result.push({ mesh, lines, items, edgesPerPart: edgePositions.count / 2 });
     }
     return result;
   }, [parts]);
+
+  useLayoutEffect(() => tintCampusBatches(batches, tints), [batches, tints]);
 
   useLayoutEffect(() => {
     for (const { lines } of batches) lines.material.resolution.set(size.width, size.height);
