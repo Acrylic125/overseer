@@ -17,20 +17,22 @@ const searchInputClassName =
 
 export function PageNav({
   left,
+  right,
   searchValue,
   onSearchChange,
   searchCatalog,
 }: {
   left?: ReactNode;
+  right?: ReactNode;
   searchValue: string;
   onSearchChange: (value: string) => void;
   searchCatalog?: { docs: SearchDocument[] };
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-4 top-4 z-20 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+    <div className="pointer-events-none absolute inset-x-4 top-4 z-20 grid grid-cols-[1fr_auto] items-center gap-2 sm:grid-cols-[1fr_auto_1fr]">
       <div className="pointer-events-auto justify-self-start">{left}</div>
 
-      <div className="pointer-events-auto justify-self-center">
+      <div className="pointer-events-auto col-span-2 row-start-2 justify-self-center sm:col-span-1 sm:col-start-2 sm:row-start-1">
         {searchCatalog != null ? (
           <SearchQueryInput
             catalog={searchCatalog}
@@ -52,7 +54,8 @@ export function PageNav({
         )}
       </div>
 
-      <div className="pointer-events-auto justify-self-end">
+      <div className="pointer-events-auto col-start-2 row-start-1 flex items-center gap-2 justify-self-end sm:col-start-3">
+        {right}
         <Button
           type="button"
           variant="secondary"

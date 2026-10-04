@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import * as THREE from "three";
 
@@ -51,13 +52,14 @@ import type { InfrastructureService } from "@/server/routers/infrastructure";
 
 export type { ViewMode };
 
-type InfrastructureCanvasProps = {
+export type InfrastructureCanvasProps = {
   services: InfrastructureService[];
   platforms: PackLayoutResult["platforms"];
   publicInternet: PackLayoutResult["publicInternet"];
   bounds: PackLayoutResult["bounds"];
   connectorPaths?: ConnectorPath[] | null;
   cameraFrame?: CameraFrame | null;
+  settings?: ReactNode;
 };
 
 export function InfrastructureCanvas({
@@ -67,6 +69,7 @@ export function InfrastructureCanvas({
   bounds,
   connectorPaths = null,
   cameraFrame = null,
+  settings,
 }: InfrastructureCanvasProps) {
   const frame = useMemo(
     () => resolveCameraFrame(bounds, cameraFrame),
@@ -267,6 +270,7 @@ export function InfrastructureCanvas({
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
         searchCatalog={searchCatalog}
+        right={settings}
         left={
           <Tabs
             value={viewMode}

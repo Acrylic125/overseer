@@ -4,6 +4,8 @@ import { loadInfrastructureDb, type Resource, type ServiceFields } from "@/lib/i
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import { layoutFromDb, type CameraFrame } from "@/lib/layout-from-db";
 import { resolveServiceType } from "@/lib/service-types";
+import { regroupLayout } from "@/lib/regroup-layout";
+import { groupingModes } from "@/lib/layout-options";
 import { publicProcedure, router } from "@/server/trpc";
 
 /** Visual block kind rendered in the 3D scene. */
@@ -124,6 +126,9 @@ export const infrastructureRouter = router({
       z
         .object({
           namespace: z.string().min(1).optional(),
+          grouping: z
+            .enum(groupingModes.map(({ value }) => value))
+            .default("scanned"),
         })
         .optional(),
     )
@@ -163,16 +168,13 @@ export const infrastructureRouter = router({
           bounds: { centerX: 0, centerZ: 0, width: 4, depth: 2 },
           connectorPaths: [] as ConnectorPath[],
           camera: null as CameraFrame | null,
+          grouping: input?.grouping ?? "scanned",
         };
       }
 
       return {
-        services: fromScan.services,
-        platforms: fromScan.platforms,
-        publicInternet: fromScan.publicInternet,
-        bounds: fromScan.bounds,
-        connectorPaths: fromScan.connectorPaths,
-        camera: fromScan.camera,
+        ...regroupLayout(fromScan, input?.grouping ?? "scanned"),
+        grouping: input?.grouping ?? "scanned",
       };
     }),
   alerts: publicProcedure
