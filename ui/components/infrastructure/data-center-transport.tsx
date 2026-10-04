@@ -19,6 +19,7 @@ import {
 import type { ConnectorPath } from "@/lib/graph/connector-paths";
 
 import { BELT_Y, buildConveyorBelts, tintConveyorBelts } from "@/lib/data-center-transport-geometry";
+import { conveyorOwnerAt } from "@/lib/conveyor-network";
 
 /** Tape, a shipping label and barcode share one instanced detail batch. */
 function parcelDetails() {
@@ -83,19 +84,15 @@ export function DataCenterTransport({
     const out: CampusPart[] = [];
     for (const route of routes) {
       const edge = route.path.variant === "warning" ? "#ee6658" : "#ff9237";
-      const rollers = Math.min(160, Math.ceil(route.motion.length / 0.28));
-      for (let i = 0; i < rollers; i++) {
-        const point = packetPosition(route.motion, (i + 0.5) * route.motion.length / rollers)!;
-        out.push({ position: [point.x, BELT_Y + 0.038, point.z], size: [0.26, 0.018, 0.025], rotation: [0, point.angle, 0], color: "#e5d4b6", edge, groupId: route.path.id });
-      }
       const legs = Math.min(40, Math.ceil(route.motion.length / 1.3));
       for (let i = 0; i < legs; i++) {
         const point = packetPosition(route.motion, (i + 0.5) * route.motion.length / legs)!;
+        if (!belts || conveyorOwnerAt(belts.regions, point.x, point.z) !== route.path.id) continue;
         out.push({ position: [point.x, 0.075, point.z], size: [0.18, 0.15, 0.03], rotation: [0, point.angle, 0], color: DATA_CENTER.surface, edge, groupId: route.path.id });
       }
     }
     return out;
-  }, [routes]);
+  }, [routes, belts]);
 
   const packets = useMemo(() => routes.flatMap((route, index) => {
     const count = Math.min(6, Math.max(1, Math.ceil(route.motion.length / 4)));

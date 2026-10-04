@@ -1,5 +1,31 @@
 import * as THREE from "three";
 
+/** Shared offsets keep the network footprint and ribbon bends identical. */
+export function conveyorEdges(points: readonly { x: number; z: number }[], side: number, width: number) {
+  return points.map((p, i) => {
+    const before = points[Math.max(0, i - 1)]!;
+    const after = points[Math.min(points.length - 1, i + 1)]!;
+    let ax = p.x - before.x;
+    let az = p.z - before.z;
+    let bx = after.x - p.x;
+    let bz = after.z - p.z;
+    const al = Math.hypot(ax, az);
+    const bl = Math.hypot(bx, bz);
+    if (al > 0) { ax /= al; az /= al; } else { ax = bl > 0 ? bx / bl : 1; az = bl > 0 ? bz / bl : 0; }
+    if (bl > 0) { bx /= bl; bz /= bl; } else { bx = ax; bz = az; }
+    const nx = az + bz;
+    const nz = -ax - bx;
+    const nl = Math.hypot(nx, nz);
+    const ux = nl > 1e-6 ? nx / nl : az;
+    const uz = nl > 1e-6 ? nz / nl : -ax;
+    const miter = 1 / Math.max(0.25, ux * bz - uz * bx);
+    return [-1, 1].map(edge => {
+      const offset = (side + edge * width / 2) * miter;
+      return { x: p.x + ux * offset, z: p.z + uz * offset };
+    });
+  });
+}
+
 /** One closed ribbon follows the entire centerline, including its curved bends. */
 export function conveyorRibbon(
   points: readonly { x: number; z: number }[],
@@ -11,28 +37,9 @@ export function conveyorRibbon(
   if (points.length < 2) return new THREE.BufferGeometry();
   const positions: number[] = [];
   const indices: number[] = [];
+  const edges = conveyorEdges(points, side, width);
   for (let i = 0; i < points.length; i++) {
-    const p = points[i]!;
-    const before = points[Math.max(0, i - 1)]!;
-    const after = points[Math.min(points.length - 1, i + 1)]!;
-    let ax = p.x - before.x;
-    let az = p.z - before.z;
-    let bx = after.x - p.x;
-    let bz = after.z - p.z;
-    const al = Math.hypot(ax, az);
-    const bl = Math.hypot(bx, bz);
-    if (al > 0) { ax /= al; az /= al; } else { ax = bx / bl; az = bz / bl; }
-    if (bl > 0) { bx /= bl; bz /= bl; } else { bx = ax; bz = az; }
-    const nx = az + bz;
-    const nz = -ax - bx;
-    const nl = Math.hypot(nx, nz);
-    const ux = nl > 1e-6 ? nx / nl : az;
-    const uz = nl > 1e-6 ? nz / nl : -ax;
-    const miter = 1 / Math.max(0.25, ux * bz - uz * bx);
-    for (const y of [bottom, top]) for (const edge of [-1, 1]) {
-      const offset = (side + edge * width / 2) * miter;
-      positions.push(p.x + ux * offset, y, p.z + uz * offset);
-    }
+    for (const y of [bottom, top]) for (const edge of edges[i]!) positions.push(edge.x, y, edge.z);
     if (i > 0) {
       const a = (i - 1) * 4;
       const b = i * 4;
