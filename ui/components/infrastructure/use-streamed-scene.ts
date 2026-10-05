@@ -9,11 +9,11 @@ import type { ConnectorPath } from "@/lib/graph/connector-paths";
 import type { PackLayoutResult } from "@/lib/graph/pack-layout";
 import {
   buildServiceSpatialIndex,
+  createServiceWindowSelector,
   expandWithLinkedServices,
   filterConnectorPaths,
   footprintInWindow,
   quantizeFocus,
-  streamServicesInWindow,
   windowAround,
   withInternetHubForConnectors,
   type StreamFocus,
@@ -53,6 +53,10 @@ export function useStreamedScene({
     () => buildServiceSpatialIndex(renderServices),
     [renderServices],
   );
+  const selectVisibleServices = useMemo(
+    () => createServiceWindowSelector(spatialIndex),
+    [spatialIndex],
+  );
   const initialFocus = currentFocus();
   const [focus, setFocus] = useState<StreamFocus>(initialFocus);
   const lastFocusRef = useRef<StreamFocus>(initialFocus);
@@ -75,8 +79,8 @@ export function useStreamedScene({
   );
 
   const visibleRenderServices = useMemo(
-    () => streamServicesInWindow(spatialIndex, focus.focusX, focus.focusZ),
-    [spatialIndex, focus],
+    () => selectVisibleServices(focus.focusX, focus.focusZ),
+    [selectVisibleServices, focus],
   );
 
   const connectorServices = useMemo(

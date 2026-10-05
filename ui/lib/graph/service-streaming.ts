@@ -125,6 +125,18 @@ export function streamServicesInWindow(
   return queryServicesInWindow(index, minX, minZ, maxX, maxZ);
 }
 
+/** Preserve resident scene geometry when moving the window keeps the same services. */
+export function createServiceWindowSelector(index: SpatialIndex) {
+  let previous: InfrastructureService[] = [];
+  return (focusX: number, focusZ: number) => {
+    const next = streamServicesInWindow(index, focusX, focusZ);
+    if (next.length !== previous.length || next.some((service, i) => service !== previous[i])) {
+      previous = next;
+    }
+    return previous;
+  };
+}
+
 /** True when a world XZ footprint overlaps the stream window. */
 export function footprintInWindow(
   footprint: WorldFootprint,
