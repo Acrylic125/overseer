@@ -1,7 +1,9 @@
-import polygonClipping, { type MultiPolygon, type Pair, type Polygon } from "polygon-clipping";
+import { difference, intersection, union } from "polyclip-ts";
 import { conveyorEdges } from "./conveyor-geometry";
 
-const { difference, intersection, union } = polygonClipping;
+export type MultiPolygon = ReturnType<typeof union>;
+type Polygon = MultiPolygon[number];
+type Pair = Polygon[number][number];
 
 type Bounds = { minX: number; minZ: number; maxX: number; maxZ: number };
 export type ConveyorRegion = { shape: MultiPolygon; bounds: Bounds; ids: string[] };

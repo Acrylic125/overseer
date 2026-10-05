@@ -1,16 +1,15 @@
 import * as THREE from "three";
-import polygonClipping, { type MultiPolygon } from "polygon-clipping";
+import { difference, intersection } from "polyclip-ts";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import { boundsOf, boundsOverlap, buildConveyorNetwork, containsPoint, conveyorFootprint, conveyorOwnerAt } from "./conveyor-network";
+import { boundsOf, boundsOverlap, buildConveyorNetwork, containsPoint, conveyorFootprint, conveyorOwnerAt, type MultiPolygon } from "./conveyor-network";
 import { DATA_CENTER, packetPosition, type PacketRoute } from "./data-center";
 import type { ConnectorPath } from "./graph/connector-paths";
 
 export const BELT_Y = 0.18;
 export type ConveyorTint = { edge: string; dimmed: boolean };
-const { difference, intersection } = polygonClipping;
 
 function extrude(shape: MultiPolygon, bottom: number, top: number) {
   const shapes = shape.map(polygon => {
